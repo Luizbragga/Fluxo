@@ -1,16 +1,37 @@
 "use client";
 
-// src/app/(dashboard)/owner/financeiro/page.tsx
-
 import { useEffect, useState } from "react";
 import { useRequireAuth } from "@/lib/use-auth";
 import {
   fetchOwnerFinanceiro,
+  fetchOwnerFinanceiroWithRange,
   type OwnerFinanceiroData,
   type PayoutItem,
   type PlanPaymentItem,
   type DailyRevenueItem,
 } from "../_api/owner-financeiro";
+
+type FinancePeriod = "month" | "week";
+
+function getCurrentWeekRange() {
+  const now = new Date();
+  const current = new Date(now);
+  current.setHours(0, 0, 0, 0);
+
+  const dayOfWeek = current.getDay(); // 0=dom, 1=seg, ...
+  const diffToMonday = (dayOfWeek + 6) % 7; // seg=0, dom=6
+
+  const monday = new Date(current);
+  monday.setDate(current.getDate() - diffToMonday);
+
+  const nextMonday = new Date(monday);
+  nextMonday.setDate(monday.getDate() + 7);
+
+  return {
+    from: monday.toISOString(),
+    to: nextMonday.toISOString(),
+  };
+}
 
 export default function OwnerFinanceiroPage() {
   const { user, loading: authLoading } = useRequireAuth({
@@ -21,14 +42,29 @@ export default function OwnerFinanceiroPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
+  const [period, setPeriod] = useState<FinancePeriod>("month");
+
   useEffect(() => {
     if (authLoading) return;
     if (!user) return;
 
     async function load() {
       try {
-        const result = await fetchOwnerFinanceiro();
+        setLoading(true);
+
+        let result: OwnerFinanceiroData;
+
+        if (period === "month") {
+          // comportamento atual (mês)
+          result = await fetchOwnerFinanceiro();
+        } else {
+          // semana = segunda → segunda
+          const { from, to } = getCurrentWeekRange();
+          result = await fetchOwnerFinanceiroWithRange({ from, to });
+        }
+
         setData(result);
+        setError(null);
       } catch (err) {
         console.error("Erro ao carregar financeiro do owner:", err);
         setError("Erro ao carregar dados financeiros.");
@@ -38,7 +74,7 @@ export default function OwnerFinanceiroPage() {
     }
 
     load();
-  }, [authLoading, user]);
+  }, [authLoading, user, period]);
 
   if (authLoading || loading || !data) {
     return (
@@ -87,10 +123,28 @@ export default function OwnerFinanceiroPage() {
             <option>Período atual</option>
           </select>
           <div className="flex rounded-lg border border-slate-800 bg-slate-900/80 overflow-hidden">
-            <button className="px-3 py-1 text-slate-50 bg-slate-800 text-[11px]">
+            <button
+              type="button"
+              onClick={() => setPeriod("month")}
+              className={[
+                "px-3 py-1 text-[11px]",
+                period === "month"
+                  ? "bg-slate-800 text-slate-50"
+                  : "text-slate-400",
+              ].join(" ")}
+            >
               Mês
             </button>
-            <button className="px-3 py-1 text-slate-400 text-[11px]">
+            <button
+              type="button"
+              onClick={() => setPeriod("week")}
+              className={[
+                "px-3 py-1 text-[11px]",
+                period === "week"
+                  ? "bg-slate-800 text-slate-50"
+                  : "text-slate-400",
+              ].join(" ")}
+            >
               Semana
             </button>
           </div>

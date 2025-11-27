@@ -1,4 +1,3 @@
-// src/app/(dashboard)/owner/_api/owner-financeiro.ts
 import { apiClient } from "@/lib/api-client";
 
 export type FinancialSummary = {
@@ -111,6 +110,11 @@ type DailyRevenueResponse = {
   }[];
 };
 
+type RangeParams = {
+  from?: string;
+  to?: string;
+};
+
 function formatShortDate(date: Date) {
   return date.toLocaleDateString("pt-PT", {
     day: "2-digit",
@@ -118,19 +122,35 @@ function formatShortDate(date: Date) {
   });
 }
 
-export async function fetchOwnerFinanceiro(): Promise<OwnerFinanceiroData> {
+function buildRangeQuery(params?: RangeParams): string {
+  if (!params?.from && !params?.to) return "";
+  const qs = new URLSearchParams();
+  if (params.from) qs.set("from", params.from);
+  if (params.to) qs.set("to", params.to);
+  return `?${qs.toString()}`;
+}
+
+// NOVA função: aceita intervalo opcional
+export async function fetchOwnerFinanceiroWithRange(
+  range?: RangeParams
+): Promise<OwnerFinanceiroData> {
+  const query = buildRangeQuery(range);
+
   const [earnings, payouts, planPaymentsResponse, dailyRevenueResponse] =
     await Promise.all([
-      apiClient<ProviderEarningsResponse>("/reports/provider-earnings", {
+      apiClient<ProviderEarningsResponse>(
+        `/reports/provider-earnings${query}`,
+        {
+          method: "GET",
+        }
+      ),
+      apiClient<ProviderPayoutsResponse>(`/reports/provider-payouts${query}`, {
         method: "GET",
       }),
-      apiClient<ProviderPayoutsResponse>("/reports/provider-payouts", {
+      apiClient<PlanPaymentsResponse>(`/reports/plan-payments${query}`, {
         method: "GET",
       }),
-      apiClient<PlanPaymentsResponse>("/reports/plan-payments", {
-        method: "GET",
-      }),
-      apiClient<DailyRevenueResponse>("/reports/daily-revenue", {
+      apiClient<DailyRevenueResponse>(`/reports/daily-revenue${query}`, {
         method: "GET",
       }),
     ]);
@@ -154,7 +174,7 @@ export async function fetchOwnerFinanceiro(): Promise<OwnerFinanceiroData> {
   const financialSummary: FinancialSummary[] = [
     {
       id: "total_revenue",
-      label: "Faturamento total (mês)",
+      label: "Faturamento total (período)",
       value: `€ ${totalServicesEuros}`,
       helper: `Serviços avulsos no período ${formatShortDate(
         fromDate
@@ -240,7 +260,7 @@ export async function fetchOwnerFinanceiro(): Promise<OwnerFinanceiroData> {
     })
   );
 
-  // 4) Pagamentos de planos (reais)
+  // 4) Pagamentos de planos
   const planPayments: PlanPaymentItem[] = planPaymentsResponse.items.map(
     (p) => ({
       id: p.id,
@@ -268,4 +288,9 @@ export async function fetchOwnerFinanceiro(): Promise<OwnerFinanceiroData> {
     planPayments,
     dailyRevenue,
   };
+}
+
+// Função antiga, usada hoje na tela → continua igual
+export async function fetchOwnerFinanceiro(): Promise<OwnerFinanceiroData> {
+  return fetchOwnerFinanceiroWithRange();
 }
