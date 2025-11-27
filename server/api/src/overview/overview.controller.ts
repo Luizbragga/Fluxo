@@ -1,4 +1,4 @@
-import { Controller, Get, UseGuards } from '@nestjs/common';
+import { Controller, Get, Req, UseGuards } from '@nestjs/common';
 import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { OverviewService } from './overview.service';
@@ -11,7 +11,9 @@ export class OverviewController {
   constructor(private readonly overviewService: OverviewService) {}
 
   @Get('owner')
-  getOwnerOverview() {
-    return this.overviewService.getOwnerOverview();
+  getOwnerOverview(@Req() req: any) {
+    const { tenantId } = req.user as { tenantId: string };
+
+    return this.overviewService.getOwnerOverview({ tenantId });
   }
 }

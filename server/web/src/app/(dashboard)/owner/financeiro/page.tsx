@@ -1,141 +1,72 @@
+"use client";
+
 // src/app/(dashboard)/owner/financeiro/page.tsx
 
-type FinancialSummary = {
-  id: string;
-  label: string;
-  value: string;
-  helper?: string;
-};
-
-type ProfessionalEarning = {
-  id: string;
-  professionalName: string;
-  totalAppointments: number;
-  totalRevenue: number;
-  professionalShare: number;
-  spaceShare: number;
-};
-
-type PayoutItem = {
-  id: string;
-  professionalName: string;
-  periodLabel: string;
-  amount: number;
-  status: "pending" | "paid";
-};
-
-type PlanPaymentItem = {
-  id: string;
-  customerName: string;
-  planName: string;
-  amount: number;
-  paidAt?: string;
-  dueAt: string;
-  status: "pending" | "paid" | "late";
-};
-
-const financialSummary: FinancialSummary[] = [
-  {
-    id: "total_revenue",
-    label: "Faturamento total (mês)",
-    value: "€ 2.740",
-    helper: "Serviços avulsos + planos",
-  },
-  {
-    id: "space_share",
-    label: "Parte do espaço",
-    value: "€ 1.588",
-    helper: "Após comissões de profissionais",
-  },
-  {
-    id: "barber_share",
-    label: "Parte dos profissionais",
-    value: "€ 1.152",
-    helper: "Somatório de comissões",
-  },
-  {
-    id: "recurring_revenue",
-    label: "Receita recorrente (planos)",
-    value: "€ 1.395",
-    helper: "Com base nos planos ativos",
-  },
-];
-
-const professionalEarnings: ProfessionalEarning[] = [
-  {
-    id: "rafa",
-    professionalName: "Rafa Barber",
-    totalAppointments: 86,
-    totalRevenue: 2150,
-    professionalShare: 1290,
-    spaceShare: 860,
-  },
-  {
-    id: "joao",
-    professionalName: "João Fade",
-    totalAppointments: 63,
-    totalRevenue: 1590,
-    professionalShare: 954,
-    spaceShare: 636,
-  },
-  {
-    id: "ana",
-    professionalName: "Ana Nails",
-    totalAppointments: 41,
-    totalRevenue: 980,
-    professionalShare: 588,
-    spaceShare: 392,
-  },
-];
-
-const payoutItems: PayoutItem[] = [
-  {
-    id: "payout_1",
-    professionalName: "Rafa Barber",
-    periodLabel: "Período 18–24 Nov · 12 atendimentos",
-    amount: 210,
-    status: "pending",
-  },
-  {
-    id: "payout_2",
-    professionalName: "João Fade",
-    periodLabel: "Período 11–17 Nov · pago",
-    amount: 180,
-    status: "paid",
-  },
-];
-
-const planPayments: PlanPaymentItem[] = [
-  {
-    id: "pp_1",
-    customerName: "Miguel Silva",
-    planName: "Plano Corte Mensal",
-    amount: 45,
-    paidAt: "02 Nov 2025",
-    dueAt: "02 Nov 2025",
-    status: "paid",
-  },
-  {
-    id: "pp_2",
-    customerName: "Bianca Costa",
-    planName: "Plano Nails Premium",
-    amount: 65,
-    paidAt: undefined,
-    dueAt: "27 Nov 2025",
-    status: "pending",
-  },
-  {
-    id: "pp_3",
-    customerName: "Carlos Andrade",
-    planName: "Plano Corte Mensal",
-    amount: 45,
-    paidAt: undefined,
-    dueAt: "15 Nov 2025",
-    status: "late",
-  },
-];
+import { useEffect, useState } from "react";
+import { useRequireAuth } from "@/lib/use-auth";
+import {
+  fetchOwnerFinanceiro,
+  type OwnerFinanceiroData,
+  type PayoutItem,
+  type PlanPaymentItem,
+  type DailyRevenueItem,
+} from "../_api/owner-financeiro";
 
 export default function OwnerFinanceiroPage() {
+  const { user, loading: authLoading } = useRequireAuth({
+    requiredRole: "owner",
+  });
+
+  const [data, setData] = useState<OwnerFinanceiroData | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (authLoading) return;
+    if (!user) return;
+
+    async function load() {
+      try {
+        const result = await fetchOwnerFinanceiro();
+        setData(result);
+      } catch (err) {
+        console.error("Erro ao carregar financeiro do owner:", err);
+        setError("Erro ao carregar dados financeiros.");
+      } finally {
+        setLoading(false);
+      }
+    }
+
+    load();
+  }, [authLoading, user]);
+
+  if (authLoading || loading || !data) {
+    return (
+      <div className="text-sm text-slate-400">
+        Carregando dados financeiros...
+      </div>
+    );
+  }
+
+  if (error) {
+    return <div className="text-sm text-rose-400">{error}</div>;
+  }
+
+  const {
+    financialSummary,
+    professionalEarnings,
+    payoutItems,
+    planPayments,
+    dailyRevenue,
+  } = data;
+
+  // garante que nunca vamos dividir por 0
+  const maxDailyRevenueRaw = dailyRevenue.reduce(
+    (max, d) => (d.totalRevenue > max ? d.totalRevenue : max),
+    0
+  );
+  const maxDailyRevenue = maxDailyRevenueRaw > 0 ? maxDailyRevenueRaw : 1;
+
   return (
     <>
       {/* Cabeçalho */}
@@ -153,9 +84,7 @@ export default function OwnerFinanceiroPage() {
             <option>Unidade Demo Barber – Centro</option>
           </select>
           <select className="px-3 py-1 rounded-lg border border-slate-800 bg-slate-900/80 text-slate-200">
-            <option>Novembro 2025</option>
-            <option>Outubro 2025</option>
-            <option>Setembro 2025</option>
+            <option>Período atual</option>
           </select>
           <div className="flex rounded-lg border border-slate-800 bg-slate-900/80 overflow-hidden">
             <button className="px-3 py-1 text-slate-50 bg-slate-800 text-[11px]">
@@ -194,28 +123,52 @@ export default function OwnerFinanceiroPage() {
 
         <div className="rounded-2xl border border-slate-800 bg-slate-900/60 p-4 text-xs">
           <div className="flex items-center justify-between mb-3">
-            <p className="text-slate-400">Faturamento por dia (mock)</p>
+            <p className="text-slate-400">Faturamento por dia</p>
             <button className="text-[11px] text-emerald-400 hover:underline">
               Ver relatórios
             </button>
           </div>
-          {/* Gráfico fake em barras */}
-          <div className="h-32 flex items-end gap-1">
-            {[40, 80, 60, 100, 75, 50, 90].map((value, idx) => (
-              <div key={idx} className="flex-1 flex flex-col items-center">
-                <div
-                  className="w-full max-w-[16px] rounded-t-lg bg-emerald-500/60"
-                  style={{ height: `${value}%` }}
-                />
-                <span className="mt-1 text-[9px] text-slate-500">
-                  D{idx + 1}
-                </span>
+
+          {dailyRevenue.length === 0 ? (
+            <p className="mt-4 text-[11px] text-slate-500">
+              Não há faturamento registrado neste período.
+            </p>
+          ) : (
+            <>
+              <div className="h-32 flex items-end gap-1">
+                {dailyRevenue.map((item) => {
+                  // evita NaN / Infinity e garante uma barra mínima
+                  const ratio =
+                    maxDailyRevenue > 0
+                      ? item.totalRevenue / maxDailyRevenue
+                      : 0;
+                  const height = Math.max(Math.round(ratio * 100), 8); // pelo menos 8%
+
+                  const dateLabel = new Date(item.date).getDate();
+
+                  return (
+                    <div
+                      key={item.date}
+                      className="flex-1 flex h-full flex-col items-center"
+                    >
+                      <div
+                        className="w-full max-w-[16px] rounded-t-lg bg-emerald-500/60"
+                        style={{ height: `${height}%` }}
+                      />
+                      <span className="mt-1 text-[9px] text-slate-500">
+                        {dateLabel}
+                      </span>
+                    </div>
+                  );
+                })}
               </div>
-            ))}
-          </div>
-          <p className="mt-2 text-[10px] text-slate-500">
-            Depois este bloco passa a usar dados reais de faturamento diário.
-          </p>
+
+              <p className="mt-2 text-[10px] text-slate-500">
+                Faturamento diário com base em atendimentos concluídos no
+                período atual.
+              </p>
+            </>
+          )}
         </div>
       </section>
 
@@ -314,7 +267,7 @@ export default function OwnerFinanceiroPage() {
           </div>
         </div>
 
-        {/* Pagamentos de planos */}
+        {/* Pagamentos de planos (por enquanto mockados no _api) */}
         <div className="rounded-2xl border border-slate-800 bg-slate-900/60 p-4 text-xs">
           <div className="flex items-center justify-between mb-3">
             <p className="text-slate-400">Pagamentos de planos</p>

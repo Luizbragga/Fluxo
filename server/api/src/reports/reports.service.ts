@@ -1,7 +1,7 @@
 import { BadRequestException, Injectable } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { ProviderPayoutsQueryDto } from './dto/provider-payouts-query.dto';
-import { PayoutStatus } from '@prisma/client';
+import { CustomerPlanPaymentStatus, PayoutStatus } from '@prisma/client';
 
 @Injectable()
 export class ReportsService {
@@ -125,6 +125,7 @@ export class ReportsService {
         servicePriceCents: number;
         providerEarningsCents: number;
         houseEarningsCents: number;
+        appointmentsCount: number;
       }
     >();
 
@@ -149,7 +150,10 @@ export class ReportsService {
           servicePriceCents: 0,
           providerEarningsCents: 0,
           houseEarningsCents: 0,
+          appointmentsCount: 0,
         };
+        bucket.appointmentsCount += 1;
+
         byProvider.set(key, bucket);
       }
 
@@ -256,6 +260,158 @@ export class ReportsService {
         count: items.length,
       },
       items,
+    };
+  }
+  async getPlanPayments(params: {
+    tenantId: string;
+    from?: string;
+    to?: string;
+    locationId?: string;
+    status?: CustomerPlanPaymentStatus | string;
+  }) {
+    const { tenantId, from, to, locationId, status } = params;
+    const { fromDate, toDate } = this.resolveDateRange(from, to);
+
+    const payments = await this.prisma.customerPlanPayment.findMany({
+      where: {
+        tenantId,
+        ...(status ? { status: status as CustomerPlanPaymentStatus } : {}),
+        dueDate: {
+          gte: fromDate,
+          lt: toDate,
+        },
+        customerPlan: locationId ? { locationId } : {},
+      },
+      include: {
+        customerPlan: {
+          include: {
+            planTemplate: true,
+            location: true,
+          },
+        },
+      },
+      orderBy: {
+        dueDate: 'asc',
+      },
+    });
+
+    let totalAmountCents = 0;
+    let paidAmountCents = 0;
+    let pendingAmountCents = 0;
+    let lateAmountCents = 0;
+
+    const items = payments.map((p) => {
+      totalAmountCents += p.amountCents;
+
+      if (p.status === 'paid') {
+        paidAmountCents += p.amountCents;
+      } else if (p.status === 'pending') {
+        pendingAmountCents += p.amountCents;
+      } else if (p.status === 'late') {
+        lateAmountCents += p.amountCents;
+      }
+
+      return {
+        id: p.id,
+        customerName: p.customerPlan.customerName,
+        planName: p.customerPlan.planTemplate?.name ?? 'Plano',
+        amountCents: p.amountCents,
+        status: p.status,
+        dueDate: p.dueDate,
+        paidAt: p.paidAt,
+        location: p.customerPlan.location
+          ? {
+              id: p.customerPlan.location.id,
+              name: p.customerPlan.location.name,
+            }
+          : null,
+      };
+    });
+
+    return {
+      from: fromDate.toISOString(),
+      to: toDate.toISOString(),
+      totals: {
+        amountCents: totalAmountCents,
+        paidAmountCents,
+        pendingAmountCents,
+        lateAmountCents,
+        count: items.length,
+      },
+      items,
+    };
+  }
+  async getDailyRevenue(params: {
+    tenantId: string;
+    from?: string;
+    to?: string;
+    locationId?: string;
+  }) {
+    const { tenantId, from, to, locationId } = params;
+    const { fromDate, toDate } = this.resolveDateRange(from, to);
+
+    const earnings = await this.prisma.appointmentEarning.findMany({
+      where: {
+        appointment: {
+          tenantId,
+          status: 'done',
+          startAt: {
+            gte: fromDate,
+            lt: toDate,
+          },
+          ...(locationId ? { locationId } : {}),
+        },
+      },
+      include: {
+        appointment: {
+          select: {
+            startAt: true,
+          },
+        },
+      },
+      orderBy: {
+        appointment: {
+          startAt: 'asc',
+        },
+      },
+    });
+
+    // agrupar por dia (YYYY-MM-DD em UTC)
+    const byDay = new Map<
+      string,
+      {
+        date: Date;
+        totalServicePriceCents: number;
+      }
+    >();
+
+    for (const e of earnings) {
+      const d = e.appointment.startAt;
+      const dayKey = d.toISOString().slice(0, 10); // yyyy-mm-dd
+
+      let bucket = byDay.get(dayKey);
+      if (!bucket) {
+        bucket = {
+          date: new Date(dayKey + 'T00:00:00.000Z'),
+          totalServicePriceCents: 0,
+        };
+        byDay.set(dayKey, bucket);
+      }
+
+      bucket.totalServicePriceCents += e.servicePriceCents;
+    }
+
+    const items = Array.from(byDay.values()).sort(
+      (a, b) => a.date.getTime() - b.date.getTime(),
+    );
+
+    return {
+      from: fromDate.toISOString(),
+      to: toDate.toISOString(),
+      items: items.map((i) => ({
+        date: i.date.toISOString(),
+        totalServicePriceCents: i.totalServicePriceCents,
+      })),
     };
   }
 }
