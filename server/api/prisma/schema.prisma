@@ -1,0 +1,331 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum Role {
+  owner
+  admin
+  attendant
+  provider
+}
+
+enum Specialty {
+  barber
+  hairdresser
+  nail
+  esthetic
+  makeup
+  tattoo
+  other
+}
+
+enum AppointmentState {
+  scheduled
+  in_service
+  done
+  no_show
+  cancelled
+}
+
+enum PayoutStatus {
+  pending
+  paid
+}
+
+enum CustomerPlanStatus {
+  active
+  suspended
+  cancelled
+}
+
+enum CustomerPlanPaymentStatus {
+  pending
+  paid
+  late
+}
+
+model Tenant {
+  id        String   @id @default(cuid())
+  name      String
+  slug      String   @unique // <-- necessário para o upsert
+  nif       String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  services             Service[]
+  users                User[]
+  providers            Provider[]
+  blocks               Block[]
+  appointments         Appointment[]
+  locations            Location[]
+  commissions          ProviderCommission[]
+  planTemplates        PlanTemplate[]
+  customerPlans        CustomerPlan[]
+  customerPlanPayments CustomerPlanPayment[]
+}
+
+model Location {
+  id        String   @id @default(cuid())
+  tenantId  String
+  name      String
+  slug      String
+  address   String?
+  active    Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  tenant        Tenant         @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  providers     Provider[]
+  appointments  Appointment[]
+  blocks        Block[]
+  users         User[]
+  planTemplates PlanTemplate[]
+  customerPlans CustomerPlan[]
+
+  @@unique([tenantId, slug])
+  @@index([tenantId])
+}
+
+model User {
+  id           String    @id @default(cuid())
+  tenantId     String
+  locationId   String?
+  role         Role
+  name         String
+  email        String    @unique
+  phone        String?
+  passwordHash String
+  provider     Provider?
+  active       Boolean   @default(true)
+  createdAt    DateTime  @default(now())
+
+  tenant       Tenant         @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  location     Location?      @relation(fields: [locationId], references: [id])
+  tokens       RefreshToken[]
+  appointments Appointment[]
+
+  @@index([tenantId])
+}
+
+model RefreshToken {
+  id        String   @id @default(cuid())
+  userId    String
+  tokenHash String
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+}
+
+model Service {
+  id          String   @id @default(cuid())
+  tenantId    String
+  name        String
+  durationMin Int // duração em minutos
+  priceCents  Int // preço em centavos
+  active      Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  tenant       Tenant               @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  appointments Appointment[]
+  commissions  ProviderCommission[]
+
+  @@index([tenantId])
+  @@index([tenantId, active])
+  @@index([tenantId, name])
+}
+
+model Provider {
+  id              String    @id @default(cuid())
+  tenantId        String
+  userId          String    @unique // <-- único para garantir 1:1 com User
+  locationId      String
+  name            String
+  specialty       Specialty @default(other)
+  weekdayTemplate Json?
+  active          Boolean   @default(true)
+
+  tenant   Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  user     User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  location Location @relation(fields: [locationId], references: [id], onDelete: Cascade)
+
+  createdAt    DateTime             @default(now())
+  updatedAt    DateTime             @updatedAt
+  blocks       Block[]
+  appointments Appointment[]
+  commissions  ProviderCommission[]
+
+  @@index([tenantId])
+  @@index([tenantId, active])
+  @@index([tenantId, locationId])
+}
+
+model ProviderCommission {
+  id         String   @id @default(cuid())
+  tenantId   String
+  providerId String
+  serviceId  String? // null = regra padrão
+  percentage Int // percentual inteiro, ex.: 50 = 50%
+  active     Boolean  @default(true)
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  tenant   Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  provider Provider @relation(fields: [providerId], references: [id], onDelete: Cascade)
+  service  Service? @relation(fields: [serviceId], references: [id])
+
+  @@unique([tenantId, providerId, serviceId])
+  @@index([tenantId])
+}
+
+model Block {
+  id         String   @id @default(cuid())
+  tenantId   String
+  providerId String
+  startAt    DateTime
+  endAt      DateTime
+  reason     String?
+  createdAt  DateTime @default(now())
+
+  tenant     Tenant    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  provider   Provider  @relation(fields: [providerId], references: [id], onDelete: Cascade)
+  location   Location? @relation(fields: [locationId], references: [id])
+  locationId String?
+
+  @@index([tenantId])
+  @@index([providerId, startAt, endAt])
+}
+
+model Appointment {
+  id                 String           @id @default(cuid())
+  tenantId           String
+  providerId         String
+  serviceId          String
+  locationId         String
+  serviceName        String
+  serviceDurationMin Int
+  servicePriceCents  Int
+  startAt            DateTime
+  endAt              DateTime
+  clientName         String
+  clientPhone        String
+  status             AppointmentState @default(scheduled)
+  customerPlanId     String?
+
+  createdById String?
+  createdBy   User?   @relation(fields: [createdById], references: [id], onDelete: SetNull)
+
+  tenant       Tenant        @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  provider     Provider      @relation(fields: [providerId], references: [id], onDelete: Cascade)
+  service      Service       @relation(fields: [serviceId], references: [id], onDelete: Cascade)
+  location     Location      @relation(fields: [locationId], references: [id], onDelete: Cascade)
+  customerPlan CustomerPlan? @relation(fields: [customerPlanId], references: [id])
+
+  earning AppointmentEarning?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([tenantId])
+  @@index([tenantId, providerId, startAt, endAt])
+}
+
+model AppointmentEarning {
+  id                    String @id @default(cuid())
+  appointmentId         String @unique
+  servicePriceCents     Int // cópia do preço do serviço no momento
+  commissionPercentage  Int // ex.: 50 = 50%
+  providerEarningsCents Int // quanto vai pro profissional
+  houseEarningsCents    Int // quanto fica para o salão
+
+  // Controle de repasse para o profissional
+  payoutStatus PayoutStatus @default(pending) // pending = ainda não repassado, paid = já repassado
+  payoutAt     DateTime? // quando foi feito o repasse
+  payoutMethod String? // dinheiro, mbway, transferência, etc.
+  payoutNote   String? // observações (ex.: ajuste manual, desconto, etc.)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  appointment Appointment @relation(fields: [appointmentId], references: [id], onDelete: Cascade)
+}
+
+model PlanTemplate {
+  id                String   @id @default(cuid())
+  tenantId          String
+  locationId        String? // opcional: plano pode ser global ou de uma filial
+  name              String
+  description       String?
+  priceCents        Int
+  intervalDays      Int // 15, 30, etc.
+  visitsPerInterval Int // nº de visitas por ciclo
+  sameDayServiceIds Json // array de serviceId
+  allowedWeekdays   Json // ex.: ["mon","wed","fri"]
+  minAdvanceDays    Int      @default(0)
+  isAccumulative    Boolean  @default(false)
+  active            Boolean  @default(true)
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  tenant        Tenant         @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  location      Location?      @relation(fields: [locationId], references: [id])
+  customerPlans CustomerPlan[]
+
+  @@index([tenantId])
+  @@index([tenantId, active])
+}
+
+model CustomerPlan {
+  id                String                    @id @default(cuid())
+  tenantId          String
+  planTemplateId    String
+  locationId        String? // opcional, seguindo o template
+  customerName      String
+  customerPhone     String
+  status            CustomerPlanStatus        @default(active)
+  currentCycleStart DateTime
+  currentCycleEnd   DateTime
+  visitsUsedInCycle Int                       @default(0)
+  carryOverVisits   Int                       @default(0)
+  lastPaymentStatus CustomerPlanPaymentStatus @default(pending)
+  lastPaymentAt     DateTime?
+
+  tenant       Tenant                @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  planTemplate PlanTemplate          @relation(fields: [planTemplateId], references: [id], onDelete: Cascade)
+  location     Location?             @relation(fields: [locationId], references: [id])
+  payments     CustomerPlanPayment[]
+  appointments Appointment[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([tenantId])
+  @@index([tenantId, status])
+}
+
+model CustomerPlanPayment {
+  id             String                    @id @default(cuid())
+  tenantId       String
+  customerPlanId String
+  dueDate        DateTime
+  amountCents    Int
+  status         CustomerPlanPaymentStatus @default(pending)
+  paidAt         DateTime?
+
+  tenant       Tenant       @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  customerPlan CustomerPlan @relation(fields: [customerPlanId], references: [id], onDelete: Cascade)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([tenantId])
+  @@index([tenantId, status, dueDate])
+}
