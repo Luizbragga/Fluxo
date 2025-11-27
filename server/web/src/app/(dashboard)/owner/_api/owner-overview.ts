@@ -110,18 +110,17 @@ export const ownerOverviewMock: OwnerOverviewData = {
 };
 
 export async function fetchOwnerOverview(): Promise<OwnerOverviewData> {
-  const useMock =
-    process.env.NEXT_PUBLIC_USE_MOCK_OVERVIEW === "1" ||
-    typeof window === "undefined";
+  const useMock = process.env.NEXT_PUBLIC_USE_MOCK_OVERVIEW === "1";
 
+  // Se quiser forçar mock (demo, offline etc.)
   if (useMock) {
     return ownerOverviewMock;
   }
 
-  // por enquanto ainda mock; depois ligamos no Nest com apiClient
-  return ownerOverviewMock;
+  // Chamada real pro backend (usa base URL + Authorization do apiClient)
+  const data = await apiClient<OwnerOverviewData>("/overview/owner", {
+    method: "GET",
+  });
 
-  // exemplo de futuro:
-  // const data = await apiClient<BackendOwnerOverviewDto>("/owner/overview");
-  // return mapBackendOverviewToFront(data);
+  return data;
 }

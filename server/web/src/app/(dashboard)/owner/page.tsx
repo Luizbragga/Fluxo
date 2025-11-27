@@ -1,4 +1,6 @@
-// src/app/(dashboard)/owner/page.tsx
+"use client";
+
+import { useEffect, useState } from "react";
 import { OverviewKpiCard } from "./_components/overview-kpi-card";
 import { NextAppointmentCard } from "./_components/next-appointment-card";
 import { ProfessionalPayoutRow } from "./_components/professional-payout-row";
@@ -6,15 +8,61 @@ import {
   fetchOwnerOverview,
   type QuickFinancialCard,
 } from "./_api/owner-overview";
+import { useRequireAuth } from "@/lib/use-auth";
 
-export default async function FluxoOwnerDashboard() {
-  // aqui já estamos prontos pra, no futuro, puxar do Nest
+type OwnerOverview = Awaited<ReturnType<typeof fetchOwnerOverview>>;
+
+export default function FluxoOwnerDashboard() {
+  // garante que só user logado (e owner) veja esse painel
+  const { user, loading: authLoading } = useRequireAuth({
+    requiredRole: "owner",
+  });
+
+  const [data, setData] = useState<OwnerOverview | null>(null);
+  const [loadingOverview, setLoadingOverview] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    async function loadOverview() {
+      // enquanto ainda está verificando auth, não faz nada
+      if (authLoading) return;
+
+      // se não tiver user, o hook já vai redirecionar pra /login
+      if (!user) return;
+
+      try {
+        const result = await fetchOwnerOverview();
+        setData(result);
+      } catch (err) {
+        console.error("Erro ao carregar overview do owner:", err);
+        setError("Erro ao carregar os dados do painel.");
+      } finally {
+        setLoadingOverview(false);
+      }
+    }
+
+    loadOverview();
+  }, [authLoading, user]);
+
+  // estados de carregamento / erro
+  if (authLoading || loadingOverview || !data) {
+    return (
+      <div className="text-sm text-slate-400">
+        Carregando painel do proprietário...
+      </div>
+    );
+  }
+
+  if (error) {
+    return <div className="text-sm text-rose-400">{error}</div>;
+  }
+
   const {
     overviewKpis,
     nextAppointments,
     quickFinancialCards,
     professionalPayouts,
-  } = await fetchOwnerOverview();
+  } = data;
 
   return (
     <>

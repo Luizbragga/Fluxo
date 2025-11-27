@@ -1,13 +1,12 @@
-// src/app/(dashboard)/owner/profissionais/page.tsx
+"use client";
 
-type Professional = {
-  id: string;
-  name: string;
-  specialty: string;
-  locationName: string;
-  isActive: boolean;
-  averageOccupation: number; // 0–100
-};
+import { useEffect, useState } from "react";
+import {
+  fetchOwnerProfessionals,
+  type OwnerProfessional,
+} from "../_api/owner-professionals";
+
+// --- Tipos de resumo (por enquanto ainda mockados) ---------------------------
 
 type ProfessionalSummary = {
   id: string;
@@ -24,57 +23,8 @@ type ProfessionalPayoutSummary = {
   status: "pending" | "paid";
 };
 
-const professionals: Professional[] = [
-  {
-    id: "rafa",
-    name: "Rafa Barber",
-    specialty: "Cortes & barbas",
-    locationName: "Demo Barber – Centro",
-    isActive: true,
-    averageOccupation: 82,
-  },
-  {
-    id: "joao",
-    name: "João Fade",
-    specialty: "Fades & design",
-    locationName: "Demo Barber – Centro",
-    isActive: true,
-    averageOccupation: 68,
-  },
-  {
-    id: "ana",
-    name: "Ana Nails",
-    specialty: "Nail designer",
-    locationName: "Demo Nails – Anexo",
-    isActive: false,
-    averageOccupation: 54,
-  },
-];
-
-const professionalSummaries: ProfessionalSummary[] = [
-  {
-    id: "rafa",
-    totalAppointmentsMonth: 86,
-    totalRevenueMonth: 2150,
-    professionalShareMonth: 1290,
-    spaceShareMonth: 860,
-  },
-  {
-    id: "joao",
-    totalAppointmentsMonth: 63,
-    totalRevenueMonth: 1590,
-    professionalShareMonth: 954,
-    spaceShareMonth: 636,
-  },
-  {
-    id: "ana",
-    totalAppointmentsMonth: 41,
-    totalRevenueMonth: 980,
-    professionalShareMonth: 588,
-    spaceShareMonth: 392,
-  },
-];
-
+// Mock fixo só para a caixinha de “Repasses recentes”.
+// Depois vamos ligar isso no financeiro real.
 const payoutSummaries: ProfessionalPayoutSummary[] = [
   {
     id: "1",
@@ -90,13 +40,63 @@ const payoutSummaries: ProfessionalPayoutSummary[] = [
   },
 ];
 
-export default function OwnerProfessionalsPage() {
-  const selectedId = "rafa"; // depois isso vira estado / rota
+// gera um resumo “bonitinho” a partir da posição na lista,
+// só pra não ficar tudo 0 enquanto o endpoint de analytics não existe
+function buildMockSummaryFor(
+  professional: OwnerProfessional,
+  index: number
+): ProfessionalSummary {
+  const baseAppointments = 40 + index * 12;
+  const totalRevenueMonth = 1000 + index * 450;
+  const professionalShareMonth = Math.round(totalRevenueMonth * 0.6);
+  const spaceShareMonth = totalRevenueMonth - professionalShareMonth;
 
-  const selectedProfessional = professionals.find((p) => p.id === selectedId);
-  const selectedSummary = professionalSummaries.find(
-    (s) => s.id === selectedId
-  );
+  return {
+    id: professional.id,
+    totalAppointmentsMonth: baseAppointments,
+    totalRevenueMonth,
+    professionalShareMonth,
+    spaceShareMonth,
+  };
+}
+
+export default function OwnerProfessionalsPage() {
+  const [professionals, setProfessionals] = useState<OwnerProfessional[]>([]);
+  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+
+  // carrega profissionais reais do tenant
+  useEffect(() => {
+    async function load() {
+      try {
+        const data = await fetchOwnerProfessionals();
+
+        setProfessionals(data);
+        setSelectedId(data[0]?.id ?? null);
+
+        setError(null);
+      } catch (err: any) {
+        console.error(err);
+        setError(
+          err?.message ?? "Erro ao carregar profissionais. Tente novamente."
+        );
+      } finally {
+        setLoading(false);
+      }
+    }
+
+    load();
+  }, []); // sem dependências
+
+  const selectedProfessional =
+    professionals.find((p) => p.id === selectedId) ?? null;
+
+  const selectedIndex = professionals.findIndex((p) => p.id === selectedId);
+  const selectedSummary =
+    selectedProfessional && selectedIndex >= 0
+      ? buildMockSummaryFor(selectedProfessional, selectedIndex)
+      : null;
 
   return (
     <>
@@ -111,7 +111,7 @@ export default function OwnerProfessionalsPage() {
 
         <div className="flex flex-wrap gap-2 text-xs">
           <select className="px-3 py-1 rounded-lg border border-slate-800 bg-slate-900/80 text-slate-200">
-            <option>Unidade Demo Barber – Centro</option>
+            <option>Unidade atual do tenant</option>
           </select>
           <button className="px-3 py-1 rounded-lg border border-emerald-600 bg-emerald-600/20 text-emerald-200">
             + Adicionar profissional
@@ -137,51 +137,64 @@ export default function OwnerProfessionalsPage() {
             />
           </div>
 
-          <div className="space-y-2 text-xs">
-            {professionals.map((pro) => {
-              const isSelected = pro.id === selectedId;
+          {loading ? (
+            <p className="text-xs text-slate-400">Carregando profissionais…</p>
+          ) : error ? (
+            <p className="text-xs text-rose-400">
+              Erro ao carregar profissionais: {error}
+            </p>
+          ) : professionals.length === 0 ? (
+            <p className="text-xs text-slate-400">
+              Nenhum profissional cadastrado neste tenant ainda.
+            </p>
+          ) : (
+            <div className="space-y-2 text-xs">
+              {professionals.map((pro) => {
+                const isSelected = pro.id === selectedId;
 
-              return (
-                <button
-                  key={pro.id}
-                  className={[
-                    "w-full text-left rounded-xl border px-3 py-2 transition-colors",
-                    isSelected
-                      ? "border-emerald-500/60 bg-emerald-500/5"
-                      : "border-slate-800 bg-slate-950/60 hover:border-slate-700",
-                  ].join(" ")}
-                >
-                  <div className="flex items-center justify-between">
-                    <div>
-                      <p className="font-medium text-[13px]">{pro.name}</p>
-                      <p className="text-[11px] text-slate-400">
-                        {pro.specialty}
-                      </p>
-                      <p className="text-[10px] text-slate-500">
-                        {pro.locationName}
-                      </p>
+                return (
+                  <button
+                    key={pro.id}
+                    onClick={() => setSelectedId(pro.id)}
+                    className={[
+                      "w-full text-left rounded-xl border px-3 py-2 transition-colors",
+                      isSelected
+                        ? "border-emerald-500/60 bg-emerald-500/5"
+                        : "border-slate-800 bg-slate-950/60 hover:border-slate-700",
+                    ].join(" ")}
+                  >
+                    <div className="flex items-center justify-between">
+                      <div>
+                        <p className="font-medium text-[13px]">{pro.name}</p>
+                        <p className="text-[11px] text-slate-400">
+                          {pro.specialty}
+                        </p>
+                        <p className="text-[10px] text-slate-500">
+                          {pro.locationName}
+                        </p>
+                      </div>
+                      <div className="text-right">
+                        <p className="text-[11px] text-slate-400">Ocupação</p>
+                        <p className="text-sm font-semibold">
+                          {pro.averageOccupation}%
+                        </p>
+                        <span
+                          className={[
+                            "inline-flex mt-1 rounded-full px-2 py-[1px] text-[9px]",
+                            pro.isActive
+                              ? "bg-emerald-500/15 text-emerald-300"
+                              : "bg-slate-700 text-slate-200",
+                          ].join(" ")}
+                        >
+                          {pro.isActive ? "Ativo" : "Inativo"}
+                        </span>
+                      </div>
                     </div>
-                    <div className="text-right">
-                      <p className="text-[11px] text-slate-400">Ocupação</p>
-                      <p className="text-sm font-semibold">
-                        {pro.averageOccupation}%
-                      </p>
-                      <span
-                        className={[
-                          "inline-flex mt-1 rounded-full px-2 py-[1px] text-[9px]",
-                          pro.isActive
-                            ? "bg-emerald-500/15 text-emerald-300"
-                            : "bg-slate-700 text-slate-200",
-                        ].join(" ")}
-                      >
-                        {pro.isActive ? "Ativo" : "Inativo"}
-                      </span>
-                    </div>
-                  </div>
-                </button>
-              );
-            })}
-          </div>
+                  </button>
+                );
+              })}
+            </div>
+          )}
         </div>
 
         {/* Detalhes do profissional selecionado */}
