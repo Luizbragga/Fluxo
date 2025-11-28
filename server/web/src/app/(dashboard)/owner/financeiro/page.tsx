@@ -5,11 +5,13 @@ import { useRequireAuth } from "@/lib/use-auth";
 import {
   fetchOwnerFinanceiro,
   fetchOwnerFinanceiroWithRange,
+  markPayoutAsPaid,
   type OwnerFinanceiroData,
   type PayoutItem,
   type PlanPaymentItem,
   type DailyRevenueItem,
 } from "../_api/owner-financeiro";
+import Link from "next/link";
 
 type FinancePeriod = "month" | "week";
 
@@ -32,6 +34,12 @@ function getCurrentWeekRange() {
     to: nextMonday.toISOString(),
   };
 }
+const formatCurrency = (value: number) =>
+  value.toLocaleString("pt-PT", {
+    style: "currency",
+    currency: "EUR",
+    minimumFractionDigits: 2,
+  });
 
 export default function OwnerFinanceiroPage() {
   const { user, loading: authLoading } = useRequireAuth({
@@ -41,8 +49,14 @@ export default function OwnerFinanceiroPage() {
   const [data, setData] = useState<OwnerFinanceiroData | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-
+  const [markingPayoutId, setMarkingPayoutId] = useState<string | null>(null);
   const [period, setPeriod] = useState<FinancePeriod>("month");
+  const [dateFromInput, setDateFromInput] = useState<string>("");
+  const [dateToInput, setDateToInput] = useState<string>("");
+  const [appliedRange, setAppliedRange] = useState<{
+    from?: string;
+    to?: string;
+  } | null>(null);
 
   useEffect(() => {
     if (authLoading) return;
@@ -54,11 +68,14 @@ export default function OwnerFinanceiroPage() {
 
         let result: OwnerFinanceiroData;
 
-        if (period === "month") {
-          // comportamento atual (mês)
+        // 1) Se o user aplicou um intervalo customizado (datas escolhidas)
+        if (appliedRange && (appliedRange.from || appliedRange.to)) {
+          result = await fetchOwnerFinanceiroWithRange(appliedRange);
+        } else if (period === "month") {
+          // 2) Comportamento padrão: mês atual (backend resolve)
           result = await fetchOwnerFinanceiro();
         } else {
-          // semana = segunda → segunda
+          // 3) Semana atual: segunda → segunda
           const { from, to } = getCurrentWeekRange();
           result = await fetchOwnerFinanceiroWithRange({ from, to });
         }
@@ -74,7 +91,7 @@ export default function OwnerFinanceiroPage() {
     }
 
     load();
-  }, [authLoading, user, period]);
+  }, [authLoading, user, period, appliedRange]);
 
   if (authLoading || loading || !data) {
     return (
@@ -102,6 +119,77 @@ export default function OwnerFinanceiroPage() {
     0
   );
   const maxDailyRevenue = maxDailyRevenueRaw > 0 ? maxDailyRevenueRaw : 1;
+  function applyCustomRange() {
+    if (!dateFromInput && !dateToInput) {
+      setAppliedRange(null);
+      return;
+    }
+
+    const range: { from?: string; to?: string } = {};
+
+    if (dateFromInput) {
+      // início do dia em UTC
+      range.from = new Date(dateFromInput + "T00:00:00.000Z").toISOString();
+    }
+
+    if (dateToInput) {
+      // fim do dia em UTC
+      range.to = new Date(dateToInput + "T23:59:59.999Z").toISOString();
+    }
+
+    setAppliedRange(range);
+  }
+
+  function clearCustomRange() {
+    setDateFromInput("");
+    setDateToInput("");
+    setAppliedRange(null);
+  }
+  const handleExportProfessionalEarnings = () => {
+    if (!professionalEarnings || professionalEarnings.length === 0) {
+      alert("Não há dados de ganhos por profissionais para exportar.");
+      return;
+    }
+
+    const header = [
+      "Profissional",
+      "Atendimentos no período",
+      "Receita total (€)",
+      "Parte do profissional (€)",
+      "Parte do espaço (€)",
+    ];
+
+    const rows = professionalEarnings.map((pro) => [
+      pro.professionalName,
+      String(pro.totalAppointments),
+      String(pro.totalRevenue).replace(".", ","),
+      String(pro.professionalShare).replace(".", ","),
+      String(pro.spaceShare).replace(".", ","),
+    ]);
+
+    const lines = [header, ...rows].map((cols) =>
+      cols.map((c) => `"${String(c).replace(/"/g, '""')}"`).join(";")
+    );
+
+    const csvContent = lines.join("\n");
+
+    const blob = new Blob([csvContent], {
+      type: "text/csv;charset=utf-8;",
+    });
+
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+
+    const now = new Date();
+    const dateLabel = now.toISOString().slice(0, 10); // yyyy-mm-dd
+
+    link.href = url;
+    link.download = `ganhos-profissionais-${dateLabel}.csv`;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+  };
 
   return (
     <>
@@ -149,6 +237,38 @@ export default function OwnerFinanceiroPage() {
             </button>
           </div>
         </div>
+        <div className="mt-2 flex flex-wrap items-center gap-2 text-[11px] md:mt-0">
+          <span className="text-slate-500">Filtro por data:</span>
+          <input
+            type="date"
+            className="px-2 py-[3px] rounded border border-slate-800 bg-slate-900/80 text-slate-200"
+            value={dateFromInput}
+            onChange={(e) => setDateFromInput(e.target.value)}
+          />
+          <span className="text-slate-500">até</span>
+          <input
+            type="date"
+            className="px-2 py-[3px] rounded border border-slate-800 bg-slate-900/80 text-slate-200"
+            value={dateToInput}
+            onChange={(e) => setDateToInput(e.target.value)}
+          />
+          <button
+            type="button"
+            onClick={applyCustomRange}
+            className="px-3 py-[3px] rounded-lg border border-emerald-500/60 bg-emerald-500/10 text-emerald-200 hover:bg-emerald-500/20"
+          >
+            Aplicar
+          </button>
+          {appliedRange && (
+            <button
+              type="button"
+              onClick={clearCustomRange}
+              className="px-2 py-[3px] rounded-lg border border-slate-700 text-slate-300 hover:bg-slate-800/60"
+            >
+              Limpar
+            </button>
+          )}
+        </div>
       </header>
 
       {/* Bloco de resumo + "gráfico" simples */}
@@ -178,9 +298,12 @@ export default function OwnerFinanceiroPage() {
         <div className="rounded-2xl border border-slate-800 bg-slate-900/60 p-4 text-xs">
           <div className="flex items-center justify-between mb-3">
             <p className="text-slate-400">Faturamento por dia</p>
-            <button className="text-[11px] text-emerald-400 hover:underline">
+            <Link
+              href="/owner/relatorios?tab=daily-revenue"
+              className="text-[11px] text-emerald-400 hover:underline"
+            >
               Ver relatórios
-            </button>
+            </Link>
           </div>
 
           {dailyRevenue.length === 0 ? (
@@ -203,7 +326,7 @@ export default function OwnerFinanceiroPage() {
                   return (
                     <div
                       key={item.date}
-                      className="flex-1 flex h-full flex-col items-center"
+                      className="flex-1 flex flex-col justify-end items-center h-full"
                     >
                       <div
                         className="w-full max-w-[16px] rounded-t-lg bg-emerald-500/60"
@@ -232,7 +355,11 @@ export default function OwnerFinanceiroPage() {
         <div className="xl:col-span-1 rounded-2xl border border-slate-800 bg-slate-900/60 p-4 text-xs">
           <div className="flex items-center justify-between mb-3">
             <p className="text-slate-400">Ganhos por profissionais</p>
-            <button className="text-[11px] text-emerald-400 hover:underline">
+            <button
+              type="button"
+              onClick={handleExportProfessionalEarnings}
+              className="text-[11px] text-emerald-400 hover:underline"
+            >
               Exportar
             </button>
           </div>
@@ -255,7 +382,7 @@ export default function OwnerFinanceiroPage() {
                   <div className="text-right">
                     <p className="text-[10px] text-slate-400">Receita total</p>
                     <p className="text-sm font-semibold">
-                      € {pro.totalRevenue}
+                      {formatCurrency(pro.totalRevenue)}
                     </p>
                   </div>
                 </div>
@@ -263,12 +390,14 @@ export default function OwnerFinanceiroPage() {
                   <div>
                     <p className="text-slate-400">Parte do profissional</p>
                     <p className="font-semibold text-emerald-300">
-                      € {pro.professionalShare}
+                      {formatCurrency(pro.professionalShare)}
                     </p>
                   </div>
                   <div className="text-right">
                     <p className="text-slate-400">Parte do espaço</p>
-                    <p className="font-semibold">€ {pro.spaceShare}</p>
+                    <p className="font-semibold">
+                      {formatCurrency(pro.spaceShare)}
+                    </p>
                   </div>
                 </div>
               </div>
@@ -279,10 +408,12 @@ export default function OwnerFinanceiroPage() {
         {/* Repasses */}
         <div className="rounded-2xl border border-slate-800 bg-slate-900/60 p-4 text-xs">
           <div className="flex items-center justify-between mb-3">
-            <p className="text-slate-400">Repasses / payouts</p>
-            <button className="text-[11px] text-emerald-400 hover:underline">
+            <Link
+              href="/owner/relatorios?tab=payouts"
+              className="text-[11px] text-emerald-400 hover:underline"
+            >
               Ver todos
-            </button>
+            </Link>
           </div>
 
           <div className="space-y-2">
@@ -303,15 +434,49 @@ export default function OwnerFinanceiroPage() {
                   <p className="text-[10px] text-slate-400">
                     {payout.periodLabel}
                   </p>
-                  <p className="text-sm font-semibold mt-1">
-                    € {payout.amount}
+                  <p className="text-sm font-semibold">
+                    {formatCurrency(payout.amount)}
                   </p>
                 </div>
                 <div className="text-right">
                   <PayoutStatusBadge status={payout.status} />
                   <button
-                    className="mt-2 px-2 py-[2px] rounded text-[10px] border border-slate-700 text-slate-200 hover:border-emerald-500"
-                    disabled={payout.status === "paid"}
+                    className="mt-2 px-2 py-[2px] rounded text-[10px] border border-slate-700 text-slate-200 hover:border-emerald-500 disabled:opacity-60 disabled:cursor-not-allowed"
+                    disabled={
+                      payout.status === "paid" ||
+                      payout.id === "unknown" ||
+                      markingPayoutId === payout.id
+                    }
+                    onClick={async () => {
+                      if (payout.status === "paid" || payout.id === "unknown") {
+                        return;
+                      }
+
+                      try {
+                        setMarkingPayoutId(payout.id);
+                        await markPayoutAsPaid(payout.id);
+
+                        // recarrega os dados financeiros após marcar como pago
+                        let updated: OwnerFinanceiroData;
+                        if (period === "month") {
+                          updated = await fetchOwnerFinanceiro();
+                        } else {
+                          const { from, to } = getCurrentWeekRange();
+                          updated = await fetchOwnerFinanceiroWithRange({
+                            from,
+                            to,
+                          });
+                        }
+                        setData(updated);
+                      } catch (err) {
+                        console.error("Erro ao marcar payout como pago:", err);
+                        alert(
+                          "Não foi possível marcar como pago. Tenta novamente."
+                        );
+                      } finally {
+                        setMarkingPayoutId(null);
+                      }
+                    }}
                   >
                     Marcar como pago
                   </button>
@@ -325,9 +490,12 @@ export default function OwnerFinanceiroPage() {
         <div className="rounded-2xl border border-slate-800 bg-slate-900/60 p-4 text-xs">
           <div className="flex items-center justify-between mb-3">
             <p className="text-slate-400">Pagamentos de planos</p>
-            <button className="text-[11px] text-emerald-400 hover:underline">
+            <Link
+              href="/owner/relatorios?tab=plan-payments"
+              className="text-[11px] text-emerald-400 hover:underline"
+            >
               Ver todos
-            </button>
+            </Link>
           </div>
 
           <div className="space-y-2 max-h-72 overflow-auto pr-1">
@@ -349,7 +517,10 @@ export default function OwnerFinanceiroPage() {
                   </p>
                 </div>
                 <div className="text-right">
-                  <p className="text-sm font-semibold">€ {payment.amount}</p>
+                  <p className="text-sm font-semibold">
+                    {formatCurrency(payment.amount)}
+                  </p>
+
                   <PlanPaymentStatusBadge status={payment.status} />
                 </div>
               </div>

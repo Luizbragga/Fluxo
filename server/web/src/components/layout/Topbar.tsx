@@ -11,7 +11,7 @@ export function Topbar() {
       </div>
       <div className="flex items-center gap-3 text-xs text-slate-300">
         <button className="px-3 py-1 rounded-full border border-slate-700 hover:border-emerald-500 hover:text-emerald-300">
-          Hoje
+          Período
         </button>
         <span className="px-3 py-1 rounded-full bg-slate-900 border border-slate-800">
           Rafa Barber · Owner

@@ -179,6 +179,7 @@ export class ReportsService {
         ...(status ? { payoutStatus: status as PayoutStatus } : {}),
         appointment: {
           tenantId,
+          status: 'done', // ✅ só atendimentos concluídos entram no cálculo
           startAt: {
             gte: fromDate,
             lt: toDate,
@@ -262,6 +263,32 @@ export class ReportsService {
       items,
     };
   }
+  async markProviderPayoutsAsPaid(params: {
+    tenantId: string;
+    providerId: string;
+  }) {
+    const { tenantId, providerId } = params;
+
+    const result = await this.prisma.appointmentEarning.updateMany({
+      where: {
+        payoutStatus: PayoutStatus.pending,
+        appointment: {
+          tenantId,
+          providerId,
+          status: 'done',
+        },
+      },
+      data: {
+        payoutStatus: PayoutStatus.paid,
+        payoutAt: new Date(),
+      },
+    });
+
+    return {
+      updatedCount: result.count,
+    };
+  }
+
   async getPlanPayments(params: {
     tenantId: string;
     from?: string;

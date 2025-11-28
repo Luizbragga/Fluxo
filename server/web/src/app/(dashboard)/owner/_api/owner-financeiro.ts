@@ -158,17 +158,12 @@ export async function fetchOwnerFinanceiroWithRange(
   const fromDate = new Date(earnings.from);
   const toDate = new Date(earnings.to);
 
-  const totalServicesEuros = Math.round(
-    earnings.totals.servicePriceCents / 100
-  );
-  const providerShareEuros = Math.round(
-    earnings.totals.providerEarningsCents / 100
-  );
-  const houseShareEuros = Math.round(earnings.totals.houseEarningsCents / 100);
+  const totalServicesEuros = earnings.totals.servicePriceCents / 100;
+  const providerShareEuros = earnings.totals.providerEarningsCents / 100;
+  const houseShareEuros = earnings.totals.houseEarningsCents / 100;
 
-  const recurringRevenueEuros = Math.round(
-    planPaymentsResponse.totals.paidAmountCents / 100
-  );
+  const recurringRevenueEuros =
+    planPaymentsResponse.totals.paidAmountCents / 100;
 
   // 1) Resumo financeiro
   const financialSummary: FinancialSummary[] = [
@@ -206,9 +201,9 @@ export async function fetchOwnerFinanceiroWithRange(
       id: p.providerId,
       professionalName: p.providerName,
       totalAppointments: p.appointmentsCount ?? 0,
-      totalRevenue: Math.round(p.servicePriceCents / 100),
-      professionalShare: Math.round(p.providerEarningsCents / 100),
-      spaceShare: Math.round(p.houseEarningsCents / 100),
+      totalRevenue: p.servicePriceCents / 100,
+      professionalShare: p.providerEarningsCents / 100,
+      spaceShare: p.houseEarningsCents / 100,
     })
   );
 
@@ -219,6 +214,7 @@ export async function fetchOwnerFinanceiroWithRange(
       providerId: string;
       providerName: string;
       totalProviderEarningsCents: number;
+      pendingProviderEarningsCents: number;
       hasPending: boolean;
       count: number;
     }
@@ -234,30 +230,45 @@ export async function fetchOwnerFinanceiroWithRange(
         providerId,
         providerName,
         totalProviderEarningsCents: 0,
+        pendingProviderEarningsCents: 0, // <<< IMPORTANTE: começa em 0
         hasPending: false,
         count: 0,
       };
       byProvider.set(providerId, bucket);
     }
 
+    // sempre soma o total do período
     bucket.totalProviderEarningsCents += item.providerEarningsCents;
     bucket.count += 1;
 
+    // se ainda está pendente, marca como pendente e acumula só o que falta pagar
     if (item.payoutStatus !== "paid") {
       bucket.hasPending = true;
+      bucket.pendingProviderEarningsCents += item.providerEarningsCents;
     }
   }
 
   const payoutItems: PayoutItem[] = Array.from(byProvider.values()).map(
-    (bucket) => ({
-      id: bucket.providerId,
-      professionalName: bucket.providerName,
-      periodLabel: `Período ${formatShortDate(fromDate)} – ${formatShortDate(
-        toDate
-      )} · ${bucket.count} atendimentos`,
-      amount: Math.round(bucket.totalProviderEarningsCents / 100),
-      status: bucket.hasPending ? "pending" : "paid",
-    })
+    (bucket) => {
+      const status: PayoutItemStatus = bucket.hasPending ? "pending" : "paid";
+
+      // se ainda tem pendente, mostra só o pendente;
+      // se já está tudo pago, mostra o total do período
+      const amountCents =
+        status === "pending"
+          ? bucket.pendingProviderEarningsCents
+          : bucket.totalProviderEarningsCents;
+
+      return {
+        id: bucket.providerId,
+        professionalName: bucket.providerName,
+        periodLabel: `Período ${formatShortDate(fromDate)} – ${formatShortDate(
+          toDate
+        )} · ${bucket.count} atendimentos`,
+        amount: amountCents / 100, // em euros, com casas decimais
+        status,
+      };
+    }
   );
 
   // 4) Pagamentos de planos
@@ -266,7 +277,7 @@ export async function fetchOwnerFinanceiroWithRange(
       id: p.id,
       customerName: p.customerName,
       planName: p.planName,
-      amount: Math.round(p.amountCents / 100),
+      amount: p.amountCents / 100,
       status: (p.status as PlanPaymentItemStatus) ?? "pending",
       dueAt: formatShortDate(new Date(p.dueDate)),
       paidAt: p.paidAt ? formatShortDate(new Date(p.paidAt)) : undefined,
@@ -277,7 +288,7 @@ export async function fetchOwnerFinanceiroWithRange(
   const dailyRevenue: DailyRevenueItem[] = dailyRevenueResponse.items.map(
     (item) => ({
       date: item.date,
-      totalRevenue: Math.round(item.totalServicePriceCents / 100),
+      totalRevenue: item.totalServicePriceCents / 100,
     })
   );
 
@@ -288,6 +299,16 @@ export async function fetchOwnerFinanceiroWithRange(
     planPayments,
     dailyRevenue,
   };
+}
+
+// marca todos os earnings pendentes daquele profissional como pagos
+export async function markPayoutAsPaid(providerId: string): Promise<void> {
+  await apiClient(
+    `/reports/provider-payouts/provider/${providerId}/mark-paid`,
+    {
+      method: "PATCH",
+    }
+  );
 }
 
 // Função antiga, usada hoje na tela → continua igual

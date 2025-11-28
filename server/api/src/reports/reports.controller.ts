@@ -1,4 +1,13 @@
-import { Controller, Get, Query, Req, UseGuards } from '@nestjs/common';
+import {
+  Controller,
+  Get,
+  Query,
+  Req,
+  UseGuards,
+  Patch,
+  Param,
+} from '@nestjs/common';
+
 import { ApiBearerAuth, ApiQuery, ApiTags } from '@nestjs/swagger';
 import { ReportsService } from './reports.service';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
@@ -60,6 +69,19 @@ export class ReportsController {
     return this.reportsService.getProviderPayouts(tenantId, query);
   }
   @Roles(Role.owner, Role.admin)
+  @Patch('provider-payouts/provider/:providerId/mark-paid')
+  async markProviderPayoutsAsPaid(
+    @Req() req: any,
+    @Param('providerId') providerId: string,
+  ) {
+    const { tenantId } = req.user as { tenantId: string };
+
+    return this.reportsService.markProviderPayoutsAsPaid({
+      tenantId,
+      providerId,
+    });
+  }
+
   @Get('plan-payments')
   @ApiQuery({
     name: 'from',
