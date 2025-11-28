@@ -12,7 +12,7 @@ import { ApiBearerAuth, ApiQuery, ApiTags } from '@nestjs/swagger';
 import { CustomerPlansService } from './customer-plans.service';
 import { CreateCustomerPlanDto } from './dto/create-customer-plan.dto';
 import { UpdateCustomerPlanDto } from './dto/update-customer-plan.dto';
-
+import { RegisterCustomerPlanPaymentDto } from './dto/register-customer-plan-payment.dto';
 import { CurrentUser } from '../auth/current-user.decorator';
 import type { AuthUser } from '../auth/auth-user.interface';
 
@@ -56,5 +56,13 @@ export class CustomerPlansController {
     @Body() dto: UpdateCustomerPlanDto,
   ) {
     return this.customerPlansService.update(user.tenantId, id, dto);
+  }
+  @Patch(':id/pay')
+  registerPayment(
+    @CurrentUser() user: AuthUser,
+    @Param('id') id: string,
+    @Body() dto: RegisterCustomerPlanPaymentDto,
+  ) {
+    return this.customerPlansService.registerPayment(user.tenantId, id, dto);
   }
 }

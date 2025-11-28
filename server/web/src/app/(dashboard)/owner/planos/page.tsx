@@ -9,14 +9,47 @@ import {
   createOwnerPlanTemplate,
   fetchOwnerServices,
   OwnerService,
+  payOwnerCustomerPlan, // <-- NOVO
 } from "../_api/owner-plans";
+
+import {
+  fetchOwnerLocations,
+  type OwnerLocation,
+} from "../_api/owner-services";
+
+function mapCustomerPlanDtoToPlanCustomer(dto: CustomerPlanDto): PlanCustomer {
+  return {
+    id: dto.id,
+    name: dto.customerName,
+    phone: dto.customerPhone ?? "",
+    startedAt: dto.currentCycleStart,
+    status: dto.status,
+    nextChargeDate: dto.currentCycleEnd,
+    nextChargeAmount: dto.planTemplate.priceCents / 100,
+  };
+}
 
 type FilterStatus = "all" | "active" | "inactive";
 
 export default function OwnerPlanosPage() {
   const searchParams = useSearchParams();
-  const locationId = searchParams.get("locationId") ?? undefined;
+  const initialLocationId = searchParams.get("locationId") ?? undefined;
 
+  // location selecionada para a tela inteira
+  const [selectedLocationId, setSelectedLocationId] = useState<
+    string | undefined
+  >(initialLocationId);
+
+  const [registeringPaymentId, setRegisteringPaymentId] = useState<
+    string | null
+  >(null);
+
+  // locations disponíveis
+  const [locations, setLocations] = useState<OwnerLocation[]>([]);
+  const [locationsLoading, setLocationsLoading] = useState(false);
+  const [locationsError, setLocationsError] = useState<string | null>(null);
+
+  // planos / stats / clientes
   const [data, setData] = useState<OwnerPlansData | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -33,6 +66,26 @@ export default function OwnerPlanosPage() {
   const [formVisits, setFormVisits] = useState("2"); // visitas por mês
   const [formMinDaysBetween, setFormMinDaysBetween] = useState("");
 
+  // adicionar cliente a um plano
+  const [isAddingCustomer, setIsAddingCustomer] = useState(false);
+  const [addCustomerName, setAddCustomerName] = useState("");
+  const [addCustomerPhone, setAddCustomerPhone] = useState("");
+  const [addCustomerLoading, setAddCustomerLoading] = useState(false);
+  const [addCustomerError, setAddCustomerError] = useState<string | null>(null);
+  // criação de cliente no plano selecionado
+  const [isCreatingCustomer, setIsCreatingCustomer] = useState(false);
+  const [newCustomerName, setNewCustomerName] = useState("");
+  const [newCustomerPhone, setNewCustomerPhone] = useState("");
+  const [createCustomerLoading, setCreateCustomerLoading] = useState(false);
+  const [createCustomerError, setCreateCustomerError] = useState<string | null>(
+    null
+  );
+
+  // novas regras
+  const [formStartTime, setFormStartTime] = useState(""); // ex: "15:00"
+  const [formEndTime, setFormEndTime] = useState(""); // ex: "18:00"
+  const [formAllowedWeekdays, setFormAllowedWeekdays] = useState<number[]>([]);
+
   // serviços e desconto
   const [services, setServices] = useState<OwnerService[]>([]);
   const [servicesLoading, setServicesLoading] = useState(false);
@@ -42,10 +95,69 @@ export default function OwnerPlanosPage() {
   const [discountPercent, setDiscountPercent] = useState<5 | 10 | 15>(10);
 
   const [priceAuto, setPriceAuto] = useState(true);
+  const [isServicePickerOpen, setIsServicePickerOpen] = useState(false);
 
-  // ---------------------------------------------------------------
-  // Carrega planos
-  // ---------------------------------------------------------------
+  const WEEKDAYS = [
+    { value: 1, label: "Seg" },
+    { value: 2, label: "Ter" },
+    { value: 3, label: "Qua" },
+    { value: 4, label: "Qui" },
+    { value: 5, label: "Sex" },
+    { value: 6, label: "Sáb" },
+    { value: 0, label: "Dom" },
+  ];
+  const WEEKDAY_LABEL_MAP: Record<number, string> = WEEKDAYS.reduce(
+    (acc, day) => {
+      acc[day.value] = day.label;
+      return acc;
+    },
+    {} as Record<number, string>
+  );
+  // ---------------------------------------------------------------------------
+  // Carregar locations (lista de unidades)
+  // ---------------------------------------------------------------------------
+  useEffect(() => {
+    let cancelled = false;
+
+    async function loadLocations() {
+      setLocationsLoading(true);
+      setLocationsError(null);
+      try {
+        const locs = await fetchOwnerLocations();
+        if (cancelled) return;
+
+        setLocations(locs);
+
+        if (locs.length > 0) {
+          setSelectedLocationId(
+            (prev) => prev || initialLocationId || locs[0].id
+          );
+        }
+      } catch (err: any) {
+        if (!cancelled) {
+          setLocationsError(
+            err?.message ?? "Erro ao carregar unidades (locations)."
+          );
+        }
+      } finally {
+        if (!cancelled) setLocationsLoading(false);
+      }
+    }
+
+    loadLocations();
+    return () => {
+      cancelled = true;
+    };
+  }, [initialLocationId]);
+
+  // sempre que mudar de unidade, limpamos os serviços selecionados
+  useEffect(() => {
+    setSelectedServiceIds([]);
+  }, [selectedLocationId]);
+
+  // ---------------------------------------------------------------------------
+  // Carrega planos (filtrando pela unidade selecionada, se houver)
+  // ---------------------------------------------------------------------------
   useEffect(() => {
     let cancelled = false;
 
@@ -53,7 +165,10 @@ export default function OwnerPlanosPage() {
       setLoading(true);
       setError(null);
       try {
-        const result = await fetchOwnerPlans({ locationId });
+        const result = await fetchOwnerPlans({
+          locationId: selectedLocationId,
+        });
+
         if (!cancelled) {
           setData(result);
           setSelectedId((prev) =>
@@ -75,15 +190,15 @@ export default function OwnerPlanosPage() {
     return () => {
       cancelled = true;
     };
-  }, [locationId]);
+  }, [selectedLocationId]);
 
-  // ---------------------------------------------------------------
-  // Carrega serviços da unidade
-  // ---------------------------------------------------------------
+  // ---------------------------------------------------------------------------
+  // Carrega serviços da unidade selecionada (para montar o plano)
+  // ---------------------------------------------------------------------------
   useEffect(() => {
     let cancelled = false;
 
-    if (!locationId) {
+    if (!selectedLocationId) {
       setServices([]);
       return;
     }
@@ -92,7 +207,9 @@ export default function OwnerPlanosPage() {
       setServicesLoading(true);
       setServicesError(null);
       try {
-        const result = await fetchOwnerServices({ locationId });
+        const result = await fetchOwnerServices({
+          locationId: selectedLocationId,
+        });
         if (!cancelled) {
           setServices(result);
         }
@@ -103,22 +220,19 @@ export default function OwnerPlanosPage() {
           );
         }
       } finally {
-        if (!cancelled) {
-          setServicesLoading(false);
-        }
+        if (!cancelled) setServicesLoading(false);
       }
     }
 
     loadServices();
-
     return () => {
       cancelled = true;
     };
-  }, [locationId]);
+  }, [selectedLocationId]);
 
-  // ---------------------------------------------------------------
+  // ---------------------------------------------------------------------------
   // Cálculo automático do preço (serviços × visitas × desconto)
-  // ---------------------------------------------------------------
+  // ---------------------------------------------------------------------------
   useEffect(() => {
     if (!priceAuto) return;
 
@@ -153,9 +267,9 @@ export default function OwnerPlanosPage() {
     discountPercent,
   ]);
 
-  // ---------------------------------------------------------------
+  // ---------------------------------------------------------------------------
   // Derivados para exibição (sugestão)
-  // ---------------------------------------------------------------
+  // ---------------------------------------------------------------------------
   const selectedServicesForDisplay = services.filter((s) =>
     selectedServiceIds.includes(s.id)
   );
@@ -172,14 +286,15 @@ export default function OwnerPlanosPage() {
   const suggestedPriceDisplay =
     discountedSuggested > 0 ? discountedSuggested.toFixed(2) : null;
 
-  // ---------------------------------------------------------------
+  // ---------------------------------------------------------------------------
   // Submit: criar plano
-  // ---------------------------------------------------------------
+  // ---------------------------------------------------------------------------
   async function handleCreatePlan(e: React.FormEvent<HTMLFormElement>) {
     e.preventDefault();
-    if (!locationId) {
+
+    if (!selectedLocationId) {
       setCreatingError(
-        "Para criar um plano, abre esta página a partir de uma unidade (location) específica."
+        "Para criar um plano, seleciona primeiro uma unidade (location)."
       );
       return;
     }
@@ -222,8 +337,45 @@ export default function OwnerPlanosPage() {
         );
       }
 
+      // ------- Horário opcional -------
+      const parseTime = (value: string): number | null => {
+        if (!value) return null;
+        const [hhStr, mmStr] = value.split(":");
+        const hh = Number(hhStr);
+        const mm = Number(mmStr);
+        if (
+          Number.isNaN(hh) ||
+          Number.isNaN(mm) ||
+          hh < 0 ||
+          hh > 23 ||
+          mm < 0 ||
+          mm > 59
+        ) {
+          return null;
+        }
+        return hh * 60 + mm;
+      };
+
+      const startMinutes = parseTime(formStartTime);
+      const endMinutes = parseTime(formEndTime);
+
+      if (formStartTime && startMinutes == null) {
+        throw new Error("Horário inicial inválido. Use o formato HH:MM.");
+      }
+      if (formEndTime && endMinutes == null) {
+        throw new Error("Horário final inválido. Use o formato HH:MM.");
+      }
+      if (
+        startMinutes != null &&
+        endMinutes != null &&
+        endMinutes <= startMinutes
+      ) {
+        throw new Error("Horário final deve ser maior que o horário inicial.");
+      }
+
+      // ------- Chamada correta para criar o plano -------
       const created = await createOwnerPlanTemplate({
-        locationId,
+        locationId: selectedLocationId,
         name,
         description,
         priceEuro: priceNumber,
@@ -231,7 +383,16 @@ export default function OwnerPlanosPage() {
         visitsPerInterval: visitsNumber,
         sameDayServiceIds: selectedServiceIds,
         minDaysBetweenVisits: minDaysBetweenNumber,
+        allowedWeekdays:
+          formAllowedWeekdays.length > 0 ? formAllowedWeekdays : undefined,
+        allowedStartTimeMinutes: startMinutes ?? undefined,
+        allowedEndTimeMinutes: endMinutes ?? undefined,
       });
+
+      // limpa campos de horário/dias
+      setFormStartTime("");
+      setFormEndTime("");
+      setFormAllowedWeekdays([]);
 
       // Atualiza estado local com o novo plano
       setData((prev) => {
@@ -283,11 +444,109 @@ export default function OwnerPlanosPage() {
       setCreatingLoading(false);
     }
   }
+  // ---------------------------------------------------------------------------
+  // Registrar pagamento de um plano de cliente
+  // ---------------------------------------------------------------------------
+  async function handleRegisterPayment(customer: PlanCustomer) {
+    if (!selectedPlan || !selectedLocationId) {
+      // sem plano selecionado ou unidade, não faz sentido registrar pagamento
+      return;
+    }
 
-  // ---------------------------------------------------------------
+    const confirmMsg = `Registrar pagamento de € ${selectedPlan.price.toFixed(
+      2
+    )} para ${customer.name}?`;
+
+    if (!window.confirm(confirmMsg)) {
+      return;
+    }
+
+    try {
+      setRegisteringPaymentId(customer.id);
+      setError(null);
+
+      // 1) Chama backend para marcar pagamento e girar ciclo
+      await payOwnerCustomerPlan({
+        customerPlanId: customer.id,
+        amountEuro: selectedPlan.price,
+      });
+
+      // 2) Recarrega planos + clientes da unidade atual
+      const result = await fetchOwnerPlans({
+        locationId: selectedLocationId,
+      });
+      setData(result);
+    } catch (err: any) {
+      console.error(err);
+      setError(
+        err?.message ?? "Erro ao registrar pagamento do plano deste cliente."
+      );
+    } finally {
+      setRegisteringPaymentId(null);
+    }
+  }
+
+  async function handleCreateCustomer(e: React.FormEvent<HTMLFormElement>) {
+    e.preventDefault();
+
+    if (!selectedLocationId) {
+      setCreateCustomerError(
+        "Seleciona uma unidade antes de adicionar clientes ao plano."
+      );
+      return;
+    }
+
+    if (!selectedPlan) {
+      setCreateCustomerError(
+        "Seleciona primeiro um plano para adicionar clientes."
+      );
+      return;
+    }
+
+    try {
+      setCreateCustomerLoading(true);
+      setCreateCustomerError(null);
+
+      const name = newCustomerName.trim();
+      const phone = newCustomerPhone.trim();
+
+      if (!name) {
+        throw new Error("Nome do cliente é obrigatório.");
+      }
+
+      // chama o backend para criar o CustomerPlan
+      await createOwnerCustomerPlan({
+        planTemplateId: selectedPlan.id,
+        customerName: name,
+        customerPhone: phone || undefined,
+      });
+
+      // depois refaz o fetch dos planos para atualizar stats + lista de clientes
+      const updated = await fetchOwnerPlans({
+        locationId: selectedLocationId,
+      });
+
+      setData(updated);
+      setSelectedId(selectedPlan.id); // garante que continua no mesmo plano
+
+      // limpa form
+      setNewCustomerName("");
+      setNewCustomerPhone("");
+      setIsCreatingCustomer(false);
+    } catch (err: any) {
+      console.error(err);
+      setCreateCustomerError(
+        err?.message ?? "Erro ao adicionar cliente ao plano."
+      );
+    } finally {
+      setCreateCustomerLoading(false);
+    }
+  }
+
+  // ---------------------------------------------------------------------------
   // Estados globais de loading/erro
-  // ---------------------------------------------------------------
-  if (loading) {
+  // ---------------------------------------------------------------------------
+  if (loading && !data) {
     return (
       <div className="p-4 text-xs text-slate-400">
         Carregando planos de assinatura...
@@ -330,10 +589,49 @@ export default function OwnerPlanosPage() {
   const customers: PlanCustomer[] = selectedId
     ? planCustomersByPlan[selectedId] ?? []
     : [];
+  // textos derivados para mostrar as regras do plano selecionado
+  let selectedPlanWeekdaysLabel = "";
+  let selectedPlanTimeWindowLabel = "";
 
-  // ---------------------------------------------------------------
+  if (selectedPlan) {
+    const sp: any = selectedPlan;
+
+    // dias permitidos
+    const days: number[] | undefined = sp.allowedWeekdays;
+    if (days && days.length > 0) {
+      selectedPlanWeekdaysLabel = days
+        .slice()
+        .sort((a, b) => a - b)
+        .map((d) => WEEKDAY_LABEL_MAP[d] ?? String(d))
+        .join(", ");
+    } else {
+      selectedPlanWeekdaysLabel = "Qualquer dia da semana";
+    }
+
+    // função pra formatar minutos -> HH:MM
+    const formatTime = (minutes: number) => {
+      const h = Math.floor(minutes / 60);
+      const m = minutes % 60;
+      return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}`;
+    };
+
+    const start: number | undefined = sp.allowedStartTimeMinutes;
+    const end: number | undefined = sp.allowedEndTimeMinutes;
+
+    if (start == null && end == null) {
+      selectedPlanTimeWindowLabel = "Qualquer horário de funcionamento";
+    } else if (start != null && end != null) {
+      selectedPlanTimeWindowLabel = `${formatTime(start)} — ${formatTime(end)}`;
+    } else if (start != null) {
+      selectedPlanTimeWindowLabel = `A partir de ${formatTime(start)}`;
+    } else if (end != null) {
+      selectedPlanTimeWindowLabel = `Até ${formatTime(end)}`;
+    }
+  }
+
+  // ---------------------------------------------------------------------------
   // Render
-  // ---------------------------------------------------------------
+  // ---------------------------------------------------------------------------
   return (
     <>
       {/* Cabeçalho */}
@@ -417,10 +715,15 @@ export default function OwnerPlanosPage() {
             <p className="mb-2 text-[11px] text-rose-300">{creatingError}</p>
           )}
 
-          {!locationId && (
+          {locationsError && (
+            <p className="mb-2 text-[11px] text-rose-300">{locationsError}</p>
+          )}
+
+          {locations.length === 0 && !locationsLoading && (
             <p className="mb-2 text-[11px] text-amber-300">
-              ⚠ Para criar um plano, abre esta página a partir de uma unidade
-              (location) específica.
+              ⚠ Ainda não há nenhuma unidade (location) criada para este espaço.
+              Cria primeiro as unidades no módulo de Locations para poder
+              cadastrar planos vinculados.
             </p>
           )}
 
@@ -428,8 +731,40 @@ export default function OwnerPlanosPage() {
             onSubmit={handleCreatePlan}
             className="grid grid-cols-1 md:grid-cols-2 gap-3"
           >
-            {/* Coluna esquerda: nome, descrição, serviços */}
+            {/* Coluna esquerda: unidade, nome, descrição, serviços */}
             <div className="space-y-3">
+              <div>
+                <label className="text-[11px] text-slate-300">
+                  Unidade (location)
+                </label>
+                {locationsLoading ? (
+                  <p className="mt-1 text-[11px] text-slate-500">
+                    Carregando unidades...
+                  </p>
+                ) : locations.length === 0 ? (
+                  <p className="mt-1 text-[11px] text-slate-500">
+                    Ainda não há unidades cadastradas.
+                  </p>
+                ) : (
+                  <select
+                    className="mt-1 w-full rounded-lg border border-slate-800 bg-slate-950 px-3 py-2 text-[11px] text-slate-100 outline-none focus:border-emerald-500"
+                    value={selectedLocationId ?? ""}
+                    onChange={(e) =>
+                      setSelectedLocationId(
+                        e.target.value ? e.target.value : undefined
+                      )
+                    }
+                  >
+                    <option value="">Seleciona uma unidade...</option>
+                    {locations.map((loc) => (
+                      <option key={loc.id} value={loc.id}>
+                        {loc.name}
+                      </option>
+                    ))}
+                  </select>
+                )}
+              </div>
+
               <div>
                 <label className="text-[11px] text-slate-300">
                   Nome do plano
@@ -456,50 +791,81 @@ export default function OwnerPlanosPage() {
                 <label className="text-[11px] text-slate-300">
                   Serviços incluídos no plano
                 </label>
-                {servicesLoading ? (
-                  <p className="mt-1 text-[11px] text-slate-500">
-                    Carregando serviços...
+
+                {/* Resumo + botão abrir/fechar */}
+                <div className="mt-1 flex items-center justify-between gap-2">
+                  <p className="text-[11px] text-slate-500 truncate">
+                    {selectedServiceIds.length === 0
+                      ? "Nenhum serviço selecionado."
+                      : `${selectedServiceIds.length} serviço(s) selecionado(s)`}
                   </p>
-                ) : servicesError ? (
-                  <p className="mt-1 text-[11px] text-rose-300">
-                    {servicesError}
-                  </p>
-                ) : services.length === 0 ? (
-                  <p className="mt-1 text-[11px] text-slate-500">
-                    Ainda não há serviços cadastrados nesta unidade.
-                  </p>
-                ) : (
-                  <div className="mt-2 flex flex-wrap gap-2">
-                    {services.map((service) => {
-                      const checked = selectedServiceIds.includes(service.id);
-                      return (
-                        <button
-                          key={service.id}
-                          type="button"
-                          onClick={() =>
-                            setSelectedServiceIds((prev) =>
-                              checked
-                                ? prev.filter((id) => id !== service.id)
-                                : [...prev, service.id]
-                            )
-                          }
-                          className={[
-                            "rounded-full border px-3 py-1 text-[11px]",
-                            checked
-                              ? "border-emerald-500 bg-emerald-500/10 text-emerald-100"
-                              : "border-slate-700 bg-slate-950 text-slate-200 hover:border-slate-500",
-                          ].join(" ")}
-                        >
-                          {service.name} · € {service.priceEuro.toFixed(2)}
-                        </button>
-                      );
-                    })}
+
+                  <button
+                    type="button"
+                    className="rounded-full border border-slate-700 bg-slate-900 px-3 py-1 text-[11px] text-slate-100 hover:border-emerald-500 hover:text-emerald-200"
+                    onClick={() => setIsServicePickerOpen((prev) => !prev)}
+                  >
+                    {isServicePickerOpen
+                      ? "Fechar seleção"
+                      : "Selecionar serviços"}
+                  </button>
+                </div>
+
+                {/* Lista expandida de serviços */}
+                {isServicePickerOpen && (
+                  <div className="mt-2 rounded-lg border border-slate-800 bg-slate-950/80 p-2 max-h-40 overflow-y-auto">
+                    {selectedLocationId == null && locations.length > 0 ? (
+                      <p className="text-[11px] text-slate-500">
+                        Seleciona uma unidade para ver os serviços disponíveis.
+                      </p>
+                    ) : servicesLoading ? (
+                      <p className="text-[11px] text-slate-500">
+                        Carregando serviços...
+                      </p>
+                    ) : servicesError ? (
+                      <p className="text-[11px] text-rose-300">
+                        {servicesError}
+                      </p>
+                    ) : services.length === 0 ? (
+                      <p className="text-[11px] text-slate-500">
+                        Ainda não há serviços cadastrados nesta unidade.
+                      </p>
+                    ) : (
+                      <div className="flex flex-wrap gap-2">
+                        {services.map((service) => {
+                          const checked = selectedServiceIds.includes(
+                            service.id
+                          );
+                          return (
+                            <button
+                              key={service.id}
+                              type="button"
+                              onClick={() =>
+                                setSelectedServiceIds((prev) =>
+                                  checked
+                                    ? prev.filter((id) => id !== service.id)
+                                    : [...prev, service.id]
+                                )
+                              }
+                              className={[
+                                "rounded-full border px-3 py-1 text-[11px]",
+                                checked
+                                  ? "border-emerald-500 bg-emerald-500/10 text-emerald-100"
+                                  : "border-slate-700 bg-slate-950 text-slate-200 hover:border-slate-500",
+                              ].join(" ")}
+                            >
+                              {service.name} · € {service.priceEuro.toFixed(2)}
+                            </button>
+                          );
+                        })}
+                      </div>
+                    )}
                   </div>
                 )}
               </div>
             </div>
 
-            {/* Coluna direita: preço, visitas, intervalo mínimo, desconto */}
+            {/* Coluna direita: preço, visitas, regras, desconto */}
             <div className="space-y-3">
               <div className="grid grid-cols-3 gap-2">
                 <div>
@@ -607,10 +973,74 @@ export default function OwnerPlanosPage() {
                 )}
               </div>
 
+              {/* Regras de horário e dias (opcionais) */}
+              <div className="mt-2 rounded-lg border border-slate-800 bg-slate-950/60 p-3 space-y-2">
+                <p className="text-[11px] text-slate-300">
+                  Janela de horário & dias (opcional)
+                </p>
+
+                <div className="grid grid-cols-2 gap-2">
+                  <div>
+                    <label className="text-[10px] text-slate-400">
+                      Hora inicial
+                    </label>
+                    <input
+                      type="time"
+                      value={formStartTime}
+                      onChange={(e) => setFormStartTime(e.target.value)}
+                      className="mt-1 w-full rounded-lg border border-slate-800 bg-slate-950 px-2 py-1 text-[11px] text-slate-100 outline-none focus:border-emerald-500"
+                    />
+                  </div>
+                  <div>
+                    <label className="text-[10px] text-slate-400">
+                      Hora final
+                    </label>
+                    <input
+                      type="time"
+                      value={formEndTime}
+                      onChange={(e) => setFormEndTime(e.target.value)}
+                      className="mt-1 w-full rounded-lg border border-slate-800 bg-slate-950 px-2 py-1 text-[11px] text-slate-100 outline-none focus:border-emerald-500"
+                    />
+                  </div>
+                </div>
+
+                <div>
+                  <p className="mb-1 text-[10px] text-slate-400">
+                    Dias permitidos (opcional)
+                  </p>
+                  <div className="flex flex-wrap gap-1">
+                    {WEEKDAYS.map((day) => {
+                      const active = formAllowedWeekdays.includes(day.value);
+                      return (
+                        <button
+                          key={day.value}
+                          type="button"
+                          onClick={() =>
+                            setFormAllowedWeekdays((prev) =>
+                              active
+                                ? prev.filter((v) => v !== day.value)
+                                : [...prev, day.value]
+                            )
+                          }
+                          className={[
+                            "rounded-full px-2 py-[3px] text-[10px] border",
+                            active
+                              ? "border-emerald-500 bg-emerald-500/15 text-emerald-100"
+                              : "border-slate-700 bg-slate-900 text-slate-300 hover:border-slate-500",
+                          ].join(" ")}
+                        >
+                          {day.label}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+              </div>
+
               <div className="pt-2">
                 <button
                   type="submit"
-                  disabled={creatingLoading || !locationId}
+                  disabled={creatingLoading || !selectedLocationId}
                   className="inline-flex items-center justify-center rounded-lg bg-emerald-500 px-4 py-2 text-[11px] font-medium text-slate-950 hover:bg-emerald-400 disabled:opacity-60"
                 >
                   {creatingLoading ? "Criando..." : "Salvar plano"}
@@ -736,6 +1166,7 @@ export default function OwnerPlanosPage() {
                 </div>
 
                 <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                  {/* Estado do plano */}
                   <div className="rounded-xl border border-slate-800 bg-slate-950/60 p-3">
                     <p className="text-[11px] text-slate-400">
                       Estado do plano
@@ -749,27 +1180,146 @@ export default function OwnerPlanosPage() {
                     </p>
                   </div>
 
+                  {/* Regras de uso */}
                   <div className="rounded-xl border border-slate-800 bg-slate-950/60 p-3">
-                    <p className="text-[11px] text-slate-400">
-                      Integração backend
+                    <p className="text-[11px] text-slate-400">Regras de uso</p>
+                    <p className="mt-1 text-[11px] text-slate-300">
+                      Dias permitidos:{" "}
+                      <span className="text-slate-100">
+                        {selectedPlanWeekdaysLabel || "Não definido"}
+                      </span>
                     </p>
-                    <p className="mt-1 text-sm font-semibold">PlanTemplate</p>
-                    <p className="mt-1 text-[11px] text-slate-500">
-                      Estes dados vêm diretamente da tabela de templates de
-                      plano.
+                    <p className="mt-1 text-[11px] text-slate-300">
+                      Horário permitido:{" "}
+                      <span className="text-slate-100">
+                        {selectedPlanTimeWindowLabel || "Não definido"}
+                      </span>
+                    </p>
+                    {selectedPlan.minDaysBetweenVisits && (
+                      <p className="mt-1 text-[11px] text-slate-300">
+                        Intervalo mínimo:{" "}
+                        <span className="text-slate-100">
+                          {selectedPlan.minDaysBetweenVisits} dia(s)
+                        </span>
+                      </p>
+                    )}
+                    <p className="mt-1 text-[10px] text-slate-500">
+                      Estas regras são opcionais. Se não forem definidas, o
+                      plano é válido em qualquer dia e horário.
                     </p>
                   </div>
 
+                  {/* Cobranças & pagamentos */}
+                  {/* Cobranças & pagamentos */}
                   <div className="rounded-xl border border-slate-800 bg-slate-950/60 p-3">
                     <p className="text-[11px] text-slate-400">
                       Cobranças &amp; pagamentos
                     </p>
+
                     <p className="mt-1 text-sm font-semibold">
-                      CustomerPlanPayment
+                      {customers.length} cliente
+                      {customers.length === 1 ? "" : "s"} com este plano
                     </p>
-                    <p className="mt-1 text-[11px] text-slate-500">
-                      Aqui vamos ligar o status (pending, paid, late) por
-                      cliente.
+
+                    {customers.length === 0 ? (
+                      <p className="mt-1 text-[11px] text-slate-500">
+                        Ainda não há clientes com este plano. Assim que
+                        começarem a aderir, vais ver aqui o status de uso e de
+                        pagamento.
+                      </p>
+                    ) : (
+                      <div className="mt-2 max-h-40 overflow-y-auto space-y-2">
+                        {customers.map((c) => {
+                          // status de uso (plano)
+                          const usageStatusLabel = (() => {
+                            if (c.status === "active") return "Em uso";
+                            if (c.status === "cancelled") return "Cancelado";
+                            if (c.status === "suspended") return "Suspenso";
+                            return c.status;
+                          })();
+
+                          // status financeiro baseado na próxima cobrança + 8 dias
+                          const financialStatus = (() => {
+                            if (!c.nextChargeDate || !c.nextChargeAmount) {
+                              return {
+                                label: "Sem dados de cobrança",
+                                variant: "neutral" as const,
+                              };
+                            }
+
+                            const nextDate = new Date(c.nextChargeDate);
+                            const dueDate = new Date(nextDate);
+                            dueDate.setDate(dueDate.getDate() + 8);
+
+                            const now = new Date();
+
+                            if (now <= dueDate) {
+                              return {
+                                label: "Em dia",
+                                variant: "ok" as const,
+                              };
+                            }
+
+                            return {
+                              label: "Pagamento em atraso",
+                              variant: "late" as const,
+                            };
+                          })();
+
+                          const badgeBase =
+                            "inline-flex rounded-full px-2 py-[1px] text-[9px]";
+                          const badgeClass =
+                            financialStatus.variant === "ok"
+                              ? "bg-emerald-500/20 text-emerald-100"
+                              : financialStatus.variant === "late"
+                              ? "bg-amber-500/20 text-amber-100"
+                              : "bg-slate-700 text-slate-200";
+
+                          return (
+                            <div
+                              key={c.id}
+                              className="rounded-lg border border-slate-800 bg-slate-900/80 px-3 py-2"
+                            >
+                              <div className="flex items-center justify-between gap-2">
+                                <div>
+                                  <p className="text-[11px] font-medium">
+                                    {c.name}
+                                  </p>
+                                  <p className="text-[10px] text-slate-400">
+                                    Uso: {usageStatusLabel}
+                                  </p>
+                                  {c.nextChargeAmount && (
+                                    <p className="text-[10px] text-slate-400">
+                                      Próxima cobrança: €{" "}
+                                      {c.nextChargeAmount.toFixed(2)}
+                                    </p>
+                                  )}
+                                </div>
+
+                                <div className="text-right">
+                                  <span
+                                    className={`${badgeBase} ${badgeClass}`}
+                                  >
+                                    {financialStatus.label}
+                                  </span>
+                                  {c.nextChargeDate && (
+                                    <p className="mt-1 text-[9px] text-slate-500">
+                                      Pagamento até 8 dias após{" "}
+                                      {c.nextChargeDate}
+                                    </p>
+                                  )}
+                                </div>
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    )}
+
+                    <p className="mt-2 text-[10px] text-slate-500">
+                      Regra visual atual: consideramos o pagamento em dia até 8
+                      dias depois da data de próxima cobrança. Depois disso, o
+                      cliente aparece como pagamento em atraso.
                     </p>
                   </div>
                 </div>
@@ -828,10 +1378,85 @@ export default function OwnerPlanosPage() {
             <div className="rounded-2xl border border-slate-800 bg-slate-900/60 p-4">
               <div className="flex items-center justify-between mb-3">
                 <p className="text-slate-400">Clientes neste plano</p>
-                <button className="text-[11px] text-emerald-400 hover:underline">
-                  Ver todos os pagamentos
-                </button>
+                <div className="flex gap-2">
+                  <button className="text-[11px] text-emerald-400 hover:underline">
+                    Ver todos os pagamentos
+                  </button>
+                  {selectedPlan && (
+                    <button
+                      type="button"
+                      onClick={() => setIsCreatingCustomer((prev) => !prev)}
+                      className="text-[11px] text-emerald-400 hover:underline"
+                    >
+                      {isCreatingCustomer ? "Fechar form" : "Adicionar cliente"}
+                    </button>
+                  )}
+                </div>
               </div>
+              {createCustomerError && (
+                <p className="mb-2 text-[11px] text-rose-300">
+                  {createCustomerError}
+                </p>
+              )}
+
+              {isCreatingCustomer && selectedPlan && (
+                <form
+                  onSubmit={handleCreateCustomer}
+                  className="mb-3 rounded-xl border border-slate-800 bg-slate-950/70 p-3 space-y-2"
+                >
+                  <p className="text-[11px] text-slate-300">
+                    Adicionar cliente a{" "}
+                    <span className="font-semibold">{selectedPlan.name}</span>
+                  </p>
+
+                  <div className="grid grid-cols-1 gap-2">
+                    <div>
+                      <label className="text-[10px] text-slate-400">
+                        Nome do cliente
+                      </label>
+                      <input
+                        className="mt-1 w-full rounded-lg border border-slate-800 bg-slate-950 px-3 py-2 text-[11px] text-slate-100 outline-none focus:border-emerald-500"
+                        value={newCustomerName}
+                        onChange={(e) => setNewCustomerName(e.target.value)}
+                        required
+                      />
+                    </div>
+                    <div>
+                      <label className="text-[10px] text-slate-400">
+                        Telefone (opcional)
+                      </label>
+                      <input
+                        className="mt-1 w-full rounded-lg border border-slate-800 bg-slate-950 px-3 py-2 text-[11px] text-slate-100 outline-none focus:border-emerald-500"
+                        value={newCustomerPhone}
+                        onChange={(e) => setNewCustomerPhone(e.target.value)}
+                      />
+                    </div>
+                  </div>
+
+                  <div className="flex justify-end gap-2 pt-1">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        if (createCustomerLoading) return;
+                        setIsCreatingCustomer(false);
+                        setCreateCustomerError(null);
+                      }}
+                      className="text-[11px] text-slate-300 hover:text-slate-100"
+                    >
+                      Cancelar
+                    </button>
+                    <button
+                      type="submit"
+                      disabled={createCustomerLoading}
+                      className="rounded-lg bg-emerald-500 px-3 py-1 text-[11px] font-medium text-slate-950 hover:bg-emerald-400 disabled:opacity-60"
+                    >
+                      {createCustomerLoading
+                        ? "Adicionando..."
+                        : "Adicionar ao plano"}
+                    </button>
+                  </div>
+                </form>
+              )}
 
               {customers.length === 0 ? (
                 <p className="text-[11px] text-slate-500">
@@ -857,7 +1482,19 @@ export default function OwnerPlanosPage() {
                             Próx. cobrança: {c.nextChargeDate}
                           </p>
                         )}
+
                         <PlanCustomerStatusBadge status={c.status} />
+
+                        <button
+                          type="button"
+                          onClick={() => handleRegisterPayment(c)}
+                          disabled={registeringPaymentId === c.id}
+                          className="mt-1 inline-flex items-center justify-center rounded-full border border-emerald-600 bg-emerald-600/20 px-2 py-[2px] text-[9px] text-emerald-50 hover:bg-emerald-500/30 disabled:opacity-60"
+                        >
+                          {registeringPaymentId === c.id
+                            ? "Registrando..."
+                            : "Registrar pagamento"}
+                        </button>
                       </div>
                     </div>
                   ))}

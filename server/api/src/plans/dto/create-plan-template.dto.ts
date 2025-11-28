@@ -7,6 +7,7 @@ import {
   IsString,
   Matches,
   Min,
+  Max,
 } from 'class-validator';
 
 // aceita CUID (c + 24) OU UUID v4
@@ -95,4 +96,27 @@ export class CreatePlanTemplateDto {
   @IsInt()
   @Min(1)
   minDaysBetweenVisits?: number;
+  @ApiProperty({
+    required: false,
+    example: 9 * 60, // 09:00
+    description:
+      'Horário inicial permitido em minutos a partir da meia-noite (0–1439). Ex: 540 = 09:00',
+  })
+  @IsOptional()
+  @IsInt()
+  @Min(0)
+  @Max(1439)
+  allowedStartTimeMinutes?: number;
+
+  @ApiProperty({
+    required: false,
+    example: 18 * 60, // 18:00
+    description:
+      'Horário final permitido em minutos a partir da meia-noite (0–1439). Deve ser > inicial.',
+  })
+  @IsOptional()
+  @IsInt()
+  @Min(0)
+  @Max(1439)
+  allowedEndTimeMinutes?: number;
 }

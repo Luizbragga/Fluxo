@@ -7,6 +7,8 @@ import {
   type OwnerService,
   type OwnerServiceStats,
   createOwnerService,
+  fetchOwnerLocations,
+  type OwnerLocation,
 } from "../_api/owner-services";
 
 export default function OwnerServicosPage() {
@@ -22,9 +24,13 @@ export default function OwnerServicosPage() {
   // estado do formulário de criação
   const [showCreateForm, setShowCreateForm] = useState(false);
   const [createName, setCreateName] = useState("");
-  const [createDuration, setCreateDuration] = useState(30);
-  const [createBasePrice, setCreateBasePrice] = useState(0);
+  const [createDuration, setCreateDuration] = useState<string>(""); // duração como string
+  const [createBasePrice, setCreateBasePrice] = useState<string>(""); // preço como string
   const [isSaving, setIsSaving] = useState(false);
+
+  // unidades (locations) disponíveis para o tenant
+  const [locations, setLocations] = useState<OwnerLocation[]>([]);
+  const [createLocationId, setCreateLocationId] = useState<string>("");
 
   // carrega serviços (filtrando por locationId se vier na URL)
   useEffect(() => {
@@ -53,18 +59,53 @@ export default function OwnerServicosPage() {
     load();
   }, [locationId]);
 
+  // carrega lista de locations do tenant (para o select do formulário)
+  useEffect(() => {
+    async function loadLocations() {
+      try {
+        const locs = await fetchOwnerLocations();
+        setLocations(locs);
+
+        if (locs.length > 0) {
+          // se já veio locationId na URL, usamos como default
+          setCreateLocationId((prev) => prev || locationId || locs[0].id);
+        }
+      } catch (err) {
+        console.error("Erro ao carregar locations:", err);
+      }
+    }
+
+    loadLocations();
+  }, [locationId]);
+
   async function handleCreateService(e: React.FormEvent) {
     e.preventDefault();
 
-    if (!locationId) {
-      setError(
-        "Para criar um serviço vinculado, abre esta página a partir de uma unidade (location) específica."
-      );
+    if (!createLocationId) {
+      setError("Seleciona uma unidade para salvar o serviço.");
       return;
     }
 
     if (!createName.trim()) {
       setError("Dá um nome para o serviço antes de salvar.");
+      return;
+    }
+
+    // converte duração para número
+    const duration = Number(createDuration);
+    if (!createDuration || Number.isNaN(duration) || duration < 5) {
+      setError("A duração mínima do serviço é de 5 minutos.");
+      return;
+    }
+
+    // converte preço base: vazio significa 0
+    const basePrice =
+      createBasePrice.trim() === ""
+        ? 0
+        : Number(createBasePrice.replace(",", "."));
+
+    if (Number.isNaN(basePrice) || basePrice < 0) {
+      setError("Preço base inválido.");
       return;
     }
 
@@ -74,19 +115,19 @@ export default function OwnerServicosPage() {
 
       await createOwnerService({
         name: createName.trim(),
-        durationMinutes: createDuration,
-        basePrice: createBasePrice,
-        locationId,
+        durationMinutes: duration,
+        basePrice,
+        locationId: createLocationId,
       });
 
-      // limpa form
       setCreateName("");
-      setCreateDuration(30);
-      setCreateBasePrice(0);
+      setCreateDuration("");
+      setCreateBasePrice("");
 
       // recarrega lista
       const { services: updatedServices, stats: updatedStats } =
-        await fetchOwnerServices(locationId);
+        await fetchOwnerServices(locationId ?? undefined);
+
       setServices(updatedServices);
       setStats(updatedStats);
       setSelectedId((prev) => prev ?? updatedServices[0]?.id ?? null);
@@ -103,12 +144,19 @@ export default function OwnerServicosPage() {
     }
   }
 
+  // serviço / stats selecionados
   const selectedService = services.find((s) => s.id === selectedId) ?? null;
-
   const selectedStats =
     selectedService != null
       ? stats.find((st) => st.serviceId === selectedService.id) ?? null
       : null;
+
+  // validação da duração (para o botão ficar habilitado)
+  const durationNumber = Number(createDuration);
+  const isDurationValid =
+    createDuration !== "" &&
+    !Number.isNaN(durationNumber) &&
+    durationNumber >= 5;
 
   return (
     <>
@@ -147,16 +195,16 @@ export default function OwnerServicosPage() {
         </div>
       </header>
 
-      {/* Aviso quando não há location na URL */}
-      {!locationId && (
+      {/* Aviso quando não há locations */}
+      {locations.length === 0 && (
         <div className="mb-4 rounded-lg border border-amber-500/40 bg-amber-900/30 px-3 py-2 text-[11px] text-amber-100">
-          Para vincular serviços a uma unidade específica, abre esta página a
-          partir de uma unidade (location) específica. Sem location, os serviços
-          ficam gerais do tenant e não aparecem nos planos ligados à unidade.
+          Ainda não há nenhuma unidade (location) criada para este espaço. Cria
+          primeiro as unidades no módulo de Locations para poder cadastrar
+          serviços vinculados.
         </div>
       )}
 
-      {/* Formulário de criação de serviço (só aparece quando clicar) */}
+      {/* Formulário de criação de serviço */}
       {showCreateForm && (
         <section
           id="novo-servico-form"
@@ -174,6 +222,24 @@ export default function OwnerServicosPage() {
             onSubmit={handleCreateService}
             className="grid grid-cols-1 gap-3 md:grid-cols-3"
           >
+            <div className="md:col-span-1">
+              <label className="mb-1 block text-[11px] text-slate-400">
+                Unidade (location)
+              </label>
+              <select
+                value={createLocationId}
+                onChange={(e) => setCreateLocationId(e.target.value)}
+                className="w-full rounded-lg border border-slate-800 bg-slate-950/70 px-3 py-2 text-[11px] text-slate-200 focus:outline-none focus:ring-1 focus:ring-emerald-500"
+              >
+                <option value="">Seleciona uma unidade...</option>
+                {locations.map((loc) => (
+                  <option key={loc.id} value={loc.id}>
+                    {loc.name}
+                  </option>
+                ))}
+              </select>
+            </div>
+
             <div className="md:col-span-1">
               <label className="mb-1 block text-[11px] text-slate-400">
                 Nome do serviço
@@ -195,9 +261,9 @@ export default function OwnerServicosPage() {
                 min={5}
                 max={480}
                 value={createDuration}
-                onChange={(e) =>
-                  setCreateDuration(Math.max(5, Number(e.target.value) || 0))
-                }
+                onChange={(e) => {
+                  setCreateDuration(e.target.value);
+                }}
                 className="w-full rounded-lg border border-slate-800 bg-slate-950/70 px-3 py-2 text-[11px] text-slate-200 focus:outline-none focus:ring-1 focus:ring-emerald-500"
               />
             </div>
@@ -212,28 +278,29 @@ export default function OwnerServicosPage() {
                   min={0}
                   step={0.5}
                   value={createBasePrice}
-                  onChange={(e) =>
-                    setCreateBasePrice(Math.max(0, Number(e.target.value) || 0))
-                  }
+                  onChange={(e) => {
+                    setCreateBasePrice(e.target.value);
+                  }}
                   className="w-full rounded-lg border border-slate-800 bg-slate-950/70 px-3 py-2 text-[11px] text-slate-200 focus:outline-none focus:ring-1 focus:ring-emerald-500"
                 />
+
                 <button
                   type="submit"
                   disabled={
-                    !locationId ||
+                    !createLocationId ||
                     isSaving ||
                     !createName.trim() ||
-                    createDuration <= 0
+                    !isDurationValid
                   }
                   className={[
                     "whitespace-nowrap rounded-lg px-4 py-2 text-[11px] font-semibold transition-colors",
-                    !locationId || isSaving
+                    !createLocationId || isSaving
                       ? "cursor-not-allowed border border-slate-700 bg-slate-800/60 text-slate-400"
                       : "border border-emerald-600 bg-emerald-600/80 text-emerald-50 hover:bg-emerald-500",
                   ].join(" ")}
                 >
-                  {!locationId
-                    ? "Seleciona uma unidade para salvar"
+                  {!createLocationId
+                    ? "Seleciona uma unidade"
                     : isSaving
                     ? "Salvando..."
                     : "Salvar serviço"}

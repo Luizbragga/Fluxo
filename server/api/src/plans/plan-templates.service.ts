@@ -37,6 +37,8 @@ export class PlanTemplatesService {
         sameDayServiceIds: dto.sameDayServiceIds ?? [],
         allowedWeekdays: dto.allowedWeekdays ?? [],
         minDaysBetweenVisits: dto.minDaysBetweenVisits ?? null,
+        allowedStartTimeMinutes: dto.allowedStartTimeMinutes ?? null,
+        allowedEndTimeMinutes: dto.allowedEndTimeMinutes ?? null,
       },
     });
   }
@@ -85,6 +87,8 @@ export class PlanTemplatesService {
       sameDayServiceIds: dto.sameDayServiceIds,
       allowedWeekdays: dto.allowedWeekdays,
       minDaysBetweenVisits: dto.minDaysBetweenVisits,
+      allowedStartTimeMinutes: dto.allowedStartTimeMinutes,
+      allowedEndTimeMinutes: dto.allowedEndTimeMinutes,
     };
 
     if (dto.locationId) {

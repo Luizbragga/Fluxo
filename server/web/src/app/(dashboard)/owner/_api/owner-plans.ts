@@ -14,6 +14,8 @@ type PlanTemplateDto = {
   sameDayServiceIds: string[] | null;
   allowedWeekdays: number[] | null;
   minDaysBetweenVisits: number | null;
+  allowedStartTimeMinutes: number | null;
+  allowedEndTimeMinutes: number | null;
   active?: boolean;
   createdAt?: string;
   updatedAt?: string;
@@ -21,7 +23,8 @@ type PlanTemplateDto = {
 
 type CustomerPlanStatusDto = string; // "active", "late", "cancelled"...
 
-type CustomerPlanDto = {
+// antes: type CustomerPlanDto = { ... }
+export type CustomerPlanDto = {
   id: string;
   tenantId: string;
   locationId: string;
@@ -31,8 +34,16 @@ type CustomerPlanDto = {
   status: CustomerPlanStatusDto;
   currentCycleStart: string;
   currentCycleEnd: string;
+
+  // estes campos também existem no backend e já usamos em outros lugares
+  visitsUsedInCycle?: number;
+  carryOverVisits?: number;
+  lastPaymentStatus?: string | null;
+  lastPaymentAt?: string | null;
+
   createdAt?: string;
   updatedAt?: string;
+
   planTemplate: PlanTemplateDto;
 };
 
@@ -48,6 +59,9 @@ export type PlanTemplateUI = {
   periodLabel: string; // "Mensal", "Semanal", etc.
   isActive: boolean;
   minDaysBetweenVisits?: number | null;
+  allowedWeekdays?: number[] | null;
+  allowedStartTimeMinutes?: number | null;
+  allowedEndTimeMinutes?: number | null;
 };
 
 export type PlanStats = {
@@ -96,6 +110,49 @@ export type CreatePlanTemplateInput = {
   sameDayServiceIds?: string[];
   allowedWeekdays?: number[];
   minDaysBetweenVisits?: number;
+  allowedStartTimeMinutes?: number;
+  allowedEndTimeMinutes?: number;
+};
+export type PayCustomerPlanInput = {
+  customerPlanId: string;
+  amountEuro: number;
+  paidAt?: string; // opcional, se quiser enviar data específica
+};
+export async function payOwnerCustomerPlan(
+  input: PayCustomerPlanInput
+): Promise<CustomerPlanDto> {
+  const body: { amountCents: number; paidAt?: string } = {
+    amountCents: Math.round(input.amountEuro * 100),
+    ...(input.paidAt ? { paidAt: input.paidAt } : {}),
+  };
+
+  return apiClient<CustomerPlanDto>(
+    `/plans/customer-plans/${input.customerPlanId}/pay`,
+    {
+      method: "POST",
+      body,
+    }
+  );
+}
+
+// -------------------- Tipo específico para o card de billing -----------------
+
+export type OwnerCustomerPlan = {
+  id: string;
+  customerName: string;
+  customerPhone: string | null;
+  status: CustomerPlanStatusDto;
+  lastPaymentStatus: string; // "paid" | "pending" | "late" | ...
+  currentCycleStart: string;
+  currentCycleEnd: string;
+  visitsUsedInCycle: number;
+  carryOverVisits: number;
+  planTemplate: {
+    id: string;
+    name: string;
+    priceCents: number;
+    visitsPerInterval: number | null;
+  };
 };
 
 // -------------------- Helpers de chamada à API (usando apiClient) -----------
@@ -127,6 +184,45 @@ async function fetchCustomerPlans(
 
   return apiClient<CustomerPlanDto[]>(path, { method: "GET" });
 }
+export type CreateCustomerPlanInput = {
+  planTemplateId: string;
+  customerName: string;
+  customerPhone?: string;
+  status?: CustomerPlanStatusDto;
+};
+
+// tipo para criação de um plano de cliente pelo owner
+export type CreateCustomerPlanInput = {
+  planTemplateId: string;
+  customerName: string;
+  customerPhone?: string;
+  status?: "active" | "late" | "cancelled";
+};
+
+export async function createOwnerCustomerPlan(
+  input: CreateCustomerPlanInput
+): Promise<CustomerPlanDto> {
+  const body = {
+    planTemplateId: input.planTemplateId,
+    customerName: input.customerName,
+    customerPhone: input.customerPhone || undefined,
+    status: input.status ?? "active",
+  };
+
+  const dto = await apiClient<CustomerPlanDto>("/plans/customer-plans", {
+    method: "POST",
+    body,
+  });
+
+  return dto;
+}
+
+export type CreateCustomerPlanInput = {
+  planTemplateId: string;
+  customerName: string;
+  customerPhone?: string;
+  status?: CustomerPlanStatusDto;
+};
 
 // -------------------- Transformações auxiliares -----------------------------
 
@@ -148,6 +244,9 @@ function normalizePlanTemplate(dto: PlanTemplateDto): PlanTemplateUI {
     periodLabel: intervalDaysToLabel(dto.intervalDays),
     isActive: dto.active ?? true,
     minDaysBetweenVisits: dto.minDaysBetweenVisits,
+    allowedWeekdays: dto.allowedWeekdays ?? null,
+    allowedStartTimeMinutes: dto.allowedStartTimeMinutes ?? null,
+    allowedEndTimeMinutes: dto.allowedEndTimeMinutes ?? null,
   };
 }
 
@@ -202,7 +301,28 @@ function buildStatsAndCustomers(
   return { planStats, planCustomersByPlan };
 }
 
-// -------------------- Funções principais usadas pela tela --------------------
+// transforma o DTO completo em algo enxuto pro PlanBillingCard
+function mapToOwnerCustomerPlan(dto: CustomerPlanDto): OwnerCustomerPlan {
+  return {
+    id: dto.id,
+    customerName: dto.customerName,
+    customerPhone: dto.customerPhone,
+    status: dto.status,
+    lastPaymentStatus: dto.lastPaymentStatus ?? "pending",
+    currentCycleStart: dto.currentCycleStart,
+    currentCycleEnd: dto.currentCycleEnd,
+    visitsUsedInCycle: dto.visitsUsedInCycle ?? 0,
+    carryOverVisits: dto.carryOverVisits ?? 0,
+    planTemplate: {
+      id: dto.planTemplate.id,
+      name: dto.planTemplate.name,
+      priceCents: dto.planTemplate.priceCents,
+      visitsPerInterval: dto.planTemplate.visitsPerInterval,
+    },
+  };
+}
+
+// -------------------- Funções principais usadas pela tela -------------------
 
 export async function fetchOwnerPlans(params: {
   locationId?: string;
@@ -225,6 +345,7 @@ export async function fetchOwnerPlans(params: {
   };
 }
 
+// usado pelo formulário de criação
 export async function createOwnerPlanTemplate(
   input: CreatePlanTemplateInput
 ): Promise<PlanTemplateUI> {
@@ -238,16 +359,19 @@ export async function createOwnerPlanTemplate(
     sameDayServiceIds: input.sameDayServiceIds ?? [],
     allowedWeekdays: input.allowedWeekdays ?? [],
     minDaysBetweenVisits: input.minDaysBetweenVisits ?? undefined,
+    allowedStartTimeMinutes: input.allowedStartTimeMinutes ?? undefined,
+    allowedEndTimeMinutes: input.allowedEndTimeMinutes ?? undefined,
   };
 
   const dto = await apiClient<PlanTemplateDto>("/plan-templates", {
-    method: "POST",
+    method: "PATCH",
     body,
   });
 
   return normalizePlanTemplate(dto);
 }
 
+// lista de serviços por unidade
 export async function fetchOwnerServices(params: {
   locationId?: string;
 }): Promise<OwnerService[]> {
@@ -278,4 +402,12 @@ export async function fetchOwnerServices(params: {
     name: s.name,
     priceEuro: s.priceCents / 100,
   }));
+}
+
+// usado pelo PlanBillingCard (server component)
+export async function getOwnerCustomerPlans(params?: {
+  locationId?: string;
+}): Promise<OwnerCustomerPlan[]> {
+  const dtos = await fetchCustomerPlans(params?.locationId);
+  return dtos.map(mapToOwnerCustomerPlan);
 }

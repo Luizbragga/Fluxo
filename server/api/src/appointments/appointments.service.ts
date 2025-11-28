@@ -8,7 +8,11 @@ import { PrismaService } from '../prisma/prisma.service';
 import { CreateAppointmentDto } from './dto/create-appointment.dto';
 import { addMinutes, isBefore } from 'date-fns';
 import { AppointmentStateEnum } from './dto/update-status.dto';
-import { Prisma, CustomerPlanStatus } from '@prisma/client';
+import {
+  Prisma,
+  CustomerPlanStatus,
+  CustomerPlanPaymentStatus,
+} from '@prisma/client';
 
 const DEFAULT_COMMISSION_PERCENTAGE = 50; // 50% por padrão (ajustável depois)
 
@@ -56,7 +60,7 @@ export class AppointmentsService {
         where: {
           id: dto.customerPlanId,
           tenantId,
-          status: CustomerPlanStatus.active,
+          status: CustomerPlanStatus.active, // só planos ativos
           OR: [
             { locationId: provider.locationId }, // plano daquela filial
             { locationId: null }, // ou plano global
@@ -70,6 +74,26 @@ export class AppointmentsService {
       if (!customerPlan) {
         throw new BadRequestException(
           'Plano do cliente inválido para este tenant/local ou não está ativo.',
+        );
+      }
+
+      // ----------------------------------------------------------------
+      // PAGAMENTO / VENCIMENTO
+      // Regra: venceu o ciclo, não usa mais até pagar.
+      // Nada de período de tolerância para USO.
+      // ----------------------------------------------------------------
+      if (startAt > customerPlan.currentCycleEnd) {
+        // marca plano como atrasado e pagamento como atrasado
+        await this.prisma.customerPlan.update({
+          where: { id: customerPlan.id },
+          data: {
+            status: CustomerPlanStatus.late,
+            lastPaymentStatus: CustomerPlanPaymentStatus.late,
+          },
+        });
+
+        throw new BadRequestException(
+          'Plano do cliente está com pagamento em atraso e foi bloqueado. Regista o pagamento para voltar a agendar.',
         );
       }
 
@@ -243,7 +267,6 @@ export class AppointmentsService {
   }
 
   // REAGENDAR ------------------------------------------------------------------
-  // REAGENDAR ------------------------------------------------------------------
   async reschedule(
     tenantId: string,
     appointmentId: string,
@@ -289,12 +312,30 @@ export class AppointmentsService {
           },
         });
 
-        if (
-          !customerPlan ||
-          customerPlan.status !== CustomerPlanStatus.active
-        ) {
+        if (!customerPlan) {
           throw new BadRequestException(
             'Plano do cliente não está mais ativo para reagendar este agendamento.',
+          );
+        }
+
+        if (customerPlan.status !== CustomerPlanStatus.active) {
+          throw new BadRequestException(
+            'Plano do cliente não está mais ativo para reagendar este agendamento.',
+          );
+        }
+
+        // se nova data for depois do fim do ciclo, bloqueia e marca como atrasado
+        if (startAt > customerPlan.currentCycleEnd) {
+          await tx.customerPlan.update({
+            where: { id: customerPlan.id },
+            data: {
+              status: CustomerPlanStatus.late,
+              lastPaymentStatus: CustomerPlanPaymentStatus.late,
+            },
+          });
+
+          throw new BadRequestException(
+            'Plano do cliente está com pagamento em atraso e foi bloqueado. Não é possível reagendar até regularizar.',
           );
         }
 
@@ -448,7 +489,6 @@ export class AppointmentsService {
     });
   }
 
-  // CANCELAMENTO SEGURO (DELETE lógico) ---------------------------------------
   // CANCELAMENTO SEGURO (ajusta plano e financeiro) ---------------------------
   async remove(tenantId: string, id: string) {
     return this.prisma.$transaction(async (tx) => {
@@ -577,6 +617,7 @@ export class AppointmentsService {
       },
     });
   }
+
   private async getCommissionPercentage(
     tx: any,
     tenantId: string,

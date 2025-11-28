@@ -22,12 +22,19 @@ export async function fetchOwnerLocations(): Promise<OwnerLocation[]> {
     name: loc.name ?? loc.slug ?? "Unidade sem nome",
   });
 
+  // caso 1: API devolve array direto
   if (Array.isArray(data)) {
     return data.map(normalize);
   }
 
+  // caso 2: { items: [...] }
   if (Array.isArray(data?.items)) {
     return data.items.map(normalize);
+  }
+
+  // caso 3: { data: [...], meta: {...} }  <-- SEU BACKEND HOJE
+  if (Array.isArray(data?.data)) {
+    return data.data.map(normalize);
   }
 
   return [];

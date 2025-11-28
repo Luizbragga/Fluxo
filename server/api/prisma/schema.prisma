@@ -40,6 +40,7 @@ enum PayoutStatus {
 enum CustomerPlanStatus {
   active
   suspended
+  late
   cancelled
 }
 
@@ -278,7 +279,8 @@ model PlanTemplate {
   active            Boolean  @default(true)
   createdAt         DateTime @default(now())
   updatedAt         DateTime @updatedAt
-
+  allowedStartTimeMinutes Int? // minutos a partir da meia-noite (ex: 15:00 = 900)
+  allowedEndTimeMinutes   Int? // idem, horário final
   tenant        Tenant         @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   location      Location?      @relation(fields: [locationId], references: [id])
   customerPlans CustomerPlan[]
