@@ -1,128 +1,90 @@
-// src/app/(dashboard)/owner/planos/page.tsx
+"use client";
 
-type PlanTemplateUI = {
-  id: string;
-  name: string;
-  description: string;
-  price: number;
-  currency: "EUR";
-  visitsIncluded: number;
-  periodLabel: string; // "mensal", "semanal", etc.
-  isActive: boolean;
-};
-
-type PlanStats = {
-  planId: string;
-  activeCustomers: number;
-  totalRevenueMonth: number;
-  churnRatePercent: number;
-};
-
-type PlanCustomer = {
-  id: string;
-  name: string;
-  phone: string;
-  startedAt: string;
-  status: "active" | "late" | "cancelled";
-  nextChargeDate?: string;
-  nextChargeAmount?: number;
-};
-
-const planTemplates: PlanTemplateUI[] = [
-  {
-    id: "plano_corte_mensal",
-    name: "Plano Corte Mensal",
-    description: "Até 4 cortes por mês, ideal para quem está sempre alinhado.",
-    price: 45,
-    currency: "EUR",
-    visitsIncluded: 4,
-    periodLabel: "Mensal",
-    isActive: true,
-  },
-  {
-    id: "plano_nails_premium",
-    name: "Plano Nails Premium",
-    description: "Serviços de manicure gel com prioridade de agenda.",
-    price: 65,
-    currency: "EUR",
-    visitsIncluded: 3,
-    periodLabel: "Mensal",
-    isActive: true,
-  },
-  {
-    id: "plano_barba_fidelidade",
-    name: "Plano Barba Fidelidade",
-    description: "Barba semanal com preço reduzido.",
-    price: 35,
-    currency: "EUR",
-    visitsIncluded: 4,
-    periodLabel: "Mensal",
-    isActive: false,
-  },
-];
-
-const planStats: PlanStats[] = [
-  {
-    planId: "plano_corte_mensal",
-    activeCustomers: 18,
-    totalRevenueMonth: 810,
-    churnRatePercent: 4.2,
-  },
-  {
-    planId: "plano_nails_premium",
-    activeCustomers: 9,
-    totalRevenueMonth: 585,
-    churnRatePercent: 3.1,
-  },
-  {
-    planId: "plano_barba_fidelidade",
-    activeCustomers: 4,
-    totalRevenueMonth: 140,
-    churnRatePercent: 7.5,
-  },
-];
-
-const planCustomersByPlan: Record<string, PlanCustomer[]> = {
-  plano_corte_mensal: [
-    {
-      id: "c1",
-      name: "Miguel Silva",
-      phone: "+351 912 345 678",
-      startedAt: "02 Set 2025",
-      status: "active",
-      nextChargeDate: "02 Dez 2025",
-      nextChargeAmount: 45,
-    },
-    {
-      id: "c2",
-      name: "Carlos Andrade",
-      phone: "+351 968 555 000",
-      startedAt: "15 Out 2025",
-      status: "late",
-      nextChargeDate: "15 Nov 2025",
-      nextChargeAmount: 45,
-    },
-  ],
-  plano_nails_premium: [
-    {
-      id: "c3",
-      name: "Bianca Costa",
-      phone: "+351 934 222 111",
-      startedAt: "27 Ago 2025",
-      status: "active",
-      nextChargeDate: "27 Nov 2025",
-      nextChargeAmount: 65,
-    },
-  ],
-  plano_barba_fidelidade: [],
-};
+import { useEffect, useState } from "react";
+import { useSearchParams } from "next/navigation";
+import {
+  fetchOwnerPlans,
+  OwnerPlansData,
+  PlanCustomer,
+} from "../_api/owner-plans";
 
 export default function OwnerPlanosPage() {
-  const selectedId = "plano_corte_mensal"; // depois vira estado / rota
+  const searchParams = useSearchParams();
+  const locationId = searchParams.get("locationId") ?? undefined;
 
-  const selectedPlan = planTemplates.find((p) => p.id === selectedId);
-  const selectedStats = planStats.find((s) => s.planId === selectedId);
-  const customers = planCustomersByPlan[selectedId] ?? [];
+  const [data, setData] = useState<OwnerPlansData | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [selectedId, setSelectedId] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    async function load() {
+      setLoading(true);
+      setError(null);
+      try {
+        const result = await fetchOwnerPlans({ locationId });
+        if (!cancelled) {
+          setData(result);
+          setSelectedId((prev) =>
+            prev && result.planTemplates.some((p) => p.id === prev)
+              ? prev
+              : result.planTemplates[0]?.id ?? null
+          );
+        }
+      } catch (err: any) {
+        if (!cancelled) {
+          setError(err?.message ?? "Erro ao carregar planos.");
+        }
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    }
+
+    load();
+    return () => {
+      cancelled = true;
+    };
+  }, [locationId]);
+
+  if (loading) {
+    return (
+      <div className="p-4 text-xs text-slate-400">
+        Carregando planos de assinatura...
+      </div>
+    );
+  }
+
+  if (error) {
+    return (
+      <div className="p-4 text-xs text-rose-300">
+        Erro ao carregar planos: {error}
+      </div>
+    );
+  }
+
+  if (!data) {
+    return (
+      <div className="p-4 text-xs text-slate-400">
+        Nenhum dado de planos disponível.
+      </div>
+    );
+  }
+
+  const { planTemplates, planStats, planCustomersByPlan } = data;
+
+  const selectedPlan = selectedId
+    ? planTemplates.find((p) => p.id === selectedId) ?? null
+    : null;
+
+  const selectedStats = selectedId
+    ? planStats.find((s) => s.planId === selectedId)
+    : undefined;
+
+  const customers: PlanCustomer[] = selectedId
+    ? planCustomersByPlan[selectedId] ?? []
+    : [];
 
   return (
     <>
@@ -170,54 +132,61 @@ export default function OwnerPlanosPage() {
           </div>
 
           <div className="space-y-2">
-            {planTemplates.map((plan) => {
-              const isSelected = plan.id === selectedId;
-              const stats = planStats.find((s) => s.planId === plan.id);
+            {planTemplates.length === 0 ? (
+              <p className="text-[11px] text-slate-500">
+                Ainda não há templates de planos cadastrados.
+              </p>
+            ) : (
+              planTemplates.map((plan) => {
+                const isSelected = plan.id === selectedId;
+                const stats = planStats.find((s) => s.planId === plan.id);
 
-              return (
-                <button
-                  key={plan.id}
-                  className={[
-                    "w-full text-left rounded-xl border px-3 py-2 transition-colors",
-                    isSelected
-                      ? "border-emerald-500/60 bg-emerald-500/5"
-                      : "border-slate-800 bg-slate-950/60 hover:border-slate-700",
-                  ].join(" ")}
-                >
-                  <div className="flex items-center justify-between gap-2">
-                    <div>
-                      <p className="font-medium text-[13px]">{plan.name}</p>
-                      <p className="text-[11px] text-slate-400">
-                        {plan.periodLabel} · {plan.visitsIncluded} visitas
-                      </p>
-                      <p className="text-[10px] text-slate-500">
-                        € {plan.price} / mês
-                      </p>
+                return (
+                  <button
+                    key={plan.id}
+                    onClick={() => setSelectedId(plan.id)}
+                    className={[
+                      "w-full text-left rounded-xl border px-3 py-2 transition-colors",
+                      isSelected
+                        ? "border-emerald-500/60 bg-emerald-500/5"
+                        : "border-slate-800 bg-slate-950/60 hover:border-slate-700",
+                    ].join(" ")}
+                  >
+                    <div className="flex items-center justify-between gap-2">
+                      <div>
+                        <p className="font-medium text-[13px]">{plan.name}</p>
+                        <p className="text-[11px] text-slate-400">
+                          {plan.periodLabel} · {plan.visitsIncluded} visitas
+                        </p>
+                        <p className="text-[10px] text-slate-500">
+                          € {plan.price} / mês
+                        </p>
+                      </div>
+                      <div className="text-right">
+                        {stats && (
+                          <>
+                            <p className="text-[11px] text-slate-400">Ativos</p>
+                            <p className="text-sm font-semibold">
+                              {stats.activeCustomers}
+                            </p>
+                          </>
+                        )}
+                        <span
+                          className={[
+                            "inline-flex mt-1 rounded-full px-2 py-[1px] text-[9px]",
+                            plan.isActive
+                              ? "bg-emerald-500/15 text-emerald-300"
+                              : "bg-slate-700 text-slate-200",
+                          ].join(" ")}
+                        >
+                          {plan.isActive ? "Ativo" : "Inativo"}
+                        </span>
+                      </div>
                     </div>
-                    <div className="text-right">
-                      {stats && (
-                        <>
-                          <p className="text-[11px] text-slate-400">Ativos</p>
-                          <p className="text-sm font-semibold">
-                            {stats.activeCustomers}
-                          </p>
-                        </>
-                      )}
-                      <span
-                        className={[
-                          "inline-flex mt-1 rounded-full px-2 py-[1px] text-[9px]",
-                          plan.isActive
-                            ? "bg-emerald-500/15 text-emerald-300"
-                            : "bg-slate-700 text-slate-200",
-                        ].join(" ")}
-                      >
-                        {plan.isActive ? "Ativo" : "Inativo"}
-                      </span>
-                    </div>
-                  </div>
-                </button>
-              );
-            })}
+                  </button>
+                );
+              })
+            )}
           </div>
         </div>
 
@@ -272,14 +241,14 @@ export default function OwnerPlanosPage() {
                     </p>
                     <p className="mt-1 text-sm font-semibold">PlanTemplate</p>
                     <p className="mt-1 text-[11px] text-slate-500">
-                      Estes dados vão vir diretamente da tabela de templates de
+                      Estes dados vêm diretamente da tabela de templates de
                       plano.
                     </p>
                   </div>
 
                   <div className="rounded-xl border border-slate-800 bg-slate-950/60 p-3">
                     <p className="text-[11px] text-slate-400">
-                      Cobranças & pagamentos
+                      Cobranças &amp; pagamentos
                     </p>
                     <p className="mt-1 text-sm font-semibold">
                       CustomerPlanPayment
@@ -293,7 +262,7 @@ export default function OwnerPlanosPage() {
               </>
             ) : (
               <p className="text-xs text-slate-400">
-                Selecione um plano na lista ao lado para ver detalhes.
+                Ainda não há nenhum plano cadastrado.
               </p>
             )}
           </div>
@@ -352,7 +321,7 @@ export default function OwnerPlanosPage() {
 
               {customers.length === 0 ? (
                 <p className="text-[11px] text-slate-500">
-                  Ainda não há clientes ativos neste plano.
+                  Ainda não há clientes neste plano.
                 </p>
               ) : (
                 <div className="space-y-2">
@@ -414,6 +383,10 @@ function PlanCustomerStatusBadge({
         </span>
       );
     default:
-      return null;
+      return (
+        <span className={`${base} bg-slate-600/40 text-slate-100`}>
+          {status}
+        </span>
+      );
   }
 }
