@@ -1,27 +1,41 @@
-// src/app/(dashboard)/owner/servicos/page.tsx
 "use client";
 
 import { useEffect, useState } from "react";
+import { useSearchParams } from "next/navigation";
 import {
   fetchOwnerServices,
   type OwnerService,
   type OwnerServiceStats,
+  createOwnerService,
 } from "../_api/owner-services";
 
 export default function OwnerServicosPage() {
+  const searchParams = useSearchParams();
+  const locationId = searchParams.get("locationId");
+
   const [services, setServices] = useState<OwnerService[]>([]);
   const [stats, setStats] = useState<OwnerServiceStats[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
+  // estado do formulário de criação
+  const [showCreateForm, setShowCreateForm] = useState(false);
+  const [createName, setCreateName] = useState("");
+  const [createDuration, setCreateDuration] = useState(30);
+  const [createBasePrice, setCreateBasePrice] = useState(0);
+  const [isSaving, setIsSaving] = useState(false);
+
+  // carrega serviços (filtrando por locationId se vier na URL)
   useEffect(() => {
     async function load() {
       try {
         setIsLoading(true);
         setError(null);
 
-        const { services, stats } = await fetchOwnerServices();
+        const { services, stats } = await fetchOwnerServices(
+          locationId ?? undefined
+        );
         setServices(services);
         setStats(stats);
         setSelectedId((prev) => prev ?? services[0]?.id ?? null);
@@ -37,7 +51,57 @@ export default function OwnerServicosPage() {
     }
 
     load();
-  }, []);
+  }, [locationId]);
+
+  async function handleCreateService(e: React.FormEvent) {
+    e.preventDefault();
+
+    if (!locationId) {
+      setError(
+        "Para criar um serviço vinculado, abre esta página a partir de uma unidade (location) específica."
+      );
+      return;
+    }
+
+    if (!createName.trim()) {
+      setError("Dá um nome para o serviço antes de salvar.");
+      return;
+    }
+
+    try {
+      setIsSaving(true);
+      setError(null);
+
+      await createOwnerService({
+        name: createName.trim(),
+        durationMinutes: createDuration,
+        basePrice: createBasePrice,
+        locationId,
+      });
+
+      // limpa form
+      setCreateName("");
+      setCreateDuration(30);
+      setCreateBasePrice(0);
+
+      // recarrega lista
+      const { services: updatedServices, stats: updatedStats } =
+        await fetchOwnerServices(locationId);
+      setServices(updatedServices);
+      setStats(updatedStats);
+      setSelectedId((prev) => prev ?? updatedServices[0]?.id ?? null);
+
+      // fecha o form depois de salvar
+      setShowCreateForm(false);
+    } catch (err: any) {
+      const message =
+        err?.message ?? "Erro ao salvar serviço. Verificar console.";
+      setError(message);
+      console.error("Erro ao criar serviço:", err);
+    } finally {
+      setIsSaving(false);
+    }
+  }
 
   const selectedService = services.find((s) => s.id === selectedId) ?? null;
 
@@ -65,24 +129,133 @@ export default function OwnerServicosPage() {
             <option>Barba</option>
             <option>Nails</option>
           </select>
-          <button className="px-3 py-1 rounded-lg border border-emerald-600 bg-emerald-600/20 text-emerald-200">
-            + Adicionar serviço
+          <button
+            type="button"
+            className="px-3 py-1 rounded-lg border border-emerald-600 bg-emerald-600/20 text-emerald-200"
+            onClick={() => {
+              const next = !showCreateForm;
+              setShowCreateForm(next);
+
+              if (next) {
+                const el = document.getElementById("novo-servico-form");
+                el?.scrollIntoView({ behavior: "smooth", block: "start" });
+              }
+            }}
+          >
+            {showCreateForm ? "Fechar criação" : "+ Adicionar serviço"}
           </button>
         </div>
       </header>
 
+      {/* Aviso quando não há location na URL */}
+      {!locationId && (
+        <div className="mb-4 rounded-lg border border-amber-500/40 bg-amber-900/30 px-3 py-2 text-[11px] text-amber-100">
+          Para vincular serviços a uma unidade específica, abre esta página a
+          partir de uma unidade (location) específica. Sem location, os serviços
+          ficam gerais do tenant e não aparecem nos planos ligados à unidade.
+        </div>
+      )}
+
+      {/* Formulário de criação de serviço (só aparece quando clicar) */}
+      {showCreateForm && (
+        <section
+          id="novo-servico-form"
+          className="mb-4 rounded-2xl border border-emerald-700/50 bg-slate-900/70 p-4 text-xs"
+        >
+          <p className="mb-1 text-[11px] font-semibold text-slate-200">
+            Adicionar novo serviço
+          </p>
+          <p className="mb-3 text-[11px] text-slate-400">
+            Define o nome, a duração e o preço base. Depois conectamos com
+            planos e comissões.
+          </p>
+
+          <form
+            onSubmit={handleCreateService}
+            className="grid grid-cols-1 gap-3 md:grid-cols-3"
+          >
+            <div className="md:col-span-1">
+              <label className="mb-1 block text-[11px] text-slate-400">
+                Nome do serviço
+              </label>
+              <input
+                value={createName}
+                onChange={(e) => setCreateName(e.target.value)}
+                placeholder="Corte masculino, Barba, etc."
+                className="w-full rounded-lg border border-slate-800 bg-slate-950/70 px-3 py-2 text-[11px] text-slate-200 placeholder:text-slate-500 focus:outline-none focus:ring-1 focus:ring-emerald-500"
+              />
+            </div>
+
+            <div>
+              <label className="mb-1 block text-[11px] text-slate-400">
+                Duração (min)
+              </label>
+              <input
+                type="number"
+                min={5}
+                max={480}
+                value={createDuration}
+                onChange={(e) =>
+                  setCreateDuration(Math.max(5, Number(e.target.value) || 0))
+                }
+                className="w-full rounded-lg border border-slate-800 bg-slate-950/70 px-3 py-2 text-[11px] text-slate-200 focus:outline-none focus:ring-1 focus:ring-emerald-500"
+              />
+            </div>
+
+            <div>
+              <label className="mb-1 block text-[11px] text-slate-400">
+                Preço base (€)
+              </label>
+              <div className="flex gap-2">
+                <input
+                  type="number"
+                  min={0}
+                  step={0.5}
+                  value={createBasePrice}
+                  onChange={(e) =>
+                    setCreateBasePrice(Math.max(0, Number(e.target.value) || 0))
+                  }
+                  className="w-full rounded-lg border border-slate-800 bg-slate-950/70 px-3 py-2 text-[11px] text-slate-200 focus:outline-none focus:ring-1 focus:ring-emerald-500"
+                />
+                <button
+                  type="submit"
+                  disabled={
+                    !locationId ||
+                    isSaving ||
+                    !createName.trim() ||
+                    createDuration <= 0
+                  }
+                  className={[
+                    "whitespace-nowrap rounded-lg px-4 py-2 text-[11px] font-semibold transition-colors",
+                    !locationId || isSaving
+                      ? "cursor-not-allowed border border-slate-700 bg-slate-800/60 text-slate-400"
+                      : "border border-emerald-600 bg-emerald-600/80 text-emerald-50 hover:bg-emerald-500",
+                  ].join(" ")}
+                >
+                  {!locationId
+                    ? "Seleciona uma unidade para salvar"
+                    : isSaving
+                    ? "Salvando..."
+                    : "Salvar serviço"}
+                </button>
+              </div>
+            </div>
+          </form>
+        </section>
+      )}
+
       {/* Banner de erro da API */}
       {error && (
         <div className="mb-4 rounded-lg border border-red-500/40 bg-red-950/40 px-3 py-2 text-[11px] text-red-200">
-          Erro ao carregar serviços: {error}
+          Erro: {error}
         </div>
       )}
 
       {/* Grid principal: lista + detalhes */}
-      <section className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+      <section className="grid grid-cols-1 gap-4 lg:grid-cols-3">
         {/* Lista de serviços */}
-        <div className="lg:col-span-1 rounded-2xl border border-slate-800 bg-slate-900/60 p-4">
-          <div className="flex items-center justify-between mb-3 text-xs">
+        <div className="rounded-2xl border border-slate-800 bg-slate-900/60 p-4 lg:col-span-1">
+          <div className="mb-3 flex items-center justify-between text-xs">
             <p className="text-slate-400">Lista de serviços</p>
             <button className="text-[11px] text-emerald-400 hover:underline">
               Ordenar
@@ -115,7 +288,7 @@ export default function OwnerServicosPage() {
                     key={service.id}
                     onClick={() => setSelectedId(service.id)}
                     className={[
-                      "w-full text-left rounded-xl border px-3 py-2 transition-colors",
+                      "w-full rounded-xl border px-3 py-2 text-left transition-colors",
                       isSelected
                         ? "border-emerald-500/60 bg-emerald-500/5"
                         : "border-slate-800 bg-slate-950/60 hover:border-slate-700",
@@ -123,7 +296,7 @@ export default function OwnerServicosPage() {
                   >
                     <div className="flex items-center justify-between gap-2">
                       <div>
-                        <p className="font-medium text-[13px]">
+                        <p className="text-[13px] font-medium">
                           {service.name}
                         </p>
                         <p className="text-[11px] text-slate-400">
@@ -147,7 +320,7 @@ export default function OwnerServicosPage() {
                         )}
                         <span
                           className={[
-                            "inline-flex mt-1 rounded-full px-2 py-[1px] text-[9px]",
+                            "mt-1 inline-flex rounded-full px-2 py-[1px] text-[9px]",
                             service.isActive
                               ? "bg-emerald-500/15 text-emerald-300"
                               : "bg-slate-700 text-slate-200",
@@ -165,13 +338,13 @@ export default function OwnerServicosPage() {
         </div>
 
         {/* Detalhes do serviço selecionado */}
-        <div className="lg:col-span-2 space-y-4">
+        <div className="space-y-4 lg:col-span-2">
           <div className="rounded-2xl border border-slate-800 bg-slate-900/60 p-4 text-xs">
             {selectedService ? (
               <>
-                <div className="flex items-center justify-between mb-4">
+                <div className="mb-4 flex items-center justify-between">
                   <div>
-                    <p className="text-slate-400 text-[11px]">
+                    <p className="text-[11px] text-slate-400">
                       Serviço selecionado
                     </p>
                     <p className="text-sm font-semibold">
@@ -186,13 +359,13 @@ export default function OwnerServicosPage() {
                     <p className="text-lg font-semibold">
                       {selectedService.durationMinutes} min
                     </p>
-                    <p className="text-[11px] text-slate-400 mt-1">
+                    <p className="mt-1 text-[11px] text-slate-400">
                       Preço base: € {selectedService.basePrice.toFixed(2)}
                     </p>
                   </div>
                 </div>
 
-                <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
                   <div className="rounded-xl border border-slate-800 bg-slate-950/60 p-3">
                     <p className="text-[11px] text-slate-400">Estado</p>
                     <p className="mt-1 text-sm font-semibold">
@@ -242,7 +415,7 @@ export default function OwnerServicosPage() {
 
           {/* Estatísticas do serviço */}
           <div className="rounded-2xl border border-slate-800 bg-slate-900/60 p-4 text-xs">
-            <div className="flex items-center justify-between mb-3">
+            <div className="mb-3 flex items-center justify-between">
               <p className="text-slate-400">Estatísticas do serviço</p>
               <button className="text-[11px] text-emerald-400 hover:underline">
                 Ver no relatório
@@ -250,7 +423,7 @@ export default function OwnerServicosPage() {
             </div>
 
             {selectedStats ? (
-              <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+              <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
                 <div className="rounded-xl border border-slate-800 bg-slate-950/60 p-3">
                   <p className="text-[11px] text-slate-400">
                     Atendimentos no mês

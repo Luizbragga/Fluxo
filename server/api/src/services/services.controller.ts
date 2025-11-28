@@ -36,7 +36,7 @@ export class ServicesController {
     return this.services.create(tenantId, dto);
   }
 
-  // Lista serviços do tenant com paginação
+  // Lista serviços do tenant com paginação + filtro opcional por location
   @Get()
   @ApiQuery({
     name: 'page',
@@ -52,10 +52,17 @@ export class ServicesController {
     example: 20,
     description: 'Itens por página (máx. 100)',
   })
+  @ApiQuery({
+    name: 'locationId',
+    required: false,
+    type: String,
+    description: 'Filtra serviços por location (cuid/uuid)',
+  })
   findAll(
     @Req() req: Request,
     @Query('page') page?: string,
     @Query('pageSize') pageSize?: string,
+    @Query('locationId') locationId?: string,
   ) {
     const tenantId = (req as any).user?.tenantId as string;
 
@@ -65,6 +72,7 @@ export class ServicesController {
     return this.services.findAll(tenantId, {
       page: pageNum,
       pageSize: pageSizeNum,
+      locationId: locationId || undefined,
     });
   }
 
@@ -87,7 +95,7 @@ export class ServicesController {
     return this.services.update(tenantId, id, dto);
   }
 
-  // “Delete” (por enquanto hard delete; depois padronizamos soft delete)
+  // “Delete” (por enquanto soft delete)
   @Roles(Role.owner, Role.admin)
   @Delete(':id')
   remove(@Req() req: Request, @Param('id') id: string) {

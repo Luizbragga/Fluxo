@@ -1,4 +1,3 @@
-// server/web/src/app/(dashboard)/owner/_api/owner-plans.ts
 import { apiClient } from "@/lib/api-client";
 
 // -------------------- Tipos vindos do backend --------------------
@@ -14,6 +13,8 @@ type PlanTemplateDto = {
   visitsPerInterval: number | null;
   sameDayServiceIds: string[] | null;
   allowedWeekdays: number[] | null;
+  minDaysBetweenVisits: number | null;
+  active?: boolean;
   createdAt?: string;
   updatedAt?: string;
 };
@@ -46,6 +47,7 @@ export type PlanTemplateUI = {
   visitsIncluded: number;
   periodLabel: string; // "Mensal", "Semanal", etc.
   isActive: boolean;
+  minDaysBetweenVisits?: number | null;
 };
 
 export type PlanStats = {
@@ -71,6 +73,31 @@ export type OwnerPlansData = {
   planCustomersByPlan: Record<string, PlanCustomer[]>;
 };
 
+export type OwnerService = {
+  id: string;
+  name: string;
+  priceEuro: number;
+};
+
+type ServiceDto = {
+  id: string;
+  name: string;
+  priceCents: number;
+  locationId: string;
+};
+
+export type CreatePlanTemplateInput = {
+  locationId: string;
+  name: string;
+  description?: string;
+  priceEuro: number;
+  intervalDays: number; // vamos mandar sempre 30
+  visitsPerInterval?: number;
+  sameDayServiceIds?: string[];
+  allowedWeekdays?: number[];
+  minDaysBetweenVisits?: number;
+};
+
 // -------------------- Helpers de chamada à API (usando apiClient) -----------
 
 async function fetchPlanTemplates(
@@ -84,7 +111,6 @@ async function fetchPlanTemplates(
       ? `/plan-templates?${params.toString()}`
       : `/plan-templates`;
 
-  // mesmo padrão do owner-financeiro/agenda
   return apiClient<PlanTemplateDto[]>(path, { method: "GET" });
 }
 
@@ -120,8 +146,8 @@ function normalizePlanTemplate(dto: PlanTemplateDto): PlanTemplateUI {
     currency: "EUR",
     visitsIncluded: dto.visitsPerInterval ?? 1,
     periodLabel: intervalDaysToLabel(dto.intervalDays),
-    // quando tiver campo de ativo/inativo no schema, ligamos aqui
-    isActive: true,
+    isActive: dto.active ?? true,
+    minDaysBetweenVisits: dto.minDaysBetweenVisits,
   };
 }
 
@@ -176,7 +202,7 @@ function buildStatsAndCustomers(
   return { planStats, planCustomersByPlan };
 }
 
-// -------------------- Função principal usada pela tela --------------------
+// -------------------- Funções principais usadas pela tela --------------------
 
 export async function fetchOwnerPlans(params: {
   locationId?: string;
@@ -197,4 +223,59 @@ export async function fetchOwnerPlans(params: {
     planStats,
     planCustomersByPlan,
   };
+}
+
+export async function createOwnerPlanTemplate(
+  input: CreatePlanTemplateInput
+): Promise<PlanTemplateUI> {
+  const body = {
+    locationId: input.locationId,
+    name: input.name,
+    description: input.description || undefined,
+    priceCents: Math.round(input.priceEuro * 100),
+    intervalDays: input.intervalDays,
+    visitsPerInterval: input.visitsPerInterval ?? undefined,
+    sameDayServiceIds: input.sameDayServiceIds ?? [],
+    allowedWeekdays: input.allowedWeekdays ?? [],
+    minDaysBetweenVisits: input.minDaysBetweenVisits ?? undefined,
+  };
+
+  const dto = await apiClient<PlanTemplateDto>("/plan-templates", {
+    method: "POST",
+    body,
+  });
+
+  return normalizePlanTemplate(dto);
+}
+
+export async function fetchOwnerServices(params: {
+  locationId?: string;
+}): Promise<OwnerService[]> {
+  const search = new URLSearchParams();
+
+  // vamos pedir já filtrado por location no backend
+  if (params.locationId) {
+    search.set("locationId", params.locationId);
+    // opcional: aumentar pageSize pra garantir que venham todos
+    search.set("pageSize", "100");
+  }
+
+  const path =
+    search.toString().length > 0
+      ? `/services?${search.toString()}`
+      : `/services`;
+
+  // backend retorna { items, meta }
+  const response = await apiClient<{
+    items: ServiceDto[];
+    meta: { page: number; pageSize: number; total: number; totalPages: number };
+  }>(path, { method: "GET" });
+
+  const dtos = response.items ?? [];
+
+  return dtos.map((s) => ({
+    id: s.id,
+    name: s.name,
+    priceEuro: s.priceCents / 100,
+  }));
 }

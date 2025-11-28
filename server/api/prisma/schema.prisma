@@ -86,6 +86,7 @@ model Location {
   users         User[]
   planTemplates PlanTemplate[]
   customerPlans CustomerPlan[]
+  services      Service[]
 
   @@unique([tenantId, slug])
   @@index([tenantId])
@@ -125,14 +126,16 @@ model RefreshToken {
 }
 
 model Service {
-  id          String   @id @default(cuid())
+  id          String    @id @default(cuid())
   tenantId    String
   name        String
   durationMin Int // duração em minutos
   priceCents  Int // preço em centavos
-  active      Boolean  @default(true)
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
+  active      Boolean   @default(true)
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+  locationId  String?
+  location    Location? @relation(fields: [locationId], references: [id])
 
   tenant       Tenant               @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   appointments Appointment[]
@@ -267,6 +270,7 @@ model PlanTemplate {
   priceCents        Int
   intervalDays      Int // 15, 30, etc.
   visitsPerInterval Int // nº de visitas por ciclo
+  minDaysBetweenVisits Int?
   sameDayServiceIds Json // array de serviceId
   allowedWeekdays   Json // ex.: ["mon","wed","fri"]
   minAdvanceDays    Int      @default(0)

@@ -47,8 +47,8 @@ export class CreatePlanTemplateDto {
   priceCents!: number;
 
   @ApiProperty({
-    example: 15,
-    description: 'Intervalo em dias entre as visitas (ex: 15, 30)',
+    example: 30,
+    description: 'Duração do ciclo em dias (para nós, sempre 30 = mensal)',
   })
   @IsInt()
   @Min(1)
@@ -57,7 +57,7 @@ export class CreatePlanTemplateDto {
   @ApiProperty({
     required: false,
     example: 2,
-    description: 'Quantas visitas o cliente tem em cada intervalo',
+    description: 'Quantas visitas o cliente tem em cada ciclo (mês)',
   })
   @IsOptional()
   @IsInt()
@@ -84,4 +84,15 @@ export class CreatePlanTemplateDto {
   @IsArray()
   @IsInt({ each: true })
   allowedWeekdays?: number[];
+
+  @ApiProperty({
+    required: false,
+    example: 15,
+    description:
+      'Intervalo mínimo entre visitas em dias. Se não informado, é livre.',
+  })
+  @IsOptional()
+  @IsInt()
+  @Min(1)
+  minDaysBetweenVisits?: number;
 }

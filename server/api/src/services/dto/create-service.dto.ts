@@ -3,7 +3,6 @@ import {
   IsBoolean,
   IsInt,
   IsOptional,
-  IsPositive,
   IsString,
   Max,
   Min,
@@ -48,4 +47,13 @@ export class CreateServiceDto {
   @IsOptional()
   @IsBoolean()
   active?: boolean;
+
+  @ApiProperty({
+    example: 'cmiea0yy0000loc1234567890',
+    description: 'Unidade (location) à qual o serviço pertence',
+    required: false,
+  })
+  @IsOptional()
+  @IsString()
+  locationId?: string;
 }

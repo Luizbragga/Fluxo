@@ -6,7 +6,12 @@ import {
   fetchOwnerPlans,
   OwnerPlansData,
   PlanCustomer,
+  createOwnerPlanTemplate,
+  fetchOwnerServices,
+  OwnerService,
 } from "../_api/owner-plans";
+
+type FilterStatus = "all" | "active" | "inactive";
 
 export default function OwnerPlanosPage() {
   const searchParams = useSearchParams();
@@ -16,7 +21,31 @@ export default function OwnerPlanosPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [filterStatus, setFilterStatus] = useState<FilterStatus>("all");
 
+  // criação de plano
+  const [isCreating, setIsCreating] = useState(false);
+  const [creatingLoading, setCreatingLoading] = useState(false);
+  const [creatingError, setCreatingError] = useState<string | null>(null);
+  const [formName, setFormName] = useState("");
+  const [formDescription, setFormDescription] = useState("");
+  const [formPrice, setFormPrice] = useState("0");
+  const [formVisits, setFormVisits] = useState("2"); // visitas por mês
+  const [formMinDaysBetween, setFormMinDaysBetween] = useState("");
+
+  // serviços e desconto
+  const [services, setServices] = useState<OwnerService[]>([]);
+  const [servicesLoading, setServicesLoading] = useState(false);
+  const [servicesError, setServicesError] = useState<string | null>(null);
+  const [selectedServiceIds, setSelectedServiceIds] = useState<string[]>([]);
+  const [applyDiscount, setApplyDiscount] = useState(false);
+  const [discountPercent, setDiscountPercent] = useState<5 | 10 | 15>(10);
+
+  const [priceAuto, setPriceAuto] = useState(true);
+
+  // ---------------------------------------------------------------
+  // Carrega planos
+  // ---------------------------------------------------------------
   useEffect(() => {
     let cancelled = false;
 
@@ -48,6 +77,216 @@ export default function OwnerPlanosPage() {
     };
   }, [locationId]);
 
+  // ---------------------------------------------------------------
+  // Carrega serviços da unidade
+  // ---------------------------------------------------------------
+  useEffect(() => {
+    let cancelled = false;
+
+    if (!locationId) {
+      setServices([]);
+      return;
+    }
+
+    async function loadServices() {
+      setServicesLoading(true);
+      setServicesError(null);
+      try {
+        const result = await fetchOwnerServices({ locationId });
+        if (!cancelled) {
+          setServices(result);
+        }
+      } catch (err: any) {
+        if (!cancelled) {
+          setServicesError(
+            err?.message ?? "Erro ao carregar serviços para montagem do plano."
+          );
+        }
+      } finally {
+        if (!cancelled) {
+          setServicesLoading(false);
+        }
+      }
+    }
+
+    loadServices();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [locationId]);
+
+  // ---------------------------------------------------------------
+  // Cálculo automático do preço (serviços × visitas × desconto)
+  // ---------------------------------------------------------------
+  useEffect(() => {
+    if (!priceAuto) return;
+
+    const visitsNumber = Number(formVisits) || 0;
+    if (visitsNumber <= 0) return;
+
+    const selectedServices = services.filter((s) =>
+      selectedServiceIds.includes(s.id)
+    );
+    if (selectedServices.length === 0) return;
+
+    const basePerVisit = selectedServices.reduce(
+      (sum, s) => sum + s.priceEuro,
+      0
+    );
+
+    let raw = basePerVisit * visitsNumber;
+
+    if (applyDiscount && raw > 0) {
+      raw = raw * (1 - discountPercent / 100);
+    }
+
+    if (raw > 0) {
+      setFormPrice(raw.toFixed(2));
+    }
+  }, [
+    priceAuto,
+    services,
+    selectedServiceIds,
+    formVisits,
+    applyDiscount,
+    discountPercent,
+  ]);
+
+  // ---------------------------------------------------------------
+  // Derivados para exibição (sugestão)
+  // ---------------------------------------------------------------
+  const selectedServicesForDisplay = services.filter((s) =>
+    selectedServiceIds.includes(s.id)
+  );
+  const basePerVisit = selectedServicesForDisplay.reduce(
+    (sum, s) => sum + s.priceEuro,
+    0
+  );
+  const visitsNumberForCalc = Number(formVisits) || 0;
+  const rawSuggested = basePerVisit * visitsNumberForCalc;
+  const discountedSuggested =
+    applyDiscount && rawSuggested > 0
+      ? rawSuggested * (1 - discountPercent / 100)
+      : rawSuggested;
+  const suggestedPriceDisplay =
+    discountedSuggested > 0 ? discountedSuggested.toFixed(2) : null;
+
+  // ---------------------------------------------------------------
+  // Submit: criar plano
+  // ---------------------------------------------------------------
+  async function handleCreatePlan(e: React.FormEvent<HTMLFormElement>) {
+    e.preventDefault();
+    if (!locationId) {
+      setCreatingError(
+        "Para criar um plano, abre esta página a partir de uma unidade (location) específica."
+      );
+      return;
+    }
+
+    try {
+      setCreatingLoading(true);
+      setCreatingError(null);
+
+      const name = formName.trim();
+      const description = formDescription.trim() || undefined;
+
+      if (!name) {
+        throw new Error("Nome do plano é obrigatório.");
+      }
+
+      const priceNumber = Number(formPrice.toString().replace(",", "."));
+      if (!priceNumber || priceNumber <= 0) {
+        throw new Error("Preço deve ser maior que zero.");
+      }
+
+      const visitsNumber = Number(formVisits);
+      if (!visitsNumber || visitsNumber <= 0) {
+        throw new Error("Número de visitas por mês deve ser maior que zero.");
+      }
+
+      if (selectedServiceIds.length === 0) {
+        throw new Error("Seleciona pelo menos um serviço para este plano.");
+      }
+
+      const minDaysBetweenNumber = formMinDaysBetween
+        ? Number(formMinDaysBetween)
+        : undefined;
+
+      if (
+        formMinDaysBetween &&
+        (!minDaysBetweenNumber || minDaysBetweenNumber <= 0)
+      ) {
+        throw new Error(
+          "Intervalo mínimo entre visitas deve ser um número maior que zero."
+        );
+      }
+
+      const created = await createOwnerPlanTemplate({
+        locationId,
+        name,
+        description,
+        priceEuro: priceNumber,
+        intervalDays: 30, // ciclo mensal fixo
+        visitsPerInterval: visitsNumber,
+        sameDayServiceIds: selectedServiceIds,
+        minDaysBetweenVisits: minDaysBetweenNumber,
+      });
+
+      // Atualiza estado local com o novo plano
+      setData((prev) => {
+        if (!prev) return prev;
+
+        const newPlanTemplates = [...prev.planTemplates, created].sort((a, b) =>
+          a.name.localeCompare(b.name)
+        );
+
+        const newPlanStats = [
+          ...prev.planStats,
+          {
+            planId: created.id,
+            activeCustomers: 0,
+            totalRevenueMonth: 0,
+            churnRatePercent: 0,
+          },
+        ];
+
+        const newPlanCustomersByPlan = {
+          ...prev.planCustomersByPlan,
+          [created.id]: [],
+        };
+
+        return {
+          planTemplates: newPlanTemplates,
+          planStats: newPlanStats,
+          planCustomersByPlan: newPlanCustomersByPlan,
+        };
+      });
+
+      setSelectedId(created.id);
+
+      // limpa form
+      setFormName("");
+      setFormDescription("");
+      setFormPrice("0");
+      setFormVisits("2");
+      setFormMinDaysBetween("");
+      setSelectedServiceIds([]);
+      setApplyDiscount(false);
+      setDiscountPercent(10);
+      setPriceAuto(true);
+      setIsCreating(false);
+    } catch (err: any) {
+      console.error(err);
+      setCreatingError(err?.message ?? "Erro ao criar plano.");
+    } finally {
+      setCreatingLoading(false);
+    }
+  }
+
+  // ---------------------------------------------------------------
+  // Estados globais de loading/erro
+  // ---------------------------------------------------------------
   if (loading) {
     return (
       <div className="p-4 text-xs text-slate-400">
@@ -74,6 +313,12 @@ export default function OwnerPlanosPage() {
 
   const { planTemplates, planStats, planCustomersByPlan } = data;
 
+  const filteredPlanTemplates = planTemplates.filter((plan) => {
+    if (filterStatus === "all") return true;
+    if (filterStatus === "active") return plan.isActive;
+    return !plan.isActive; // "inactive"
+  });
+
   const selectedPlan = selectedId
     ? planTemplates.find((p) => p.id === selectedId) ?? null
     : null;
@@ -86,6 +331,9 @@ export default function OwnerPlanosPage() {
     ? planCustomersByPlan[selectedId] ?? []
     : [];
 
+  // ---------------------------------------------------------------
+  // Render
+  // ---------------------------------------------------------------
   return (
     <>
       {/* Cabeçalho */}
@@ -98,20 +346,280 @@ export default function OwnerPlanosPage() {
         </div>
 
         <div className="flex flex-wrap gap-2 text-xs">
-          <button className="px-3 py-1 rounded-lg border border-slate-800 bg-slate-900/80">
+          <button
+            onClick={() => setFilterStatus("all")}
+            className={[
+              "px-3 py-1 rounded-lg border",
+              filterStatus === "all"
+                ? "border-emerald-500 bg-emerald-500/10 text-emerald-100"
+                : "border-slate-800 bg-slate-900/80 text-slate-200 hover:border-slate-700",
+            ].join(" ")}
+          >
             Todos
           </button>
-          <button className="px-3 py-1 rounded-lg border border-slate-800 bg-slate-900/80">
+
+          <button
+            onClick={() => setFilterStatus("active")}
+            className={[
+              "px-3 py-1 rounded-lg border",
+              filterStatus === "active"
+                ? "border-emerald-500 bg-emerald-500/10 text-emerald-100"
+                : "border-slate-800 bg-slate-900/80 text-slate-200 hover:border-slate-700",
+            ].join(" ")}
+          >
             Ativos
           </button>
-          <button className="px-3 py-1 rounded-lg border border-slate-800 bg-slate-900/80">
+
+          <button
+            onClick={() => setFilterStatus("inactive")}
+            className={[
+              "px-3 py-1 rounded-lg border",
+              filterStatus === "inactive"
+                ? "border-emerald-500 bg-emerald-500/10 text-emerald-100"
+                : "border-slate-800 bg-slate-900/80 text-slate-200 hover:border-slate-700",
+            ].join(" ")}
+          >
             Inativos
           </button>
-          <button className="px-3 py-1 rounded-lg border border-emerald-600 bg-emerald-600/20 text-emerald-200">
+
+          <button
+            type="button"
+            onClick={() => setIsCreating(true)}
+            className="px-3 py-1 rounded-lg border border-emerald-600 bg-emerald-600/20 text-emerald-200"
+          >
             + Criar plano
           </button>
         </div>
       </header>
+
+      {/* Form de criação */}
+      {isCreating && (
+        <section className="mb-4 rounded-2xl border border-emerald-700/60 bg-slate-900/70 p-4 text-xs">
+          <div className="flex items-center justify-between mb-3">
+            <div>
+              <p className="text-sm font-semibold">Criar novo plano</p>
+              <p className="text-[11px] text-slate-400">
+                Define o nome, os serviços, o número de visitas por mês e o
+                valor. Depois evoluímos para regras mais avançadas (horários,
+                antecedência mínima, etc.).
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={() => !creatingLoading && setIsCreating(false)}
+              className="text-[11px] text-slate-300 hover:text-slate-100"
+            >
+              Cancelar
+            </button>
+          </div>
+
+          {creatingError && (
+            <p className="mb-2 text-[11px] text-rose-300">{creatingError}</p>
+          )}
+
+          {!locationId && (
+            <p className="mb-2 text-[11px] text-amber-300">
+              ⚠ Para criar um plano, abre esta página a partir de uma unidade
+              (location) específica.
+            </p>
+          )}
+
+          <form
+            onSubmit={handleCreatePlan}
+            className="grid grid-cols-1 md:grid-cols-2 gap-3"
+          >
+            {/* Coluna esquerda: nome, descrição, serviços */}
+            <div className="space-y-3">
+              <div>
+                <label className="text-[11px] text-slate-300">
+                  Nome do plano
+                </label>
+                <input
+                  className="mt-1 w-full rounded-lg border border-slate-800 bg-slate-950 px-3 py-2 text-[11px] text-slate-100 outline-none focus:border-emerald-500"
+                  value={formName}
+                  onChange={(e) => setFormName(e.target.value)}
+                  required
+                />
+              </div>
+
+              <div>
+                <label className="text-[11px] text-slate-300">Descrição</label>
+                <textarea
+                  className="mt-1 w-full rounded-lg border border-slate-800 bg-slate-950 px-3 py-2 text-[11px] text-slate-100 outline-none focus:border-emerald-500"
+                  rows={3}
+                  value={formDescription}
+                  onChange={(e) => setFormDescription(e.target.value)}
+                />
+              </div>
+
+              <div>
+                <label className="text-[11px] text-slate-300">
+                  Serviços incluídos no plano
+                </label>
+                {servicesLoading ? (
+                  <p className="mt-1 text-[11px] text-slate-500">
+                    Carregando serviços...
+                  </p>
+                ) : servicesError ? (
+                  <p className="mt-1 text-[11px] text-rose-300">
+                    {servicesError}
+                  </p>
+                ) : services.length === 0 ? (
+                  <p className="mt-1 text-[11px] text-slate-500">
+                    Ainda não há serviços cadastrados nesta unidade.
+                  </p>
+                ) : (
+                  <div className="mt-2 flex flex-wrap gap-2">
+                    {services.map((service) => {
+                      const checked = selectedServiceIds.includes(service.id);
+                      return (
+                        <button
+                          key={service.id}
+                          type="button"
+                          onClick={() =>
+                            setSelectedServiceIds((prev) =>
+                              checked
+                                ? prev.filter((id) => id !== service.id)
+                                : [...prev, service.id]
+                            )
+                          }
+                          className={[
+                            "rounded-full border px-3 py-1 text-[11px]",
+                            checked
+                              ? "border-emerald-500 bg-emerald-500/10 text-emerald-100"
+                              : "border-slate-700 bg-slate-950 text-slate-200 hover:border-slate-500",
+                          ].join(" ")}
+                        >
+                          {service.name} · € {service.priceEuro.toFixed(2)}
+                        </button>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+            </div>
+
+            {/* Coluna direita: preço, visitas, intervalo mínimo, desconto */}
+            <div className="space-y-3">
+              <div className="grid grid-cols-3 gap-2">
+                <div>
+                  <label className="text-[11px] text-slate-300">
+                    Preço final (€)
+                  </label>
+                  <input
+                    type="number"
+                    min={0}
+                    step="0.01"
+                    className="mt-1 w-full rounded-lg border border-slate-800 bg-slate-950 px-3 py-2 text-[11px] text-slate-100 outline-none focus:border-emerald-500"
+                    value={formPrice}
+                    onChange={(e) => {
+                      setFormPrice(e.target.value);
+                      setPriceAuto(false); // passa a ser manual
+                    }}
+                  />
+                </div>
+                <div>
+                  <label className="text-[11px] text-slate-300">
+                    Visitas / mês
+                  </label>
+                  <input
+                    type="number"
+                    min={1}
+                    className="mt-1 w-full rounded-lg border border-slate-800 bg-slate-950 px-3 py-2 text-[11px] text-slate-100 outline-none focus:border-emerald-500"
+                    value={formVisits}
+                    onChange={(e) => {
+                      setFormVisits(e.target.value);
+                      setPriceAuto(true); // muda parâmetro -> recalcula
+                    }}
+                  />
+                </div>
+                <div>
+                  <label className="text-[11px] text-slate-300">
+                    Intervalo mín. (dias)
+                  </label>
+                  <input
+                    type="number"
+                    min={1}
+                    className="mt-1 w-full rounded-lg border border-slate-800 bg-slate-950 px-3 py-2 text-[11px] text-slate-100 outline-none focus:border-emerald-500"
+                    placeholder="Opcional"
+                    value={formMinDaysBetween}
+                    onChange={(e) => setFormMinDaysBetween(e.target.value)}
+                  />
+                </div>
+              </div>
+
+              <div className="mt-1 flex items-center justify-between gap-2">
+                {suggestedPriceDisplay ? (
+                  <p className="text-[11px] text-slate-400">
+                    Sugestão: € {suggestedPriceDisplay}{" "}
+                    <span className="text-slate-500">
+                      (serviços × visitas / mês
+                      {applyDiscount ? ` · -${discountPercent}%` : ""})
+                    </span>
+                  </p>
+                ) : (
+                  <p className="text-[11px] text-slate-500">
+                    Seleciona pelo menos um serviço e nº de visitas para sugerir
+                    valor.
+                  </p>
+                )}
+
+                {suggestedPriceDisplay && (
+                  <button
+                    type="button"
+                    className="text-[11px] text-emerald-400 hover:underline whitespace-nowrap"
+                    onClick={() => {
+                      setPriceAuto(true);
+                      setFormPrice(suggestedPriceDisplay);
+                    }}
+                  >
+                    Usar sugestão
+                  </button>
+                )}
+              </div>
+
+              <div className="mt-1 flex items-center gap-3">
+                <label className="inline-flex items-center gap-1 text-[11px] text-slate-300">
+                  <input
+                    type="checkbox"
+                    className="h-3 w-3 rounded border-slate-600 bg-slate-900"
+                    checked={applyDiscount}
+                    onChange={(e) => {
+                      setApplyDiscount(e.target.checked);
+                      setPriceAuto(true);
+                    }}
+                  />
+                  Aplicar desconto
+                </label>
+
+                {applyDiscount && (
+                  <select
+                    className="rounded-lg border border-slate-800 bg-slate-950 px-2 py-1 text-[11px] text-slate-100 outline-none focus:border-emerald-500"
+                    value={discountPercent}
+                    onChange={(e) =>
+                      setDiscountPercent(Number(e.target.value) as 5 | 10 | 15)
+                    }
+                  >
+                    <option value={5}>5%</option>
+                    <option value={10}>10%</option>
+                    <option value={15}>15%</option>
+                  </select>
+                )}
+              </div>
+
+              <div className="pt-2">
+                <button
+                  type="submit"
+                  disabled={creatingLoading || !locationId}
+                  className="inline-flex items-center justify-center rounded-lg bg-emerald-500 px-4 py-2 text-[11px] font-medium text-slate-950 hover:bg-emerald-400 disabled:opacity-60"
+                >
+                  {creatingLoading ? "Criando..." : "Salvar plano"}
+                </button>
+              </div>
+            </div>
+          </form>
+        </section>
+      )}
 
       {/* Grid principal: lista de planos + detalhe */}
       <section className="grid grid-cols-1 lg:grid-cols-3 gap-4">
@@ -132,12 +640,12 @@ export default function OwnerPlanosPage() {
           </div>
 
           <div className="space-y-2">
-            {planTemplates.length === 0 ? (
+            {filteredPlanTemplates.length === 0 ? (
               <p className="text-[11px] text-slate-500">
-                Ainda não há templates de planos cadastrados.
+                Nenhum plano encontrado para este filtro.
               </p>
             ) : (
-              planTemplates.map((plan) => {
+              filteredPlanTemplates.map((plan) => {
                 const isSelected = plan.id === selectedId;
                 const stats = planStats.find((s) => s.planId === plan.id);
 
@@ -205,6 +713,12 @@ export default function OwnerPlanosPage() {
                       {selectedPlan.periodLabel} · {selectedPlan.visitsIncluded}{" "}
                       visitas incluídas
                     </p>
+                    {selectedPlan.minDaysBetweenVisits && (
+                      <p className="text-[10px] text-slate-500">
+                        Intervalo mínimo entre visitas:{" "}
+                        {selectedPlan.minDaysBetweenVisits} dias
+                      </p>
+                    )}
                     <p className="mt-2 text-[11px] text-slate-300">
                       {selectedPlan.description}
                     </p>

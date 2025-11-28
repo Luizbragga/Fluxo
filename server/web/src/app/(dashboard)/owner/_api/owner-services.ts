@@ -1,5 +1,37 @@
-// src/app/(dashboard)/owner/_api/owner-services.ts
 import { apiClient } from "@/lib/api-client";
+
+/**
+ * Unidades (locations) que o owner pode ver.
+ */
+export type OwnerLocation = {
+  id: string;
+  name: string;
+};
+
+/**
+ * Tenta buscar as locations do tenant logado.
+ * Suporta 2 formatos comuns: { items: [...] } ou array direto.
+ */
+export async function fetchOwnerLocations(): Promise<OwnerLocation[]> {
+  const data = await apiClient<any>("/locations", {
+    method: "GET",
+  });
+
+  const normalize = (loc: any): OwnerLocation => ({
+    id: loc.id,
+    name: loc.name ?? loc.slug ?? "Unidade sem nome",
+  });
+
+  if (Array.isArray(data)) {
+    return data.map(normalize);
+  }
+
+  if (Array.isArray(data?.items)) {
+    return data.items.map(normalize);
+  }
+
+  return [];
+}
 
 /**
  * Shape que vem DO BACKEND (ServicesService.toViewModel)
@@ -13,6 +45,7 @@ type RawServiceFromApi = {
   priceLabel: string; // "10,00"
   pricePerHour: number | null;
   active: boolean;
+  locationId?: string | null;
   // outros campos do Prisma (createdAt, updatedAt etc) podem existir,
   // mas não precisamos tipar todos se não vamos usar.
 };
@@ -54,16 +87,17 @@ type ServicesFindAllResponse = {
 };
 
 /**
- * Busca os serviços do tenant logado.
- * Reaproveitado pela visão geral e pela tela de Serviços.
+ * Busca os serviços da unidade selecionada (locationId).
  */
-export async function fetchOwnerServices(): Promise<{
+export async function fetchOwnerServices(locationId?: string): Promise<{
   services: OwnerService[];
   stats: OwnerServiceStats[];
 }> {
-  // baseURL do apiClient já é http://localhost:4000/v1
-  // então aqui é só "/services"
-  const data = await apiClient<ServicesFindAllResponse>("/services", {
+  const query = locationId
+    ? `?locationId=${encodeURIComponent(locationId)}`
+    : "";
+
+  const data = await apiClient<ServicesFindAllResponse>(`/services${query}`, {
     method: "GET",
   });
 
@@ -92,4 +126,39 @@ export async function fetchOwnerServices(): Promise<{
   }));
 
   return { services, stats };
+}
+
+/**
+ * Cria um novo serviço para o tenant logado,
+ * sempre amarrando na unidade (locationId) selecionada.
+ */
+export async function createOwnerService(input: {
+  name: string;
+  durationMinutes: number;
+  basePrice: number;
+  locationId: string;
+}): Promise<OwnerService> {
+  const body = {
+    name: input.name,
+    durationMin: input.durationMinutes,
+    priceCents: Math.round(input.basePrice * 100),
+    locationId: input.locationId,
+  };
+
+  const created = await apiClient<RawServiceFromApi>("/services", {
+    method: "POST",
+    body,
+  });
+
+  return {
+    id: created.id,
+    name: created.name,
+    durationMinutes: created.durationMin,
+    basePrice: created.priceCents / 100,
+    priceLabel: created.priceLabel,
+    pricePerHour: created.pricePerHour,
+    isActive: created.active,
+    category: null,
+    isPlanEligible: false,
+  };
 }

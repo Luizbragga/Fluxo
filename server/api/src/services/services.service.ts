@@ -1,4 +1,8 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import {
+  BadRequestException,
+  Injectable,
+  NotFoundException,
+} from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { CreateServiceDto } from './dto/create-service.dto';
 import { UpdateServiceDto } from './dto/update-service.dto';
@@ -13,7 +17,7 @@ export class ServicesService {
    * que NÃO são salvos no banco (priceLabel, pricePerHour, etc).
    */
   private toViewModel(service: Service) {
-    const { durationMin, priceCents, ...rest } = service;
+    const { durationMin, priceCents, locationId, ...rest } = service;
 
     const priceEuro = priceCents / 100;
     const priceLabel = priceEuro.toFixed(2).replace('.', ','); // ex: "10,00"
@@ -27,6 +31,7 @@ export class ServicesService {
       ...rest,
       durationMin,
       priceCents,
+      locationId,
       // extras derivados, só pra leitura:
       priceLabel,
       pricePerHour,
@@ -34,6 +39,27 @@ export class ServicesService {
   }
 
   async create(tenantId: string, dto: CreateServiceDto) {
+    // Agora locationId é obrigatório para criar serviço pelo painel
+    const { locationId } = dto;
+
+    if (!locationId) {
+      throw new BadRequestException(
+        'locationId é obrigatório para criar serviços.',
+      );
+    }
+
+    // garante que a location pertence ao tenant
+    const location = await this.prisma.location.findFirst({
+      where: { id: locationId, tenantId },
+      select: { id: true },
+    });
+
+    if (!location) {
+      throw new BadRequestException(
+        'locationId inválido ou não pertence a este tenant.',
+      );
+    }
+
     const created = await this.prisma.service.create({
       data: {
         tenantId,
@@ -41,6 +67,7 @@ export class ServicesService {
         durationMin: dto.durationMin,
         priceCents: dto.priceCents,
         active: dto.active ?? true,
+        locationId, // sempre preenchido aqui
       },
     });
 
@@ -57,7 +84,7 @@ export class ServicesService {
    */
   async findAll(
     tenantId: string,
-    params?: { page?: number; pageSize?: number },
+    params?: { page?: number; pageSize?: number; locationId?: string },
   ) {
     // defaults seguros
     const page = params?.page && params.page > 0 ? params.page : 1;
@@ -70,10 +97,14 @@ export class ServicesService {
     const skip = (page - 1) * pageSize;
     const take = pageSize;
 
-    const where = {
+    const where: any = {
       tenantId,
       active: true,
     };
+
+    if (params?.locationId) {
+      where.locationId = params.locationId;
+    }
 
     const [services, total] = await Promise.all([
       this.prisma.service.findMany({
@@ -119,6 +150,20 @@ export class ServicesService {
       throw new NotFoundException('Service não encontrado para este tenant');
     }
 
+    // se quiser mudar a location, valida também
+    if (dto.locationId) {
+      const location = await this.prisma.location.findFirst({
+        where: { id: dto.locationId, tenantId },
+        select: { id: true },
+      });
+
+      if (!location) {
+        throw new BadRequestException(
+          'locationId inválido ou não pertence a este tenant.',
+        );
+      }
+    }
+
     const updated = await this.prisma.service.update({
       where: { id },
       data: {
@@ -126,6 +171,7 @@ export class ServicesService {
         durationMin: dto.durationMin ?? undefined,
         priceCents: dto.priceCents ?? undefined,
         active: dto.active ?? undefined,
+        locationId: dto.locationId ?? undefined,
       },
     });
 

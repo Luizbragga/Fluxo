@@ -32,10 +32,11 @@ export class PlanTemplatesService {
         name: dto.name,
         description: dto.description ?? null,
         priceCents: dto.priceCents,
-        intervalDays: dto.intervalDays,
+        intervalDays: dto.intervalDays, // vamos enviar sempre 30 do front
         visitsPerInterval: dto.visitsPerInterval ?? 1,
         sameDayServiceIds: dto.sameDayServiceIds ?? [],
         allowedWeekdays: dto.allowedWeekdays ?? [],
+        minDaysBetweenVisits: dto.minDaysBetweenVisits ?? null,
       },
     });
   }
@@ -83,6 +84,7 @@ export class PlanTemplatesService {
       visitsPerInterval: dto.visitsPerInterval,
       sameDayServiceIds: dto.sameDayServiceIds,
       allowedWeekdays: dto.allowedWeekdays,
+      minDaysBetweenVisits: dto.minDaysBetweenVisits,
     };
 
     if (dto.locationId) {
