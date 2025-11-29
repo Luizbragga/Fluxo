@@ -17,6 +17,9 @@ export class CustomerPlansService {
   // ---------------------------------------------------------------------------
   // CREATE
   // ---------------------------------------------------------------------------
+  // ---------------------------------------------------------------------------
+  // CREATE
+  // ---------------------------------------------------------------------------
   async create(tenantId: string, dto: CreateCustomerPlanDto) {
     // 1) Garantir que o template existe e é do tenant
     const template = await this.prisma.planTemplate.findFirst({
@@ -37,17 +40,18 @@ export class CustomerPlansService {
       throw new BadRequestException('PlanTemplate inválido para este tenant.');
     }
 
-    // 2) Definir o primeiro ciclo do plano (agora -> agora + intervalDays)
+    // 2) Definir o primeiro ciclo do plano:
+    //    - início = agora
+    //    - fim    = mesmo dia do mês seguinte (ajustado p/ fim do mês quando precisar)
     const now = new Date();
     const currentCycleStart = now;
-    const currentCycleEnd = new Date(
-      now.getTime() + template.intervalDays * 24 * 60 * 60 * 1000,
-    );
+    const currentCycleEnd = addMonthsCalendar(now, 1);
 
-    // 3) Vencimento da 1ª cobrança = fim do ciclo (sem 8 dias de tolerância)
+    // 3) Consideramos que, ao criar o plano, o primeiro mês já é pago
     const firstDueDate = currentCycleEnd;
+    const firstPaidAt = now;
 
-    // 4) Criar CustomerPlan + primeira cobrança dentro de transação
+    // 4) Criar CustomerPlan + primeiro pagamento PAGO dentro de transação
     const customerPlan = await this.prisma.$transaction(async (tx) => {
       const createdPlan = await tx.customerPlan.create({
         data: {
@@ -63,20 +67,24 @@ export class CustomerPlansService {
           currentCycleStart,
           currentCycleEnd,
 
-          // pagamento ainda não realizado
-          lastPaymentStatus: CustomerPlanPaymentStatus.pending,
+          lastPaymentStatus: CustomerPlanPaymentStatus.paid,
+          lastPaymentAt: firstPaidAt,
+
+          // começamos o ciclo com 0 visitas usadas
+          visitsUsedInCycle: 0,
         },
       });
 
-      // primeira cobrança pendente para este plano
+      // primeiro pagamento já como "paid"
       await tx.customerPlanPayment.create({
         data: {
           tenantId,
           customerPlanId: createdPlan.id,
+          // dueDate = fim do primeiro ciclo
           dueDate: firstDueDate,
           amountCents: template.priceCents,
-          status: CustomerPlanPaymentStatus.pending,
-          // paidAt fica null
+          status: CustomerPlanPaymentStatus.paid,
+          paidAt: firstPaidAt,
         },
       });
 
@@ -97,7 +105,7 @@ export class CustomerPlansService {
   // LISTAR TODOS (por tenant/location)
   // ---------------------------------------------------------------------------
   async findAll(tenantId: string, locationId?: string) {
-    return this.prisma.customerPlan.findMany({
+    const plans = await this.prisma.customerPlan.findMany({
       where: {
         tenantId,
         ...(locationId ? { locationId } : {}),
@@ -106,7 +114,23 @@ export class CustomerPlansService {
       include: {
         planTemplate: true,
         location: true,
+        payments: true, // precisamos ver os pagamentos para saber se já tem mês adiantado
       },
+    });
+
+    return plans.map((plan) => {
+      const newCycleStart = plan.currentCycleEnd;
+
+      const hasAdvancePayment = plan.payments.some(
+        (payment) =>
+          payment.status === CustomerPlanPaymentStatus.paid &&
+          payment.dueDate >= newCycleStart,
+      );
+
+      return {
+        ...plan,
+        canRegisterPayment: !hasAdvancePayment, // se já tem pagamento adiantado, não pode registrar de novo
+      };
     });
   }
 
@@ -130,7 +154,18 @@ export class CustomerPlansService {
       throw new NotFoundException('CustomerPlan não encontrado no tenant.');
     }
 
-    return plan;
+    const newCycleStart = plan.currentCycleEnd;
+
+    const hasAdvancePayment = plan.payments.some(
+      (payment) =>
+        payment.status === CustomerPlanPaymentStatus.paid &&
+        payment.dueDate >= newCycleStart,
+    );
+
+    return {
+      ...plan,
+      canRegisterPayment: !hasAdvancePayment,
+    };
   }
 
   // ---------------------------------------------------------------------------
@@ -161,7 +196,13 @@ export class CustomerPlansService {
   }
 
   // ---------------------------------------------------------------------------
-  // REGISTAR PAGAMENTO DO PLANO (usado pelo owner)
+  // REGISTAR PAGAMENTO DO PLANO (renovação usada pelo owner)
+  // ---------------------------------------------------------------------------
+  // ---------------------------------------------------------------------------
+  // REGISTAR PAGAMENTO DO PLANO (renovação usada pelo owner)
+  // ---------------------------------------------------------------------------
+  // ---------------------------------------------------------------------------
+  // REGISTAR PAGAMENTO DO PLANO (renovação usada pelo owner)
   // ---------------------------------------------------------------------------
   async registerPayment(
     tenantId: string,
@@ -175,7 +216,7 @@ export class CustomerPlansService {
         include: {
           planTemplate: {
             select: {
-              intervalDays: true,
+              priceCents: true,
             },
           },
         },
@@ -184,8 +225,16 @@ export class CustomerPlansService {
       if (!plan) {
         throw new NotFoundException('CustomerPlan não encontrado no tenant.');
       }
+      const now = new Date();
+      const maxAllowedEnd = addMonthsCalendar(now, 1);
 
-      // 2) Define data do pagamento
+      if (plan.currentCycleEnd > maxAllowedEnd) {
+        throw new BadRequestException(
+          'Já existe um pagamento adiantado para o próximo ciclo. ' +
+            'Só é possível adiantar um mês de cada vez.',
+        );
+      }
+      // 2) Data em que o dinheiro entrou
       const paidAt = dto.paidAt ? new Date(dto.paidAt) : new Date();
 
       if (Number.isNaN(paidAt.getTime())) {
@@ -196,40 +245,37 @@ export class CustomerPlansService {
         throw new BadRequestException('amountCents deve ser maior que zero.');
       }
 
-      // 3) Cria o registro de pagamento (CustomerPlanPayment)
+      // 3) Calcula o novo ciclo:
+      //    - Base = fim do ciclo atual (plan.currentCycleEnd)
+      //    - Novo ciclo começa quando o anterior termina
+      //    - Novo ciclo termina no "mesmo dia" do mês seguinte (regra de calendário)
+      const previousCycleEnd = plan.currentCycleEnd;
+      const newCycleStart = previousCycleEnd;
+      const newCycleEnd = addMonthsCalendar(previousCycleEnd, 1);
+
+      // 4) Cria o registro de pagamento deste novo ciclo
       await tx.customerPlanPayment.create({
         data: {
           tenantId,
           customerPlanId: plan.id,
-          // usamos o fim do ciclo atual como "dueDate" da fatura
-          dueDate: plan.currentCycleEnd,
+          // dueDate = fim do ciclo que está a ser pago
+          dueDate: newCycleEnd,
           amountCents: dto.amountCents,
           status: CustomerPlanPaymentStatus.paid,
           paidAt,
         },
       });
 
-      // 4) Calcula o novo ciclo do plano
-      const intervalDays = plan.planTemplate.intervalDays || 30;
-
-      const newCycleStart = paidAt;
-      const newCycleEnd = new Date(
-        paidAt.getTime() + intervalDays * 24 * 60 * 60 * 1000,
-      );
-
-      // 5) Atualiza o plano:
-      //    - volta para ACTIVE
-      //    - marca lastPaymentStatus como PAID
-      //    - reseta visitas do ciclo
+      // 5) Atualiza o plano
       const updated = await tx.customerPlan.update({
         where: { id: plan.id },
         data: {
           status: CustomerPlanStatus.active,
           lastPaymentStatus: CustomerPlanPaymentStatus.paid,
+          lastPaymentAt: paidAt,
           currentCycleStart: newCycleStart,
           currentCycleEnd: newCycleEnd,
           visitsUsedInCycle: 0,
-          // carryOverVisits mantemos como está por enquanto
         },
         include: {
           planTemplate: true,
@@ -240,4 +286,29 @@ export class CustomerPlansService {
       return updated;
     });
   }
+}
+// Soma `months` meses a uma data, tentando manter o mesmo dia.
+// Se o mês de destino não tiver esse dia (ex.: 31/01 + 1 mês), usa o último dia do mês.
+function addMonthsCalendar(base: Date, months: number): Date {
+  const year = base.getFullYear();
+  const month = base.getMonth();
+  const day = base.getDate();
+
+  const targetMonthIndex = month + months;
+  const targetYear = year + Math.floor(targetMonthIndex / 12);
+  const targetMonth = ((targetMonthIndex % 12) + 12) % 12;
+
+  // último dia do mês alvo
+  const lastDay = new Date(targetYear, targetMonth + 1, 0).getDate();
+  const finalDay = Math.min(day, lastDay);
+
+  return new Date(
+    targetYear,
+    targetMonth,
+    finalDay,
+    base.getHours(),
+    base.getMinutes(),
+    base.getSeconds(),
+    base.getMilliseconds(),
+  );
 }

@@ -40,7 +40,7 @@ export type CustomerPlanDto = {
   carryOverVisits?: number;
   lastPaymentStatus?: string | null;
   lastPaymentAt?: string | null;
-
+  canRegisterPayment?: boolean;
   createdAt?: string;
   updatedAt?: string;
 
@@ -75,10 +75,11 @@ export type PlanCustomer = {
   id: string;
   name: string;
   phone: string;
-  startedAt: string;
+  startedAt: string; // = currentCycleStart
   status: "active" | "late" | "cancelled" | string;
-  nextChargeDate?: string;
-  nextChargeAmount?: number;
+  nextChargeDate?: string; // = currentCycleEnd
+  nextChargeAmount?: number; // valor do ciclo
+  lastPaymentAt?: string | null; // última data de pagamento
 };
 
 export type OwnerPlansData = {
@@ -126,6 +127,7 @@ export async function payOwnerCustomerPlan(
     ...(input.paidAt ? { paidAt: input.paidAt } : {}),
   };
 
+  // backend está com @Post(':id/pay')
   return apiClient<CustomerPlanDto>(
     `/plans/customer-plans/${input.customerPlanId}/pay`,
     {
@@ -184,12 +186,6 @@ async function fetchCustomerPlans(
 
   return apiClient<CustomerPlanDto[]>(path, { method: "GET" });
 }
-export type CreateCustomerPlanInput = {
-  planTemplateId: string;
-  customerName: string;
-  customerPhone?: string;
-  status?: CustomerPlanStatusDto;
-};
 
 // tipo para criação de um plano de cliente pelo owner
 export type CreateCustomerPlanInput = {
@@ -209,6 +205,7 @@ export async function createOwnerCustomerPlan(
     status: input.status ?? "active",
   };
 
+  // backend: @Post() em /plans/customer-plans
   const dto = await apiClient<CustomerPlanDto>("/plans/customer-plans", {
     method: "POST",
     body,
@@ -216,13 +213,6 @@ export async function createOwnerCustomerPlan(
 
   return dto;
 }
-
-export type CreateCustomerPlanInput = {
-  planTemplateId: string;
-  customerName: string;
-  customerPhone?: string;
-  status?: CustomerPlanStatusDto;
-};
 
 // -------------------- Transformações auxiliares -----------------------------
 
@@ -266,12 +256,14 @@ function buildStatsAndCustomers(
       id: cp.id,
       name: cp.customerName,
       phone: cp.customerPhone ?? "",
-      // por enquanto usamos o início do ciclo como "desde"
+      // início do ciclo atual (já pago)
       startedAt: cp.currentCycleStart,
       status: cp.status,
-      // estimativa simples: próxima cobrança = fim do ciclo atual
+      // próxima cobrança = fim do ciclo atual
       nextChargeDate: cp.currentCycleEnd,
       nextChargeAmount: cp.planTemplate.priceCents / 100,
+      // vem direto do DTO
+      lastPaymentAt: cp.lastPaymentAt ?? null,
     }));
 
     planCustomersByPlan[template.id] = customersUI;
@@ -363,8 +355,9 @@ export async function createOwnerPlanTemplate(
     allowedEndTimeMinutes: input.allowedEndTimeMinutes ?? undefined,
   };
 
+  // backend: @Post() em /plan-templates
   const dto = await apiClient<PlanTemplateDto>("/plan-templates", {
-    method: "PATCH",
+    method: "POST",
     body,
   });
 

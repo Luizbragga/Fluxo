@@ -57,7 +57,7 @@ export class CustomerPlansController {
   ) {
     return this.customerPlansService.update(user.tenantId, id, dto);
   }
-  @Patch(':id/pay')
+  @Post(':id/pay')
   registerPayment(
     @CurrentUser() user: AuthUser,
     @Param('id') id: string,

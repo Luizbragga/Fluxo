@@ -9,7 +9,8 @@ import {
   createOwnerPlanTemplate,
   fetchOwnerServices,
   OwnerService,
-  payOwnerCustomerPlan, // <-- NOVO
+  payOwnerCustomerPlan,
+  createOwnerCustomerPlan,
 } from "../_api/owner-plans";
 
 import {
@@ -17,22 +18,52 @@ import {
   type OwnerLocation,
 } from "../_api/owner-services";
 
-function mapCustomerPlanDtoToPlanCustomer(dto: CustomerPlanDto): PlanCustomer {
-  return {
-    id: dto.id,
-    name: dto.customerName,
-    phone: dto.customerPhone ?? "",
-    startedAt: dto.currentCycleStart,
-    status: dto.status,
-    nextChargeDate: dto.currentCycleEnd,
-    nextChargeAmount: dto.planTemplate.priceCents / 100,
-  };
+type PaymentActionState = "noData" | "canPay" | "alreadyAdvanced" | "tooEarly";
+
+function getPaymentActionState(
+  customer: PlanCustomer,
+  advanceDays: number
+): PaymentActionState {
+  if (!customer.nextChargeDate) return "noData";
+
+  const nextDate = new Date(customer.nextChargeDate);
+  if (Number.isNaN(nextDate.getTime())) return "noData";
+
+  const now = new Date();
+
+  // janela para adiantar pagamento (ex.: 5 dias antes do fim do ciclo)
+  const windowStart = new Date(nextDate);
+  windowStart.setDate(windowStart.getDate() - advanceDays);
+
+  // se já estamos dentro da janela -> pode pagar próximo mês
+  if (now >= windowStart) {
+    return "canPay";
+  }
+
+  // se ainda não está na janela, vemos se o ciclo atual já foi pago adiantado
+  // (ou seja, o pagamento foi feito ANTES do início do ciclo atual)
+  if (customer.lastPaymentAt) {
+    const lastPaid = new Date(customer.lastPaymentAt);
+    const currentStart = new Date(customer.startedAt);
+
+    if (
+      !Number.isNaN(lastPaid.getTime()) &&
+      !Number.isNaN(currentStart.getTime()) &&
+      lastPaid < currentStart
+    ) {
+      return "alreadyAdvanced"; // próximo mês já está pago
+    }
+  }
+
+  // aqui é “não dá pra pagar ainda, mas também não está adiantado”
+  return "tooEarly";
 }
 
 type FilterStatus = "all" | "active" | "inactive";
 
 export default function OwnerPlanosPage() {
   const searchParams = useSearchParams();
+  const ADVANCE_PAYMENT_DAYS = 5; // quantos dias antes do fim do ciclo pode adiantar o próximo mês
   const initialLocationId = searchParams.get("locationId") ?? undefined;
 
   // location selecionada para a tela inteira
@@ -66,12 +97,6 @@ export default function OwnerPlanosPage() {
   const [formVisits, setFormVisits] = useState("2"); // visitas por mês
   const [formMinDaysBetween, setFormMinDaysBetween] = useState("");
 
-  // adicionar cliente a um plano
-  const [isAddingCustomer, setIsAddingCustomer] = useState(false);
-  const [addCustomerName, setAddCustomerName] = useState("");
-  const [addCustomerPhone, setAddCustomerPhone] = useState("");
-  const [addCustomerLoading, setAddCustomerLoading] = useState(false);
-  const [addCustomerError, setAddCustomerError] = useState<string | null>(null);
   // criação de cliente no plano selecionado
   const [isCreatingCustomer, setIsCreatingCustomer] = useState(false);
   const [newCustomerName, setNewCustomerName] = useState("");
@@ -113,6 +138,7 @@ export default function OwnerPlanosPage() {
     },
     {} as Record<number, string>
   );
+
   // ---------------------------------------------------------------------------
   // Carregar locations (lista de unidades)
   // ---------------------------------------------------------------------------
@@ -444,12 +470,25 @@ export default function OwnerPlanosPage() {
       setCreatingLoading(false);
     }
   }
+
   // ---------------------------------------------------------------------------
   // Registrar pagamento de um plano de cliente
   // ---------------------------------------------------------------------------
+  const selectedPlan =
+    selectedId && data
+      ? data.planTemplates.find((p) => p.id === selectedId) ?? null
+      : null;
+
   async function handleRegisterPayment(customer: PlanCustomer) {
     if (!selectedPlan || !selectedLocationId) {
       // sem plano selecionado ou unidade, não faz sentido registrar pagamento
+      return;
+    }
+
+    const actionState = getPaymentActionState(customer, ADVANCE_PAYMENT_DAYS);
+
+    // segurança extra: só registra pagamento se estiver na janela certa
+    if (actionState !== "canPay") {
       return;
     }
 
@@ -578,10 +617,6 @@ export default function OwnerPlanosPage() {
     return !plan.isActive; // "inactive"
   });
 
-  const selectedPlan = selectedId
-    ? planTemplates.find((p) => p.id === selectedId) ?? null
-    : null;
-
   const selectedStats = selectedId
     ? planStats.find((s) => s.planId === selectedId)
     : undefined;
@@ -589,6 +624,7 @@ export default function OwnerPlanosPage() {
   const customers: PlanCustomer[] = selectedId
     ? planCustomersByPlan[selectedId] ?? []
     : [];
+
   // textos derivados para mostrar as regras do plano selecionado
   let selectedPlanWeekdaysLabel = "";
   let selectedPlanTimeWindowLabel = "";
@@ -1210,7 +1246,6 @@ export default function OwnerPlanosPage() {
                   </div>
 
                   {/* Cobranças & pagamentos */}
-                  {/* Cobranças & pagamentos */}
                   <div className="rounded-xl border border-slate-800 bg-slate-950/60 p-3">
                     <p className="text-[11px] text-slate-400">
                       Cobranças &amp; pagamentos
@@ -1230,7 +1265,6 @@ export default function OwnerPlanosPage() {
                     ) : (
                       <div className="mt-2 max-h-40 overflow-y-auto space-y-2">
                         {customers.map((c) => {
-                          // status de uso (plano)
                           const usageStatusLabel = (() => {
                             if (c.status === "active") return "Em uso";
                             if (c.status === "cancelled") return "Cancelado";
@@ -1238,7 +1272,6 @@ export default function OwnerPlanosPage() {
                             return c.status;
                           })();
 
-                          // status financeiro baseado na próxima cobrança + 8 dias
                           const financialStatus = (() => {
                             if (!c.nextChargeDate || !c.nextChargeAmount) {
                               return {
@@ -1265,6 +1298,11 @@ export default function OwnerPlanosPage() {
                               variant: "late" as const,
                             };
                           })();
+
+                          const actionState = getPaymentActionState(
+                            c,
+                            ADVANCE_PAYMENT_DAYS
+                          );
 
                           const badgeBase =
                             "inline-flex rounded-full px-2 py-[1px] text-[9px]";
@@ -1297,8 +1335,33 @@ export default function OwnerPlanosPage() {
                                 </div>
 
                                 <div className="text-right">
+                                  {actionState === "canPay" && (
+                                    <button
+                                      type="button"
+                                      onClick={() => handleRegisterPayment(c)}
+                                      disabled={registeringPaymentId === c.id}
+                                      className="mt-1 inline-flex items-center justify-center rounded-full border border-emerald-600 bg-emerald-600/20 px-2 py-[2px] text-[9px] text-emerald-50 hover:bg-emerald-500/30 disabled:opacity-60"
+                                    >
+                                      {registeringPaymentId === c.id
+                                        ? "Registrando..."
+                                        : "Registrar próximo mês"}
+                                    </button>
+                                  )}
+
+                                  {actionState === "alreadyAdvanced" && (
+                                    <span className="mt-1 inline-flex items-center justify-center rounded-full border border-emerald-700 bg-slate-900 px-2 py-[2px] text-[9px] text-emerald-200">
+                                      Próx. mês já pago
+                                    </span>
+                                  )}
+
+                                  {actionState === "tooEarly" && (
+                                    <span className="mt-1 inline-flex items-center justify-center rounded-full border border-slate-700 bg-slate-900 px-2 py-[2px] text-[9px] text-slate-300">
+                                      Pagamento disponível mais perto da data
+                                    </span>
+                                  )}
+
                                   <span
-                                    className={`${badgeBase} ${badgeClass}`}
+                                    className={`${badgeBase} ${badgeClass} mt-1`}
                                   >
                                     {financialStatus.label}
                                   </span>
@@ -1464,40 +1527,63 @@ export default function OwnerPlanosPage() {
                 </p>
               ) : (
                 <div className="space-y-2">
-                  {customers.map((c) => (
-                    <div
-                      key={c.id}
-                      className="rounded-xl border border-slate-800 bg-slate-950/60 px-3 py-2 flex items-center justify-between"
-                    >
-                      <div>
-                        <p className="text-[11px] font-medium">{c.name}</p>
-                        <p className="text-[11px] text-slate-400">{c.phone}</p>
-                        <p className="text-[10px] text-slate-500">
-                          Desde {c.startedAt}
-                        </p>
-                      </div>
-                      <div className="text-right">
-                        {c.nextChargeDate && c.nextChargeAmount && (
-                          <p className="text-[10px] text-slate-400">
-                            Próx. cobrança: {c.nextChargeDate}
+                  {customers.map((c) => {
+                    const actionState = getPaymentActionState(
+                      c,
+                      ADVANCE_PAYMENT_DAYS
+                    );
+
+                    return (
+                      <div
+                        key={c.id}
+                        className="rounded-xl border border-slate-800 bg-slate-950/60 px-3 py-2 flex items-center justify-between"
+                      >
+                        <div>
+                          <p className="text-[11px] font-medium">{c.name}</p>
+                          <p className="text-[11px] text-slate-400">
+                            {c.phone}
                           </p>
-                        )}
+                          <p className="text-[10px] text-slate-500">
+                            Desde {c.startedAt}
+                          </p>
+                        </div>
+                        <div className="text-right">
+                          {c.nextChargeDate && c.nextChargeAmount && (
+                            <p className="text-[10px] text-slate-400">
+                              Próx. cobrança: {c.nextChargeDate}
+                            </p>
+                          )}
 
-                        <PlanCustomerStatusBadge status={c.status} />
+                          <PlanCustomerStatusBadge status={c.status} />
 
-                        <button
-                          type="button"
-                          onClick={() => handleRegisterPayment(c)}
-                          disabled={registeringPaymentId === c.id}
-                          className="mt-1 inline-flex items-center justify-center rounded-full border border-emerald-600 bg-emerald-600/20 px-2 py-[2px] text-[9px] text-emerald-50 hover:bg-emerald-500/30 disabled:opacity-60"
-                        >
-                          {registeringPaymentId === c.id
-                            ? "Registrando..."
-                            : "Registrar pagamento"}
-                        </button>
+                          {actionState === "canPay" && (
+                            <button
+                              type="button"
+                              onClick={() => handleRegisterPayment(c)}
+                              disabled={registeringPaymentId === c.id}
+                              className="mt-1 inline-flex items-center justify-center rounded-full border border-emerald-600 bg-emerald-600/20 px-2 py-[2px] text-[9px] text-emerald-50 hover:bg-emerald-500/30 disabled:opacity-60"
+                            >
+                              {registeringPaymentId === c.id
+                                ? "Registrando..."
+                                : "Registrar pagamento"}
+                            </button>
+                          )}
+
+                          {actionState === "alreadyAdvanced" && (
+                            <span className="mt-1 inline-flex items-center justify-center rounded-full border border-emerald-700 bg-slate-900 px-2 py-[2px] text-[9px] text-emerald-200">
+                              Próx. mês já pago
+                            </span>
+                          )}
+
+                          {actionState === "tooEarly" && (
+                            <span className="mt-1 inline-flex items-center justify-center rounded-full border border-slate-700 bg-slate-900 px-2 py-[2px] text-[9px] text-slate-300">
+                              Pagamento disponível mais perto da data
+                            </span>
+                          )}
+                        </div>
                       </div>
-                    </div>
-                  ))}
+                    );
+                  })}
                 </div>
               )}
             </div>
