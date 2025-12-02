@@ -114,6 +114,21 @@ export type CreatePlanTemplateInput = {
   allowedStartTimeMinutes?: number;
   allowedEndTimeMinutes?: number;
 };
+export type UpdatePlanTemplateInput = {
+  id: string;
+  locationId?: string;
+  name?: string;
+  description?: string;
+  priceEuro?: number;
+  intervalDays?: number;
+  visitsPerInterval?: number;
+  sameDayServiceIds?: string[];
+  allowedWeekdays?: number[];
+  minDaysBetweenVisits?: number;
+  allowedStartTimeMinutes?: number;
+  allowedEndTimeMinutes?: number;
+};
+
 export type PayCustomerPlanInput = {
   customerPlanId: string;
   amountEuro: number;
@@ -358,6 +373,52 @@ export async function createOwnerPlanTemplate(
   // backend: @Post() em /plan-templates
   const dto = await apiClient<PlanTemplateDto>("/plan-templates", {
     method: "POST",
+    body,
+  });
+
+  return normalizePlanTemplate(dto);
+}
+export async function updateOwnerPlanTemplate(
+  input: UpdatePlanTemplateInput
+): Promise<PlanTemplateUI> {
+  const body: any = {};
+
+  if (input.locationId !== undefined) {
+    body.locationId = input.locationId;
+  }
+  if (input.name !== undefined) {
+    body.name = input.name;
+  }
+  if (input.description !== undefined) {
+    body.description = input.description;
+  }
+  if (input.priceEuro !== undefined) {
+    body.priceCents = Math.round(input.priceEuro * 100);
+  }
+  if (input.intervalDays !== undefined) {
+    body.intervalDays = input.intervalDays;
+  }
+  if (input.visitsPerInterval !== undefined) {
+    body.visitsPerInterval = input.visitsPerInterval;
+  }
+  if (input.sameDayServiceIds !== undefined) {
+    body.sameDayServiceIds = input.sameDayServiceIds;
+  }
+  if (input.allowedWeekdays !== undefined) {
+    body.allowedWeekdays = input.allowedWeekdays;
+  }
+  if (input.minDaysBetweenVisits !== undefined) {
+    body.minDaysBetweenVisits = input.minDaysBetweenVisits;
+  }
+  if (input.allowedStartTimeMinutes !== undefined) {
+    body.allowedStartTimeMinutes = input.allowedStartTimeMinutes;
+  }
+  if (input.allowedEndTimeMinutes !== undefined) {
+    body.allowedEndTimeMinutes = input.allowedEndTimeMinutes;
+  }
+
+  const dto = await apiClient<PlanTemplateDto>(`/plan-templates/${input.id}`, {
+    method: "PATCH",
     body,
   });
 

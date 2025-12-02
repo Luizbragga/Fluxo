@@ -71,6 +71,15 @@ export class PlanTemplatesController {
     const tenantId = this.getTenantIdFromReq(req);
     return this.planTemplatesService.findAll(tenantId, locationId);
   }
+  // GET /v1/plan-templates/by-service/:serviceId -----------------------------
+  @Get('by-service/:serviceId')
+  @ApiOperation({
+    summary: 'Listar planos que usam um determinado serviço',
+  })
+  findByService(@Req() req: any, @Param('serviceId') serviceId: string) {
+    const tenantId = this.getTenantIdFromReq(req);
+    return this.planTemplatesService.findByService(tenantId, serviceId);
+  }
 
   // GET /v1/plan-templates/:id -----------------------------------------------
   @Get(':id')

@@ -11,6 +11,7 @@ import {
   OwnerService,
   payOwnerCustomerPlan,
   createOwnerCustomerPlan,
+  updateOwnerPlanTemplate,
 } from "../_api/owner-plans";
 
 import {
@@ -60,6 +61,11 @@ function getPaymentActionState(
 }
 
 type FilterStatus = "all" | "active" | "inactive";
+function minutesToTimeLabel(minutes: number): string {
+  const h = Math.floor(minutes / 60);
+  const m = minutes % 60;
+  return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}`;
+}
 
 export default function OwnerPlanosPage() {
   const searchParams = useSearchParams();
@@ -96,6 +102,18 @@ export default function OwnerPlanosPage() {
   const [formPrice, setFormPrice] = useState("0");
   const [formVisits, setFormVisits] = useState("2"); // visitas por mês
   const [formMinDaysBetween, setFormMinDaysBetween] = useState("");
+  // edição de plano selecionado
+  const [isEditingPlan, setIsEditingPlan] = useState(false);
+  const [editLoading, setEditLoading] = useState(false);
+  const [editError, setEditError] = useState<string | null>(null);
+  const [editName, setEditName] = useState("");
+  const [editDescription, setEditDescription] = useState("");
+  const [editPrice, setEditPrice] = useState("");
+  const [editVisits, setEditVisits] = useState("");
+  const [editMinDaysBetween, setEditMinDaysBetween] = useState("");
+  const [editStartTime, setEditStartTime] = useState("");
+  const [editEndTime, setEditEndTime] = useState("");
+  const [editAllowedWeekdays, setEditAllowedWeekdays] = useState<number[]>([]);
 
   // criação de cliente no plano selecionado
   const [isCreatingCustomer, setIsCreatingCustomer] = useState(false);
@@ -292,6 +310,11 @@ export default function OwnerPlanosPage() {
     applyDiscount,
     discountPercent,
   ]);
+  // sempre que trocar de plano selecionado, sai do modo edição
+  useEffect(() => {
+    setIsEditingPlan(false);
+    setEditError(null);
+  }, [selectedId]);
 
   // ---------------------------------------------------------------------------
   // Derivados para exibição (sugestão)
@@ -478,6 +501,34 @@ export default function OwnerPlanosPage() {
     selectedId && data
       ? data.planTemplates.find((p) => p.id === selectedId) ?? null
       : null;
+  function handleStartEditPlan() {
+    if (!selectedPlan) return;
+
+    setEditName(selectedPlan.name);
+    setEditDescription(selectedPlan.description ?? "");
+    setEditPrice(selectedPlan.price.toFixed(2));
+    setEditVisits(String(selectedPlan.visitsIncluded));
+    setEditMinDaysBetween(
+      selectedPlan.minDaysBetweenVisits != null
+        ? String(selectedPlan.minDaysBetweenVisits)
+        : ""
+    );
+    setEditAllowedWeekdays(selectedPlan.allowedWeekdays ?? []);
+
+    setEditStartTime(
+      selectedPlan.allowedStartTimeMinutes != null
+        ? minutesToTimeLabel(selectedPlan.allowedStartTimeMinutes)
+        : ""
+    );
+    setEditEndTime(
+      selectedPlan.allowedEndTimeMinutes != null
+        ? minutesToTimeLabel(selectedPlan.allowedEndTimeMinutes)
+        : ""
+    );
+
+    setEditError(null);
+    setIsEditingPlan(true);
+  }
 
   async function handleRegisterPayment(customer: PlanCustomer) {
     if (!selectedPlan || !selectedLocationId) {
@@ -579,6 +630,103 @@ export default function OwnerPlanosPage() {
       );
     } finally {
       setCreateCustomerLoading(false);
+    }
+  }
+  async function handleUpdatePlan(e: React.FormEvent<HTMLFormElement>) {
+    e.preventDefault();
+    if (!selectedPlan) return;
+
+    try {
+      setEditLoading(true);
+      setEditError(null);
+
+      const name = editName.trim();
+      if (!name) {
+        throw new Error("Nome do plano é obrigatório.");
+      }
+
+      const priceNumber = Number(editPrice.toString().replace(",", "."));
+      if (!priceNumber || priceNumber <= 0) {
+        throw new Error("Preço deve ser maior que zero.");
+      }
+
+      const visitsNumber = Number(editVisits);
+      if (!visitsNumber || visitsNumber <= 0) {
+        throw new Error("Número de visitas por mês deve ser maior que zero.");
+      }
+
+      const minDaysBetweenNumber = editMinDaysBetween
+        ? Number(editMinDaysBetween)
+        : undefined;
+      if (
+        editMinDaysBetween &&
+        (!minDaysBetweenNumber || minDaysBetweenNumber <= 0)
+      ) {
+        throw new Error(
+          "Intervalo mínimo entre visitas deve ser um número maior que zero."
+        );
+      }
+
+      const parseTime = (value: string): number | null => {
+        if (!value) return null;
+        const [hhStr, mmStr] = value.split(":");
+        const hh = Number(hhStr);
+        const mm = Number(mmStr);
+        if (
+          Number.isNaN(hh) ||
+          Number.isNaN(mm) ||
+          hh < 0 ||
+          hh > 23 ||
+          mm < 0 ||
+          mm > 59
+        ) {
+          return null;
+        }
+        return hh * 60 + mm;
+      };
+
+      const startMinutes = parseTime(editStartTime);
+      const endMinutes = parseTime(editEndTime);
+
+      if (editStartTime && startMinutes == null) {
+        throw new Error("Horário inicial inválido. Use o formato HH:MM.");
+      }
+      if (editEndTime && endMinutes == null) {
+        throw new Error("Horário final inválido. Use o formato HH:MM.");
+      }
+      if (
+        startMinutes != null &&
+        endMinutes != null &&
+        endMinutes <= startMinutes
+      ) {
+        throw new Error("Horário final deve ser maior que o horário inicial.");
+      }
+
+      await updateOwnerPlanTemplate({
+        id: selectedPlan.id,
+        name,
+        description: editDescription.trim() || undefined,
+        priceEuro: priceNumber,
+        visitsPerInterval: visitsNumber,
+        minDaysBetweenVisits: minDaysBetweenNumber,
+        allowedWeekdays:
+          editAllowedWeekdays.length > 0 ? editAllowedWeekdays : undefined,
+        allowedStartTimeMinutes: startMinutes ?? undefined,
+        allowedEndTimeMinutes: endMinutes ?? undefined,
+      });
+
+      // recarrega tudo pra atualizar stats, clientes etc.
+      const refreshed = await fetchOwnerPlans({
+        locationId: selectedLocationId,
+      });
+      setData(refreshed);
+      setSelectedId(selectedPlan.id);
+      setIsEditingPlan(false);
+    } catch (err: any) {
+      console.error(err);
+      setEditError(err?.message ?? "Erro ao atualizar plano.");
+    } finally {
+      setEditLoading(false);
     }
   }
 
@@ -1198,8 +1346,176 @@ export default function OwnerPlanosPage() {
                       {selectedPlan.currency} · faturado{" "}
                       {selectedPlan.periodLabel.toLowerCase()}
                     </p>
+
+                    {!isEditingPlan && (
+                      <button
+                        type="button"
+                        onClick={handleStartEditPlan}
+                        className="mt-2 inline-flex items-center justify-center rounded-lg border border-slate-700 bg-slate-900 px-3 py-1 text-[11px] text-slate-100 hover:border-emerald-500 hover:text-emerald-200"
+                      >
+                        Editar plano
+                      </button>
+                    )}
                   </div>
                 </div>
+
+                {editError && (
+                  <p className="mb-2 text-[11px] text-rose-300">{editError}</p>
+                )}
+
+                {isEditingPlan && (
+                  <form
+                    onSubmit={handleUpdatePlan}
+                    className="mb-4 space-y-3 rounded-xl border border-slate-800 bg-slate-950/70 p-3"
+                  >
+                    <div className="grid grid-cols-1 md:grid-cols-4 gap-2">
+                      <div className="md:col-span-2">
+                        <label className="text-[10px] text-slate-400">
+                          Nome do plano
+                        </label>
+                        <input
+                          className="mt-1 w-full rounded-lg border border-slate-800 bg-slate-950 px-3 py-2 text-[11px] text-slate-100 outline-none focus:border-emerald-500"
+                          value={editName}
+                          onChange={(e) => setEditName(e.target.value)}
+                          required
+                        />
+                      </div>
+                      <div>
+                        <label className="text-[10px] text-slate-400">
+                          Preço (€)
+                        </label>
+                        <input
+                          type="number"
+                          min={0}
+                          step="0.01"
+                          className="mt-1 w-full rounded-lg border border-slate-800 bg-slate-950 px-3 py-2 text-[11px] text-slate-100 outline-none focus:border-emerald-500"
+                          value={editPrice}
+                          onChange={(e) => setEditPrice(e.target.value)}
+                          required
+                        />
+                      </div>
+                      <div>
+                        <label className="text-[10px] text-slate-400">
+                          Visitas / mês
+                        </label>
+                        <input
+                          type="number"
+                          min={1}
+                          className="mt-1 w-full rounded-lg border border-slate-800 bg-slate-950 px-3 py-2 text-[11px] text-slate-100 outline-none focus:border-emerald-500"
+                          value={editVisits}
+                          onChange={(e) => setEditVisits(e.target.value)}
+                          required
+                        />
+                      </div>
+                    </div>
+
+                    <div className="grid grid-cols-1 md:grid-cols-4 gap-2">
+                      <div>
+                        <label className="text-[10px] text-slate-400">
+                          Intervalo mín. (dias)
+                        </label>
+                        <input
+                          type="number"
+                          min={1}
+                          className="mt-1 w-full rounded-lg border border-slate-800 bg-slate-950 px-3 py-2 text-[11px] text-slate-100 outline-none focus:border-emerald-500"
+                          placeholder="Opcional"
+                          value={editMinDaysBetween}
+                          onChange={(e) =>
+                            setEditMinDaysBetween(e.target.value)
+                          }
+                        />
+                      </div>
+                      <div>
+                        <label className="text-[10px] text-slate-400">
+                          Hora inicial (opcional)
+                        </label>
+                        <input
+                          type="time"
+                          className="mt-1 w-full rounded-lg border border-slate-800 bg-slate-950 px-2 py-1 text-[11px] text-slate-100 outline-none focus:border-emerald-500"
+                          value={editStartTime}
+                          onChange={(e) => setEditStartTime(e.target.value)}
+                        />
+                      </div>
+                      <div>
+                        <label className="text-[10px] text-slate-400">
+                          Hora final (opcional)
+                        </label>
+                        <input
+                          type="time"
+                          className="mt-1 w-full rounded-lg border border-slate-800 bg-slate-950 px-2 py-1 text-[11px] text-slate-100 outline-none focus:border-emerald-500"
+                          value={editEndTime}
+                          onChange={(e) => setEditEndTime(e.target.value)}
+                        />
+                      </div>
+                      <div>
+                        <p className="mb-1 text-[10px] text-slate-400">
+                          Dias permitidos (opcional)
+                        </p>
+                        <div className="flex flex-wrap gap-1">
+                          {WEEKDAYS.map((day) => {
+                            const active = editAllowedWeekdays.includes(
+                              day.value
+                            );
+                            return (
+                              <button
+                                key={day.value}
+                                type="button"
+                                onClick={() =>
+                                  setEditAllowedWeekdays((prev) =>
+                                    active
+                                      ? prev.filter((v) => v !== day.value)
+                                      : [...prev, day.value]
+                                  )
+                                }
+                                className={[
+                                  "rounded-full px-2 py-[3px] text-[10px] border",
+                                  active
+                                    ? "border-emerald-500 bg-emerald-500/15 text-emerald-100"
+                                    : "border-slate-700 bg-slate-900 text-slate-300 hover:border-slate-500",
+                                ].join(" ")}
+                              >
+                                {day.label}
+                              </button>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    </div>
+
+                    <div>
+                      <label className="text-[10px] text-slate-400">
+                        Descrição (opcional)
+                      </label>
+                      <textarea
+                        className="mt-1 w-full rounded-lg border border-slate-800 bg-slate-950 px-3 py-2 text-[11px] text-slate-100 outline-none focus:border-emerald-500"
+                        rows={2}
+                        value={editDescription}
+                        onChange={(e) => setEditDescription(e.target.value)}
+                      />
+                    </div>
+
+                    <div className="flex justify-end gap-2 pt-1">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          if (editLoading) return;
+                          setIsEditingPlan(false);
+                          setEditError(null);
+                        }}
+                        className="text-[11px] text-slate-300 hover:text-slate-100"
+                      >
+                        Cancelar
+                      </button>
+                      <button
+                        type="submit"
+                        disabled={editLoading}
+                        className="rounded-lg bg-emerald-500 px-3 py-1 text-[11px] font-medium text-slate-950 hover:bg-emerald-400 disabled:opacity-60"
+                      >
+                        {editLoading ? "Salvando..." : "Salvar alterações"}
+                      </button>
+                    </div>
+                  </form>
+                )}
 
                 <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
                   {/* Estado do plano */}

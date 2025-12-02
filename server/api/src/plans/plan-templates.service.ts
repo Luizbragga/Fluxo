@@ -116,6 +116,34 @@ export class PlanTemplatesService {
       data,
     });
   }
+  // LISTAR PLANOS QUE USAM UM DETERMINADO SERVIÇO ----------------------------
+  async findByService(tenantId: string, serviceId: string) {
+    // buscamos todos os planos do tenant e filtramos em memória
+    const allPlans = await this.prisma.planTemplate.findMany({
+      where: { tenantId },
+      select: {
+        id: true,
+        name: true,
+        sameDayServiceIds: true,
+      },
+    });
+
+    const plans = allPlans
+      .filter((plan) => {
+        const ids = plan.sameDayServiceIds as unknown as string[] | null;
+        return Array.isArray(ids) && ids.includes(serviceId);
+      })
+      .map((plan) => ({
+        id: plan.id,
+        name: plan.name,
+      }));
+
+    return {
+      serviceId,
+      totalPlans: plans.length,
+      plans,
+    };
+  }
 
   // DELETE --------------------------------------------------------------------
   async remove(tenantId: string, id: string) {
