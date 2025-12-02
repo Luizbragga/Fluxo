@@ -1,5 +1,6 @@
 "use client";
 
+import { useSearchParams } from "next/navigation";
 import { useEffect, useState } from "react";
 import { useRequireAuth } from "@/lib/use-auth";
 import {
@@ -8,6 +9,12 @@ import {
   type AgendaProfessional,
   type AgendaAppointment,
 } from "../_api/owner-agenda";
+
+type PendingAppointmentSlot = {
+  time: string;
+  professionalId: string;
+  professionalName: string;
+};
 
 type FilterProfessionalId = string | "all";
 
@@ -53,6 +60,16 @@ export default function OwnerAgendaPage() {
     useState<FilterProfessionalId>("all");
   const [loadingAgenda, setLoadingAgenda] = useState(true);
   const [error, setError] = useState<string | null>(null);
+
+  // Slot clicado para criar agendamento
+  const [pendingSlot, setPendingSlot] = useState<PendingAppointmentSlot | null>(
+    null
+  );
+
+  const searchParams = useSearchParams();
+  const customerNameFromUrl = searchParams.get("customerName");
+  const customerPhoneFromUrl = searchParams.get("customerPhone");
+  const hasCustomerPrefill = !!customerNameFromUrl || !!customerPhoneFromUrl;
 
   useEffect(() => {
     async function loadAgenda() {
@@ -113,6 +130,14 @@ export default function OwnerAgendaPage() {
         )
       );
     }
+  }
+
+  function handleCreateAppointmentClick(slot: PendingAppointmentSlot) {
+    setPendingSlot(slot);
+  }
+
+  function handleCloseCreateModal() {
+    setPendingSlot(null);
   }
 
   const visibleProfessionals =
@@ -203,6 +228,36 @@ export default function OwnerAgendaPage() {
         </div>
       </header>
 
+      {/* Banner de agendamento vindo da tela de cliente */}
+      {hasCustomerPrefill && (
+        <div className="mb-4 rounded-2xl border border-emerald-600/40 bg-emerald-500/5 px-4 py-3 text-xs flex items-center justify-between">
+          <div>
+            <p className="text-[11px] uppercase tracking-wide text-emerald-300/80">
+              Agendamento para cliente
+            </p>
+            <p className="text-sm font-semibold text-emerald-100">
+              {customerNameFromUrl || "Cliente sem nome"}
+            </p>
+            {customerPhoneFromUrl && (
+              <p className="text-[11px] text-emerald-200/80">
+                {customerPhoneFromUrl}
+              </p>
+            )}
+          </div>
+
+          <button
+            className="text-[11px] text-emerald-300 hover:underline"
+            onClick={() => {
+              if (typeof window !== "undefined") {
+                window.history.replaceState(null, "", "/owner/agenda");
+              }
+            }}
+          >
+            Limpar
+          </button>
+        </div>
+      )}
+
       {/* Grid da agenda diária */}
       <section className="rounded-2xl border border-slate-800 bg-slate-900/60 p-4">
         <div className="grid grid-cols-[80px_repeat(3,minmax(0,1fr))] gap-2 text-xs">
@@ -225,10 +280,72 @@ export default function OwnerAgendaPage() {
               professionals={visibleProfessionals}
               appointments={appointments}
               onChangeStatus={handleChangeStatus}
+              onCreateAppointment={handleCreateAppointmentClick}
             />
           ))}
         </div>
       </section>
+
+      {/* Modal simples para criar agendamento */}
+      {pendingSlot && (
+        <div className="fixed inset-0 z-40 flex items-center justify-center bg-black/60">
+          <div className="w-full max-w-md rounded-2xl border border-slate-800 bg-slate-950 p-4 text-xs shadow-xl">
+            <div className="flex items-start justify-between mb-3">
+              <div>
+                <p className="text-[11px] uppercase tracking-wide text-slate-400">
+                  Criar agendamento
+                </p>
+                <p className="text-sm font-semibold text-slate-100">
+                  {customerNameFromUrl || "Cliente sem nome"}
+                </p>
+                {customerPhoneFromUrl && (
+                  <p className="text-[11px] text-slate-400">
+                    {customerPhoneFromUrl}
+                  </p>
+                )}
+              </div>
+              <button
+                className="text-[11px] text-slate-400 hover:text-slate-100"
+                onClick={handleCloseCreateModal}
+              >
+                Fechar
+              </button>
+            </div>
+
+            <div className="space-y-2 mb-3">
+              <div>
+                <p className="text-[11px] text-slate-400">Profissional</p>
+                <p className="text-sm text-slate-100">
+                  {pendingSlot.professionalName}
+                </p>
+              </div>
+              <div>
+                <p className="text-[11px] text-slate-400">Data</p>
+                <p className="text-sm text-slate-100">Hoje · {weekdayLabel}</p>
+              </div>
+              <div>
+                <p className="text-[11px] text-slate-400">Horário</p>
+                <p className="text-sm text-slate-100">{pendingSlot.time}</p>
+              </div>
+            </div>
+
+            <div className="mt-4 flex justify-end gap-2">
+              <button
+                className="px-3 py-1 rounded-lg border border-slate-700 bg-slate-900 text-[11px]"
+                onClick={handleCloseCreateModal}
+              >
+                Cancelar
+              </button>
+              <button
+                className="px-3 py-1 rounded-lg border border-emerald-600 bg-emerald-600/20 text-[11px] text-emerald-100 cursor-not-allowed"
+                disabled
+              >
+                Salvar (em breve)
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </>
   );
 }
@@ -238,6 +355,7 @@ function RowTimeSlot({
   professionals,
   appointments,
   onChangeStatus,
+  onCreateAppointment,
 }: {
   slot: string;
   professionals: AgendaProfessional[];
@@ -246,6 +364,11 @@ function RowTimeSlot({
     appointmentId: string,
     currentStatus: AgendaAppointment["status"]
   ) => void;
+  onCreateAppointment?: (params: {
+    time: string;
+    professionalId: string;
+    professionalName: string;
+  }) => void;
 }) {
   return (
     <>
@@ -262,9 +385,17 @@ function RowTimeSlot({
 
         if (!appt) {
           return (
-            <div
+            <button
               key={pro.id}
-              className="h-14 rounded-xl border border-slate-800/50 bg-slate-950/30"
+              type="button"
+              className="h-14 rounded-xl border border-slate-800/50 bg-slate-950/30 hover:border-emerald-500/60 hover:bg-slate-900/60 transition-colors text-left"
+              onClick={() =>
+                onCreateAppointment?.({
+                  time: slot,
+                  professionalId: pro.id,
+                  professionalName: pro.name,
+                })
+              }
             />
           );
         }
@@ -350,6 +481,5 @@ function formatDateYYYYMMDD(date: Date): string {
 function getWeekdayLabel(date: Date): string {
   const formatter = new Intl.DateTimeFormat("pt-PT", { weekday: "long" });
   const label = formatter.format(date); // ex: "terça-feira"
-  // Capitaliza primeira letra
   return label.charAt(0).toUpperCase() + label.slice(1);
 }

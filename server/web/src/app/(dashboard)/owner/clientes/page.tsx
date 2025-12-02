@@ -1,5 +1,6 @@
 "use client";
 
+import { useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
 import {
   fetchOwnerCustomers,
@@ -15,7 +16,7 @@ export default function OwnerClientesPage() {
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-
+  const router = useRouter();
   useEffect(() => {
     async function load() {
       try {
@@ -68,8 +69,14 @@ export default function OwnerClientesPage() {
           <button className="px-3 py-1 rounded-lg border border-slate-800 bg-slate-900/80">
             Sem plano
           </button>
-          <button className="px-3 py-1 rounded-lg border border-emerald-600 bg-emerald-600/20 text-emerald-200">
-            + Adicionar cliente
+          <button
+            className="px-3 py-1 rounded-lg border border-emerald-600 bg-emerald-600/20 text-emerald-200"
+            onClick={() => {
+              // aqui depois vamos abrir o fluxo/modal de criação de agendamento
+              console.log("Criar agendamento para este cliente (em breve)");
+            }}
+          >
+            Criar agendamento
           </button>
         </div>
       </header>
@@ -223,9 +230,23 @@ export default function OwnerClientesPage() {
                   <div className="rounded-xl border border-slate-800 bg-slate-950/60 p-3">
                     <p className="text-[11px] text-slate-400">Ações rápidas</p>
                     <div className="mt-2 flex flex-wrap gap-2">
-                      <button className="px-3 py-1 rounded-lg border border-slate-700 bg-slate-900 text-[11px] hover:border-emerald-500">
+                      <button
+                        className="px-3 py-1 rounded-lg border border-slate-700 bg-slate-900 text-[11px] hover:border-emerald-500"
+                        disabled={!selectedCustomer}
+                        onClick={() => {
+                          if (!selectedCustomer) return;
+
+                          const params = new URLSearchParams({
+                            customerName: selectedCustomer.name,
+                            customerPhone: selectedCustomer.phone,
+                          });
+
+                          router.push(`/owner/agenda?${params.toString()}`);
+                        }}
+                      >
                         Criar agendamento
                       </button>
+
                       <button className="px-3 py-1 rounded-lg border border-slate-700 bg-slate-900 text-[11px] hover:border-emerald-500">
                         Registrar pagamento de plano
                       </button>

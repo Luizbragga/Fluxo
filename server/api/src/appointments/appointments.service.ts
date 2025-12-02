@@ -8,11 +8,7 @@ import { PrismaService } from '../prisma/prisma.service';
 import { CreateAppointmentDto } from './dto/create-appointment.dto';
 import { addMinutes, isBefore } from 'date-fns';
 import { AppointmentStateEnum } from './dto/update-status.dto';
-import {
-  Prisma,
-  CustomerPlanStatus,
-  CustomerPlanPaymentStatus,
-} from '@prisma/client';
+import { CustomerPlanStatus, CustomerPlanPaymentStatus } from '@prisma/client';
 
 const DEFAULT_COMMISSION_PERCENTAGE = 50; // 50% por padrão (ajustável depois)
 
@@ -28,7 +24,9 @@ export class AppointmentsService {
       throw new BadRequestException('endAt deve ser após startAt.');
     }
 
-    // validar provider pertence ao tenant e tem locationId
+    // ----------------------------------------------------------------
+    // Provider válido e do tenant
+    // ----------------------------------------------------------------
     const provider = await this.prisma.provider.findUnique({
       where: { id: dto.providerId },
       select: {
@@ -42,6 +40,9 @@ export class AppointmentsService {
       throw new ForbiddenException('Provider inválido para este tenant.');
     }
 
+    // ----------------------------------------------------------------
+    // Service válido e do tenant
+    // ----------------------------------------------------------------
     const service = await this.prisma.service.findUnique({
       where: { id: dto.serviceId },
     });
@@ -77,13 +78,8 @@ export class AppointmentsService {
         );
       }
 
-      // ----------------------------------------------------------------
-      // PAGAMENTO / VENCIMENTO
-      // Regra: venceu o ciclo, não usa mais até pagar.
-      // Nada de período de tolerância para USO.
-      // ----------------------------------------------------------------
+      // ciclo do plano
       if (startAt > customerPlan.currentCycleEnd) {
-        // marca plano como atrasado e pagamento como atrasado
         await this.prisma.customerPlan.update({
           where: { id: customerPlan.id },
           data: {
@@ -97,7 +93,6 @@ export class AppointmentsService {
         );
       }
 
-      // garantir que a data do agendamento está dentro do ciclo atual
       if (
         startAt < customerPlan.currentCycleStart ||
         startAt > customerPlan.currentCycleEnd
@@ -107,7 +102,6 @@ export class AppointmentsService {
         );
       }
 
-      // limite de visitas neste ciclo = visitas do template + carry-over
       const visitsLimit =
         customerPlan.planTemplate.visitsPerInterval +
         customerPlan.carryOverVisits;
@@ -120,7 +114,6 @@ export class AppointmentsService {
         );
       }
 
-      // atualiza contador de visitas usadas
       await this.prisma.customerPlan.update({
         where: { id: customerPlan.id },
         data: {
@@ -174,7 +167,60 @@ export class AppointmentsService {
       );
     }
 
-    // cria já com os campos denormalizados do serviço + locationId do provider
+    // ----------------------------------------------------------------
+    // CLIENTE: 1 registro por telefone por tenant
+    // - Normaliza telefone para só dígitos
+    // - Se for telefone novo -> cria Customer
+    // - Se existir com mesmo telefone e nome diferente -> conflito explícito
+    // ----------------------------------------------------------------
+    const normalizedPhone = dto.clientPhone.replace(/\D+/g, '');
+    const newNameNorm = dto.clientName.trim().toLowerCase();
+
+    let customerId: string;
+
+    const existingCustomer = await this.prisma.customer.findFirst({
+      where: {
+        tenantId,
+        phone: normalizedPhone,
+      },
+    });
+
+    if (!existingCustomer) {
+      // primeira vez desse telefone -> cria cliente
+      const created = await this.prisma.customer.create({
+        data: {
+          tenantId,
+          name: dto.clientName.trim(),
+          phone: normalizedPhone,
+          // email opcional no futuro
+        },
+      });
+      customerId = created.id;
+    } else {
+      const existingNameNorm = existingCustomer.name.trim().toLowerCase();
+
+      if (existingNameNorm !== newNameNorm) {
+        // conflito: mesmo telefone, nome diferente -> front decide o que fazer
+        throw new BadRequestException({
+          code: 'CUSTOMER_NAME_CONFLICT',
+          message:
+            'Já existe um cliente com este telefone registado com outro nome.',
+          existingCustomer: {
+            id: existingCustomer.id,
+            name: existingCustomer.name,
+            phone: existingCustomer.phone,
+          },
+          proposedName: dto.clientName,
+        });
+      }
+
+      // nome equivalente -> reutiliza o mesmo cliente
+      customerId = existingCustomer.id;
+    }
+
+    // ----------------------------------------------------------------
+    // CRIA O APPOINTMENT
+    // ----------------------------------------------------------------
     const appointment = await this.prisma.appointment.create({
       data: {
         tenantId,
@@ -191,6 +237,7 @@ export class AppointmentsService {
         serviceDurationMin: service.durationMin,
         servicePriceCents: service.priceCents,
 
+        customerId,
         customerPlanId,
       },
       include: {
@@ -200,7 +247,7 @@ export class AppointmentsService {
     });
 
     // ------------------------------------------------------------------
-    // Criar o AppointmentEarning com base nas regras de comissão
+    // FINANCEIRO / EARNING
     // ------------------------------------------------------------------
     const commissionRule = await this.prisma.providerCommission.findFirst({
       where: {
@@ -212,7 +259,6 @@ export class AppointmentsService {
           { serviceId: null }, // regra padrão do profissional
         ],
       },
-      // se existir uma regra específica de serviço, ela vem antes
       orderBy: {
         serviceId: 'desc',
       },
@@ -234,7 +280,6 @@ export class AppointmentsService {
         commissionPercentage,
         providerEarningsCents,
         houseEarningsCents,
-        // payoutStatus fica como "pending" pelo default do schema
       },
     });
 
@@ -403,7 +448,6 @@ export class AppointmentsService {
     status: AppointmentStateEnum,
   ) {
     return this.prisma.$transaction(async (tx) => {
-      // 1) Buscar o appointment no tenant com os dados necessários
       const found = await tx.appointment.findFirst({
         where: { id: appointmentId, tenantId },
         include: {
@@ -422,7 +466,7 @@ export class AppointmentsService {
       if (!found) {
         throw new NotFoundException('Appointment não encontrado no tenant');
       }
-      // se já está concluído, não permitimos alterar para outro status
+
       if (
         found.status === AppointmentStateEnum.done &&
         status !== AppointmentStateEnum.done
@@ -432,7 +476,6 @@ export class AppointmentsService {
         );
       }
 
-      // 2) Atualizar status
       const updated = await tx.appointment.update({
         where: { id: found.id },
         data: { status },
@@ -449,13 +492,11 @@ export class AppointmentsService {
         },
       });
 
-      // 3) Se o status virou DONE, gerar earning se ainda não existir
       if (status === AppointmentStateEnum.done) {
         const existing = await tx.appointmentEarning.findUnique({
           where: { appointmentId: updated.id },
         });
 
-        // Evitar duplicar registro financeiro
         if (!existing) {
           const commissionPercentage = await this.getCommissionPercentage(
             tx,
@@ -464,7 +505,6 @@ export class AppointmentsService {
             updated.serviceId,
           );
 
-          // Preferido o valor denormalizado do appointment
           const servicePriceCents =
             updated.servicePriceCents ?? (updated.service as any).priceCents;
 
@@ -505,14 +545,12 @@ export class AppointmentsService {
         throw new NotFoundException('Appointment não encontrado no tenant');
       }
 
-      // não permitir cancelar se já estiver concluído
       if (appt.status === AppointmentStateEnum.done) {
         throw new BadRequestException(
           'Appointments concluídos não podem ser cancelados. Faça um ajuste financeiro manual se necessário.',
         );
       }
 
-      // se já está cancelado, apenas retorna o registro completo
       if (appt.status === AppointmentStateEnum.cancelled) {
         return tx.appointment.findUnique({
           where: { id },
@@ -523,7 +561,6 @@ export class AppointmentsService {
         });
       }
 
-      // 1) Se usou plano, devolve 1 visita ao ciclo atual
       if (appt.customerPlanId) {
         const plan = await tx.customerPlan.findUnique({
           where: { id: appt.customerPlanId },
@@ -540,12 +577,10 @@ export class AppointmentsService {
         }
       }
 
-      // 2) Remove qualquer lançamento financeiro ligado a esse appointment
       await tx.appointmentEarning.deleteMany({
         where: { appointmentId: appt.id },
       });
 
-      // 3) Marca o appointment como cancelado e retorna
       return tx.appointment.update({
         where: { id },
         data: { status: AppointmentStateEnum.cancelled as any },
@@ -578,7 +613,6 @@ export class AppointmentsService {
     });
   }
 
-  // legado opcional — lista do dia por provider
   async findDay(tenantId: string, providerId: string, dateISO: string) {
     const day = new Date(dateISO);
 
@@ -624,7 +658,6 @@ export class AppointmentsService {
     providerId: string,
     serviceId: string,
   ): Promise<number> {
-    // 1) Regra específica por serviço
     const serviceRule = await tx.providerCommission.findFirst({
       where: {
         tenantId,
@@ -638,7 +671,6 @@ export class AppointmentsService {
       return serviceRule.percentage;
     }
 
-    // 2) Regra padrão do provider (serviceId = null)
     const defaultRule = await tx.providerCommission.findFirst({
       where: {
         tenantId,
@@ -652,7 +684,6 @@ export class AppointmentsService {
       return defaultRule.percentage;
     }
 
-    // 3) Fallback: valor padrão global (por enquanto hard-coded)
     return DEFAULT_COMMISSION_PERCENTAGE;
   }
 }
