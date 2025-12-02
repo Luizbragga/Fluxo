@@ -10,7 +10,10 @@ export type OwnerLocation = {
 
 /**
  * Tenta buscar as locations do tenant logado.
- * Suporta 2 formatos comuns: { items: [...] } ou array direto.
+ * Suporta 3 formatos comuns:
+ *  - array direto
+ *  - { items: [...] }
+ *  - { data: [...], meta: {...} }
  */
 export async function fetchOwnerLocations(): Promise<OwnerLocation[]> {
   const data = await apiClient<any>("/locations", {
@@ -49,17 +52,16 @@ type RawServiceFromApi = {
   name: string;
   durationMin: number;
   priceCents: number;
-  priceLabel: string; // "10,00"
+  priceLabel: string;
   pricePerHour: number | null;
   active: boolean;
   locationId?: string | null;
-  // outros campos do Prisma (createdAt, updatedAt etc) podem existir,
-  // mas não precisamos tipar todos se não vamos usar.
+  category?: string | null;
+  notes?: string | null;
 };
 
 /**
  * Shape que o FRONT vai usar na UI de Serviços.
- * Aqui já traduzimos nomes e valores (minutos, preço em euros etc.).
  */
 export type OwnerService = {
   id: string;
@@ -69,10 +71,9 @@ export type OwnerService = {
   priceLabel: string;
   pricePerHour: number | null;
   isActive: boolean;
-
-  // ainda não existem no back, mas a UI já "fala" disso:
   category?: string | null;
   isPlanEligible?: boolean;
+  notes?: string | null;
 };
 
 export type OwnerServiceStats = {
@@ -80,6 +81,14 @@ export type OwnerServiceStats = {
   timesBookedMonth: number;
   revenueMonth: number;
   averageTicketWhenUsed: number;
+};
+export type OwnerServicePlanUsage = {
+  serviceId: string;
+  totalPlans: number;
+  plans: {
+    id: string;
+    name: string;
+  }[];
 };
 
 // resposta do GET /v1/services no backend
@@ -117,14 +126,12 @@ export async function fetchOwnerServices(locationId?: string): Promise<{
     priceLabel: service.priceLabel,
     pricePerHour: service.pricePerHour,
     isActive: service.active,
-    // por enquanto deixamos sem categoria/planos;
-    // depois ligamos isso a plan templates/comissões.
-    category: null,
+    category: service.category ?? null,
     isPlanEligible: false,
+    notes: service.notes ?? null,
   }));
 
   // Por enquanto, estatísticas mockadas (0 pra tudo).
-  // Depois ligamos isso aos relatórios reais.
   const stats: OwnerServiceStats[] = services.map((service) => ({
     serviceId: service.id,
     timesBookedMonth: 0,
@@ -144,12 +151,16 @@ export async function createOwnerService(input: {
   durationMinutes: number;
   basePrice: number;
   locationId: string;
+  category?: string | null;
+  notes?: string | null;
 }): Promise<OwnerService> {
   const body = {
     name: input.name,
     durationMin: input.durationMinutes,
     priceCents: Math.round(input.basePrice * 100),
     locationId: input.locationId,
+    category: input.category ?? null,
+    notes: input.notes ?? null,
   };
 
   const created = await apiClient<RawServiceFromApi>("/services", {
@@ -165,7 +176,117 @@ export async function createOwnerService(input: {
     priceLabel: created.priceLabel,
     pricePerHour: created.pricePerHour,
     isActive: created.active,
-    category: null,
+    category: created.category ?? null,
     isPlanEligible: false,
+    notes: created.notes ?? null,
+  };
+}
+
+/**
+ * Atualiza apenas o estado ativo/inativo de um serviço.
+ */
+export async function updateOwnerServiceActive(input: {
+  id: string;
+  isActive: boolean;
+}): Promise<OwnerService> {
+  const body = {
+    active: input.isActive,
+  };
+
+  const updated = await apiClient<RawServiceFromApi>(`/services/${input.id}`, {
+    method: "PATCH",
+    body,
+  });
+
+  return {
+    id: updated.id,
+    name: updated.name,
+    durationMinutes: updated.durationMin,
+    basePrice: updated.priceCents / 100,
+    priceLabel: updated.priceLabel,
+    pricePerHour: updated.pricePerHour,
+    isActive: updated.active,
+    category: updated.category ?? null,
+    isPlanEligible: false,
+  };
+}
+
+/**
+ * Atualiza informações principais do serviço:
+ * nome, duração, preço base e categoria.
+ */
+export async function updateOwnerServiceInfo(input: {
+  id: string;
+  name: string;
+  durationMinutes: number;
+  basePrice: number;
+  category?: string | null;
+}): Promise<OwnerService> {
+  const body = {
+    name: input.name,
+    durationMin: input.durationMinutes,
+    priceCents: Math.round(input.basePrice * 100),
+    category: input.category ?? null,
+  };
+
+  const updated = await apiClient<RawServiceFromApi>(`/services/${input.id}`, {
+    method: "PATCH",
+    body,
+  });
+
+  return {
+    id: updated.id,
+    name: updated.name,
+    durationMinutes: updated.durationMin,
+    basePrice: updated.priceCents / 100,
+    priceLabel: updated.priceLabel,
+    pricePerHour: updated.pricePerHour,
+    isActive: updated.active,
+    category: updated.category ?? null,
+    isPlanEligible: false,
+  };
+}
+/**
+ * Busca em quais planos (PlanTemplate) este serviço está presente.
+ */
+export async function fetchOwnerServicePlanUsage(
+  serviceId: string
+): Promise<OwnerServicePlanUsage> {
+  const data = await apiClient<OwnerServicePlanUsage>(
+    `/plan-templates/by-service/${serviceId}`,
+    {
+      method: "GET",
+    }
+  );
+
+  return data;
+}
+/**
+ * Atualiza apenas as notas internas (observação) do serviço.
+ */
+export async function updateOwnerServiceNotes(input: {
+  id: string;
+  notes: string | null;
+}): Promise<OwnerService> {
+  const body = {
+    notes: input.notes,
+  };
+
+  const updated = await apiClient<RawServiceFromApi>(`/services/${input.id}`, {
+    method: "PATCH",
+    body,
+  });
+
+  return {
+    id: updated.id,
+    name: updated.name,
+    durationMinutes: updated.durationMin,
+    basePrice: updated.priceCents / 100,
+    priceLabel: updated.priceLabel,
+    pricePerHour: updated.pricePerHour,
+    isActive: updated.active,
+    category: updated.category ?? null,
+    isPlanEligible: false,
+    notes: updated.notes ?? null,
   };
 }

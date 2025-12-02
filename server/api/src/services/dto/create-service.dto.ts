@@ -31,6 +31,15 @@ export class CreateServiceDto {
   priceCents: number;
 
   @ApiProperty({
+    example: 'Barba',
+    description: 'Categoria do serviço (opcional)',
+    required: false,
+  })
+  @IsOptional()
+  @IsString()
+  category?: string;
+
+  @ApiProperty({
     example: '15,00 €',
     description: 'Rótulo amigável para exibir no app (opcional)',
     required: false,
@@ -56,4 +65,13 @@ export class CreateServiceDto {
   @IsOptional()
   @IsString()
   locationId?: string;
+  @ApiProperty({
+    example: 'Serviço premium, não aplicar descontos automáticos',
+    description:
+      'Notas internas do serviço, visíveis apenas no painel do proprietário',
+    required: false,
+  })
+  @IsOptional()
+  @IsString()
+  notes?: string;
 }

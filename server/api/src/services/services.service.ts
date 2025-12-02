@@ -17,7 +17,7 @@ export class ServicesService {
    * que NÃO são salvos no banco (priceLabel, pricePerHour, etc).
    */
   private toViewModel(service: Service) {
-    const { durationMin, priceCents, locationId, ...rest } = service;
+    const { durationMin, priceCents, locationId, category, ...rest } = service;
 
     const priceEuro = priceCents / 100;
     const priceLabel = priceEuro.toFixed(2).replace('.', ','); // ex: "10,00"
@@ -32,6 +32,7 @@ export class ServicesService {
       durationMin,
       priceCents,
       locationId,
+      category,
       // extras derivados, só pra leitura:
       priceLabel,
       pricePerHour,
@@ -68,6 +69,8 @@ export class ServicesService {
         priceCents: dto.priceCents,
         active: dto.active ?? true,
         locationId, // sempre preenchido aqui
+        category: dto.category ?? null,
+        notes: dto.notes ?? null,
       },
     });
 
@@ -172,6 +175,8 @@ export class ServicesService {
         priceCents: dto.priceCents ?? undefined,
         active: dto.active ?? undefined,
         locationId: dto.locationId ?? undefined,
+        category: dto.category ?? undefined,
+        notes: dto.notes ?? undefined,
       },
     });
 
