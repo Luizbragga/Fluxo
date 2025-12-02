@@ -53,7 +53,7 @@ enum CustomerPlanPaymentStatus {
 model Tenant {
   id        String   @id @default(cuid())
   name      String
-  slug      String   @unique // <-- necessário para o upsert
+  slug      String   @unique
   nif       String?
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -68,6 +68,7 @@ model Tenant {
   planTemplates        PlanTemplate[]
   customerPlans        CustomerPlan[]
   customerPlanPayments CustomerPlanPayment[]
+  customers            Customer[]
 }
 
 model Location {
@@ -114,6 +115,22 @@ model User {
   @@index([tenantId])
 }
 
+model Customer {
+  id        String   @id @default(cuid())
+  tenantId  String
+  name      String
+  phone     String
+  email     String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  tenant       Tenant        @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  appointments Appointment[]
+
+  @@index([tenantId])
+  @@unique([tenantId, phone], name: "tenant_phone_unique")
+}
+
 model RefreshToken {
   id        String   @id @default(cuid())
   userId    String
@@ -132,12 +149,13 @@ model Service {
   name        String
   durationMin Int // duração em minutos
   priceCents  Int // preço em centavos
+  category    String?
   active      Boolean   @default(true)
   createdAt   DateTime  @default(now())
   updatedAt   DateTime  @updatedAt
   locationId  String?
   location    Location? @relation(fields: [locationId], references: [id])
-
+  notes       String?
   tenant       Tenant               @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   appointments Appointment[]
   commissions  ProviderCommission[]
@@ -223,6 +241,7 @@ model Appointment {
   clientPhone        String
   status             AppointmentState @default(scheduled)
   customerPlanId     String?
+  customerId         String?  // <-- novo campo, ligação com Customer
 
   createdById String?
   createdBy   User?   @relation(fields: [createdById], references: [id], onDelete: SetNull)
@@ -230,8 +249,9 @@ model Appointment {
   tenant       Tenant        @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   provider     Provider      @relation(fields: [providerId], references: [id], onDelete: Cascade)
   service      Service       @relation(fields: [serviceId], references: [id], onDelete: Cascade)
-  location     Location      @relation(fields: [locationId], references: [id], onDelete: Cascade)
+  location     Location      @relation(fields: [locationId], references: [id])
   customerPlan CustomerPlan? @relation(fields: [customerPlanId], references: [id])
+  customer     Customer?     @relation(fields: [customerId], references: [id])
 
   earning AppointmentEarning?
 
@@ -241,6 +261,7 @@ model Appointment {
   @@index([tenantId])
   @@index([tenantId, providerId, startAt, endAt])
 }
+
 
 model AppointmentEarning {
   id                    String @id @default(cuid())
