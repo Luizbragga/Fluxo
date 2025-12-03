@@ -27,12 +27,17 @@ export type OwnerCustomerPlan = {
 export type OwnerCustomerAppointmentHistory = {
   id: string;
   customerId: string;
-  date: string; // "18 Nov 2025"
+  date: string; // "18 Nov 2025" (texto para exibir)
   time: string; // "09:00"
   professionalName: string;
   serviceName: string;
   source: "plan" | "single" | "walk_in" | "app";
   status: "done" | "no_show" | "cancelled";
+
+  // NOVOS CAMPOS para perfil financeiro (mock-only por enquanto)
+  price: number; // valor da visita em euros
+  year: number; // ano numérico (2025, 2024…)
+  month: number; // 1-12 (1=Jan, 11=Nov, etc.)
 };
 
 // ---- MOCKS POR ENQUANTO ------------------------------------
@@ -106,6 +111,9 @@ const appointmentHistoryMock: OwnerCustomerAppointmentHistory[] = [
     serviceName: "Corte + Barba",
     source: "plan",
     status: "done",
+    price: 25,
+    year: 2025,
+    month: 11,
   },
   {
     id: "h2",
@@ -116,26 +124,35 @@ const appointmentHistoryMock: OwnerCustomerAppointmentHistory[] = [
     serviceName: "Corte masculino",
     source: "single",
     status: "done",
+    price: 15,
+    year: 2025,
+    month: 11,
   },
   {
     id: "h3",
     customerId: "2",
-    date: "20 Nov 2025",
+    date: "20 Out 2025",
     time: "15:00",
     professionalName: "Ana Nails",
     serviceName: "Manicure gel",
     source: "plan",
     status: "done",
+    price: 30,
+    year: 2025,
+    month: 10,
   },
   {
     id: "h4",
     customerId: "3",
-    date: "05 Nov 2025",
+    date: "05 Set 2025",
     time: "19:00",
     professionalName: "Rafa Barber",
     serviceName: "Corte masculino",
     source: "walk_in",
     status: "done",
+    price: 15,
+    year: 2025,
+    month: 9,
   },
 ];
 

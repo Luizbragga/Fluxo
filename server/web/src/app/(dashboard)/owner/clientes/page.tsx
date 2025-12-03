@@ -17,6 +17,22 @@ export default function OwnerClientesPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const router = useRouter();
+  // Modal de registro de pagamento de plano
+  const [isRegisterPaymentOpen, setIsRegisterPaymentOpen] = useState(false);
+  const [registerPaymentAmount, setRegisterPaymentAmount] =
+    useState<string>("");
+  const [registerPaymentDate, setRegisterPaymentDate] = useState<string>("");
+  const [registerPaymentMethod, setRegisterPaymentMethod] =
+    useState<string>("mbway");
+  const [registerPaymentError, setRegisterPaymentError] = useState<
+    string | null
+  >(null);
+  const [savingRegisterPayment, setSavingRegisterPayment] = useState(false);
+  // Modal de perfil financeiro
+  const [isFinancialProfileOpen, setIsFinancialProfileOpen] = useState(false);
+  const [financialYear, setFinancialYear] = useState<number | null>(null);
+  const [financialMonth, setFinancialMonth] = useState<"all" | number>("all");
+
   useEffect(() => {
     async function load() {
       try {
@@ -47,6 +63,63 @@ export default function OwnerClientesPage() {
   const selectedHistory = selectedCustomer
     ? history.filter((h) => h.customerId === selectedCustomer.id)
     : [];
+  async function handleConfirmRegisterPayment() {
+    if (!selectedCustomer || !selectedPlan) return;
+
+    // validações simples
+    if (!registerPaymentAmount.trim()) {
+      setRegisterPaymentError("Informe o valor pago.");
+      return;
+    }
+
+    const normalized = registerPaymentAmount.replace(",", "."); // aceita "45,00"
+    const valueNumber = Number(normalized);
+
+    if (!Number.isFinite(valueNumber) || valueNumber <= 0) {
+      setRegisterPaymentError("Valor inválido.");
+      return;
+    }
+
+    const amountCents = Math.round(valueNumber * 100);
+
+    setRegisterPaymentError(null);
+    setSavingRegisterPayment(true);
+
+    try {
+      // 🔗 FUTURO: aqui vamos chamar o endpoint real:
+      // POST /plans/customer-plans/:id/pay
+      // por enquanto só simulamos no estado local
+
+      console.log("Registrar pagamento de plano (mock por enquanto)", {
+        customerId: selectedCustomer.id,
+        customerName: selectedCustomer.name,
+        method: registerPaymentMethod,
+        amountCents,
+        paidAt: registerPaymentDate || new Date().toISOString().slice(0, 10),
+      });
+
+      // atualiza no estado local para "dar sensação" de plano em dia
+      setPlans((prev) =>
+        prev.map((plan) => {
+          if (plan.customerId !== selectedCustomer.id) return plan;
+
+          return {
+            ...plan,
+            status: "active",
+            // no mock vamos só repetir a data de renovação
+            // depois, quando ligar no backend, isto vem da API atualizada
+          };
+        })
+      );
+
+      setIsRegisterPaymentOpen(false);
+    } catch (err) {
+      console.error(err);
+      setRegisterPaymentError("Não foi possível registar o pagamento (ainda).");
+    } finally {
+      setSavingRegisterPayment(false);
+    }
+  }
 
   return (
     <>
@@ -247,15 +320,178 @@ export default function OwnerClientesPage() {
                         Criar agendamento
                       </button>
 
-                      <button className="px-3 py-1 rounded-lg border border-slate-700 bg-slate-900 text-[11px] hover:border-emerald-500">
+                      <button
+                        className="px-3 py-1 rounded-lg border border-slate-700 bg-slate-900 text-[11px] hover:border-emerald-500 disabled:opacity-40 disabled:cursor-not-allowed"
+                        disabled={
+                          !selectedPlan || selectedPlan.status === "none"
+                        }
+                        onClick={() => {
+                          if (!selectedPlan || selectedPlan.status === "none")
+                            return;
+
+                          // valor sugerido = próxima cobrança (se existir)
+                          const defaultAmount = selectedPlan.nextChargeAmount
+                            ? String(selectedPlan.nextChargeAmount)
+                            : "";
+
+                          setRegisterPaymentAmount(defaultAmount);
+                          setRegisterPaymentDate(
+                            new Date().toISOString().slice(0, 10)
+                          ); // hoje (YYYY-MM-DD)
+                          setRegisterPaymentMethod("mbway");
+                          setRegisterPaymentError(null);
+                          setIsRegisterPaymentOpen(true);
+                        }}
+                      >
                         Registrar pagamento de plano
                       </button>
-                      <button className="px-3 py-1 rounded-lg border border-slate-700 bg-slate-900 text-[11px] hover:border-emerald-500">
+
+                      <button
+                        className="px-3 py-1 rounded-lg border border-slate-700 bg-slate-900 text-[11px] hover:border-emerald-500 disabled:opacity-40 disabled:cursor-not-allowed"
+                        disabled={!selectedCustomer}
+                        onClick={() => {
+                          if (!selectedCustomer) return;
+
+                          const customerHistory = selectedHistory;
+                          const years = Array.from(
+                            new Set(customerHistory.map((h) => h.year))
+                          ).sort((a, b) => b - a);
+
+                          const defaultYear =
+                            years.length > 0
+                              ? years[0]
+                              : new Date().getFullYear();
+
+                          setFinancialYear(defaultYear);
+                          setFinancialMonth("all");
+                          setIsFinancialProfileOpen(true);
+                        }}
+                      >
                         Ver perfil financeiro
                       </button>
                     </div>
                   </div>
                 </div>
+                {isRegisterPaymentOpen && selectedCustomer && selectedPlan && (
+                  <div className="fixed inset-0 z-40 flex items-center justify-center bg-black/60">
+                    <div className="w-full max-w-md rounded-2xl border border-slate-800 bg-slate-950 p-4 text-xs shadow-xl">
+                      {/* Cabeçalho */}
+                      <div className="flex items-start justify-between mb-3">
+                        <div>
+                          <p className="text-[11px] uppercase tracking-wide text-slate-400">
+                            Registrar pagamento de plano
+                          </p>
+                          <p className="text-sm font-semibold text-slate-100">
+                            {selectedCustomer.name}
+                          </p>
+                          <p className="text-[11px] text-slate-400">
+                            {selectedCustomer.phone}
+                          </p>
+                          {selectedPlan.planName && (
+                            <p className="mt-1 text-[11px] text-slate-400">
+                              Plano: {selectedPlan.planName}
+                            </p>
+                          )}
+                        </div>
+                        <button
+                          className="text-[11px] text-slate-400 hover:text-slate-100"
+                          onClick={() => setIsRegisterPaymentOpen(false)}
+                        >
+                          Fechar
+                        </button>
+                      </div>
+
+                      {/* Campos */}
+                      <div className="space-y-3 mb-3">
+                        <div>
+                          <p className="text-[11px] text-slate-400 mb-1">
+                            Forma de pagamento
+                          </p>
+                          <select
+                            className="w-full rounded-lg border border-slate-800 bg-slate-900/80 px-3 py-2 text-[11px] text-slate-100"
+                            value={registerPaymentMethod}
+                            onChange={(e) =>
+                              setRegisterPaymentMethod(e.target.value)
+                            }
+                          >
+                            <option value="mbway">MB Way</option>
+                            <option value="card">Cartão</option>
+                            <option value="cash">Dinheiro</option>
+                            <option value="transfer">Transferência</option>
+                          </select>
+                        </div>
+
+                        <div>
+                          <p className="text-[11px] text-slate-400 mb-1">
+                            Data do pagamento
+                          </p>
+                          <input
+                            type="date"
+                            className="w-full rounded-lg border border-slate-800 bg-slate-900/80 px-3 py-2 text-[11px] text-slate-100"
+                            value={registerPaymentDate}
+                            onChange={(e) =>
+                              setRegisterPaymentDate(e.target.value)
+                            }
+                          />
+                        </div>
+
+                        <div>
+                          <p className="text-[11px] text-slate-400 mb-1">
+                            Valor pago (€)
+                          </p>
+                          <input
+                            type="number"
+                            min={0}
+                            step="0.01"
+                            className="w-full rounded-lg border border-slate-800 bg-slate-900/80 px-3 py-2 text-[11px] text-slate-100"
+                            value={registerPaymentAmount}
+                            onChange={(e) =>
+                              setRegisterPaymentAmount(e.target.value)
+                            }
+                          />
+                        </div>
+                      </div>
+
+                      {registerPaymentError && (
+                        <p className="mb-3 text-[11px] text-rose-400">
+                          {registerPaymentError}
+                        </p>
+                      )}
+
+                      {/* Botões */}
+                      <div className="mt-2 flex justify-end gap-2">
+                        <button
+                          className="px-3 py-1 rounded-lg border border-slate-700 bg-slate-900 text-[11px]"
+                          type="button"
+                          onClick={() => setIsRegisterPaymentOpen(false)}
+                        >
+                          Cancelar
+                        </button>
+                        <button
+                          className="px-3 py-1 rounded-lg border border-emerald-600 bg-emerald-600/20 text-[11px] text-emerald-100 disabled:opacity-60"
+                          type="button"
+                          onClick={handleConfirmRegisterPayment}
+                          disabled={savingRegisterPayment}
+                        >
+                          {savingRegisterPayment
+                            ? "Salvando..."
+                            : "Salvar pagamento"}
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                )}
+                {isFinancialProfileOpen && selectedCustomer && (
+                  <FinancialProfileModal
+                    customer={selectedCustomer}
+                    history={selectedHistory}
+                    year={financialYear}
+                    month={financialMonth}
+                    onClose={() => setIsFinancialProfileOpen(false)}
+                    onChangeYear={(y) => setFinancialYear(y)}
+                    onChangeMonth={(m) => setFinancialMonth(m)}
+                  />
+                )}
               </>
             ) : (
               <p className="text-xs text-slate-400">
@@ -365,4 +601,245 @@ function StatusBadge({
     default:
       return null;
   }
+}
+type FinancialProfileModalProps = {
+  customer: OwnerCustomer;
+  history: OwnerCustomerAppointmentHistory[];
+  year: number | null;
+  month: "all" | number;
+  onClose: () => void;
+  onChangeYear: (year: number) => void;
+  onChangeMonth: (month: "all" | number) => void;
+};
+
+const MONTH_OPTIONS: { value: "all" | number; label: string }[] = [
+  { value: "all", label: "Todos os meses" },
+  { value: 1, label: "Janeiro" },
+  { value: 2, label: "Fevereiro" },
+  { value: 3, label: "Março" },
+  { value: 4, label: "Abril" },
+  { value: 5, label: "Maio" },
+  { value: 6, label: "Junho" },
+  { value: 7, label: "Julho" },
+  { value: 8, label: "Agosto" },
+  { value: 9, label: "Setembro" },
+  { value: 10, label: "Outubro" },
+  { value: 11, label: "Novembro" },
+  { value: 12, label: "Dezembro" },
+];
+
+function FinancialProfileModal({
+  customer,
+  history,
+  year,
+  month,
+  onClose,
+  onChangeYear,
+  onChangeMonth,
+}: FinancialProfileModalProps) {
+  const availableYears = Array.from(new Set(history.map((h) => h.year))).sort(
+    (a, b) => b - a
+  );
+
+  const activeYear =
+    year && availableYears.includes(year)
+      ? year
+      : availableYears[0] ?? new Date().getFullYear();
+
+  const yearHistory = history.filter((h) => h.year === activeYear);
+
+  const periodHistory =
+    month === "all"
+      ? yearHistory
+      : yearHistory.filter((h) => h.month === month);
+
+  // ---- Métricas anuais ----
+  const totalVisitsYear = yearHistory.filter((h) => h.status === "done").length;
+  const totalSpentYear = yearHistory.reduce(
+    (sum, h) => (h.status === "done" ? sum + h.price : sum),
+    0
+  );
+
+  const monthsWithVisits = new Set(yearHistory.map((h) => h.month)).size || 1;
+  const avgVisitsPerMonth = totalVisitsYear / monthsWithVisits;
+
+  // ---- Métricas do período (mês selecionado ou todos) ----
+  const totalVisitsPeriod = periodHistory.filter(
+    (h) => h.status === "done"
+  ).length;
+  const totalSpentPeriod = periodHistory.reduce(
+    (sum, h) => (h.status === "done" ? sum + h.price : sum),
+    0
+  );
+
+  // Serviços mais usados no período
+  const serviceCount = new Map<string, number>();
+  periodHistory.forEach((h) => {
+    if (h.status !== "done") return;
+    serviceCount.set(h.serviceName, (serviceCount.get(h.serviceName) ?? 0) + 1);
+  });
+
+  const topServices = Array.from(serviceCount.entries())
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 4);
+
+  const formatMoney = (value: number) =>
+    value.toLocaleString("pt-PT", {
+      style: "currency",
+      currency: "EUR",
+      minimumFractionDigits: 2,
+    });
+
+  return (
+    <div className="fixed inset-0 z-40 flex items-center justify-center bg-black/60">
+      <div className="w-full max-w-3xl max-h-[90vh] overflow-hidden rounded-2xl border border-slate-800 bg-slate-950 p-4 text-xs shadow-xl">
+        {/* Cabeçalho */}
+        <div className="flex items-start justify-between mb-3">
+          <div>
+            <p className="text-[11px] uppercase tracking-wide text-slate-400">
+              Perfil financeiro do cliente
+            </p>
+            <p className="text-sm font-semibold text-slate-100">
+              {customer.name}
+            </p>
+            <p className="text-[11px] text-slate-400">{customer.phone}</p>
+          </div>
+          <button
+            className="text-[11px] text-slate-400 hover:text-slate-100"
+            onClick={onClose}
+          >
+            Fechar
+          </button>
+        </div>
+
+        {/* Filtros */}
+        <div className="mb-4 flex flex-wrap gap-2">
+          <select
+            className="rounded-lg border border-slate-800 bg-slate-900/80 px-3 py-1 text-[11px] text-slate-100"
+            value={activeYear}
+            onChange={(e) => onChangeYear(Number(e.target.value))}
+          >
+            {availableYears.length === 0 ? (
+              <option value={activeYear}>{activeYear}</option>
+            ) : (
+              availableYears.map((y) => (
+                <option key={y} value={y}>
+                  {y}
+                </option>
+              ))
+            )}
+          </select>
+
+          <select
+            className="rounded-lg border border-slate-800 bg-slate-900/80 px-3 py-1 text-[11px] text-slate-100"
+            value={month === "all" ? "all" : String(month)}
+            onChange={(e) => {
+              const value = e.target.value;
+              if (value === "all") {
+                onChangeMonth("all");
+              } else {
+                onChangeMonth(Number(value) as number);
+              }
+            }}
+          >
+            {MONTH_OPTIONS.map((m) => (
+              <option
+                key={m.value === "all" ? "all" : m.value}
+                value={m.value === "all" ? "all" : String(m.value)}
+              >
+                {m.label}
+              </option>
+            ))}
+          </select>
+        </div>
+
+        {/* Cards de resumo */}
+        <div className="grid grid-cols-1 md:grid-cols-4 gap-3 mb-4">
+          <div className="rounded-xl border border-slate-800 bg-slate-900/80 p-3">
+            <p className="text-[11px] text-slate-400">Visitas no ano</p>
+            <p className="mt-1 text-lg font-semibold">{totalVisitsYear}</p>
+          </div>
+          <div className="rounded-xl border border-slate-800 bg-slate-900/80 p-3">
+            <p className="text-[11px] text-slate-400">Média de visitas / mês</p>
+            <p className="mt-1 text-lg font-semibold">
+              {avgVisitsPerMonth.toFixed(1)}
+            </p>
+          </div>
+          <div className="rounded-xl border border-slate-800 bg-slate-900/80 p-3">
+            <p className="text-[11px] text-slate-400">Gasto no ano</p>
+            <p className="mt-1 text-lg font-semibold">
+              {formatMoney(totalSpentYear)}
+            </p>
+          </div>
+          <div className="rounded-xl border border-slate-800 bg-slate-900/80 p-3">
+            <p className="text-[11px] text-slate-400">
+              Gasto no período selecionado
+            </p>
+            <p className="mt-1 text-lg font-semibold">
+              {formatMoney(totalSpentPeriod)}
+            </p>
+          </div>
+        </div>
+
+        {/* Serviços mais usados + lista de visitas */}
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          <div className="rounded-xl border border-slate-800 bg-slate-900/80 p-3">
+            <p className="text-[11px] text-slate-400 mb-2">
+              Serviços mais utilizados
+            </p>
+            {topServices.length === 0 ? (
+              <p className="text-[11px] text-slate-500">
+                Ainda não há serviços concluídos no período selecionado.
+              </p>
+            ) : (
+              <ul className="space-y-1">
+                {topServices.map(([serviceName, count]) => (
+                  <li
+                    key={serviceName}
+                    className="flex items-center justify-between text-[11px]"
+                  >
+                    <span>{serviceName}</span>
+                    <span className="text-slate-300">{count}x</span>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
+
+          <div className="rounded-xl border border-slate-800 bg-slate-900/80 p-3">
+            <p className="text-[11px] text-slate-400 mb-2">
+              Visitas no período selecionado ({totalVisitsPeriod})
+            </p>
+            {periodHistory.length === 0 ? (
+              <p className="text-[11px] text-slate-500">
+                Sem visitas no período selecionado.
+              </p>
+            ) : (
+              <div className="max-h-52 overflow-y-auto space-y-2">
+                {periodHistory.map((h) => (
+                  <div
+                    key={h.id}
+                    className="rounded-lg border border-slate-800 bg-slate-950/70 px-3 py-2 flex items-center justify-between"
+                  >
+                    <div>
+                      <p className="text-[11px] text-slate-300">
+                        {h.date} · {h.time}
+                      </p>
+                      <p className="text-[11px] font-medium">{h.serviceName}</p>
+                      <p className="text-[10px] text-slate-400">
+                        {h.professionalName}
+                      </p>
+                    </div>
+                    <div className="text-right text-[11px]">
+                      <p className="text-slate-200">{formatMoney(h.price)}</p>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
 }

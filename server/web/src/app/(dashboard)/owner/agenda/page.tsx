@@ -9,6 +9,12 @@ import {
   type AgendaProfessional,
   type AgendaAppointment,
 } from "../_api/owner-agenda";
+import {
+  createOwnerAppointment,
+  type CreateAppointmentInput,
+  fetchOwnerServicesForAppointment,
+  type OwnerServiceForAppointment,
+} from "../_api/owner-appointments";
 
 type PendingAppointmentSlot = {
   time: string;
@@ -60,16 +66,24 @@ export default function OwnerAgendaPage() {
     useState<FilterProfessionalId>("all");
   const [loadingAgenda, setLoadingAgenda] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [savingAppointment, setSavingAppointment] = useState(false);
+  const [createError, setCreateError] = useState<string | null>(null);
 
   // Slot clicado para criar agendamento
   const [pendingSlot, setPendingSlot] = useState<PendingAppointmentSlot | null>(
     null
   );
+  const [modalCustomerName, setModalCustomerName] = useState("");
+  const [modalCustomerPhone, setModalCustomerPhone] = useState("");
 
   const searchParams = useSearchParams();
   const customerNameFromUrl = searchParams.get("customerName");
   const customerPhoneFromUrl = searchParams.get("customerPhone");
   const hasCustomerPrefill = !!customerNameFromUrl || !!customerPhoneFromUrl;
+  const [services, setServices] = useState<OwnerServiceForAppointment[]>([]);
+  const [servicesLoading, setServicesLoading] = useState(false);
+  const [selectedServiceId, setSelectedServiceId] = useState<string>("");
+  const [modalProviderId, setModalProviderId] = useState<string>("");
 
   useEffect(() => {
     async function loadAgenda() {
@@ -95,6 +109,47 @@ export default function OwnerAgendaPage() {
 
     loadAgenda();
   }, [authLoading, user, currentDate]);
+
+  useEffect(() => {
+    if (customerNameFromUrl) {
+      setModalCustomerName(customerNameFromUrl);
+    }
+    if (customerPhoneFromUrl) {
+      setModalCustomerPhone(customerPhoneFromUrl);
+    }
+  }, [customerNameFromUrl, customerPhoneFromUrl]);
+
+  useEffect(() => {
+    let isMounted = true;
+
+    async function loadServices() {
+      try {
+        setServicesLoading(true);
+        const items = await fetchOwnerServicesForAppointment();
+        if (!isMounted) return;
+
+        setServices(items);
+
+        // define um serviço padrão selecionado (primeiro da lista)
+        if (items.length > 0) {
+          setSelectedServiceId(items[0].id);
+        }
+      } catch (err) {
+        console.error("Erro ao carregar serviços:", err);
+        // por enquanto só loga; no futuro podemos mostrar erro na UI
+      } finally {
+        if (isMounted) {
+          setServicesLoading(false);
+        }
+      }
+    }
+
+    loadServices();
+
+    return () => {
+      isMounted = false;
+    };
+  }, []);
 
   // Handler: clique no card para avançar o status
   async function handleChangeStatus(
@@ -133,11 +188,96 @@ export default function OwnerAgendaPage() {
   }
 
   function handleCreateAppointmentClick(slot: PendingAppointmentSlot) {
+    setCreateError(null);
     setPendingSlot(slot);
+    setModalProviderId(slot.professionalId); // pré-seleciona o profissional da coluna clicada
   }
 
   function handleCloseCreateModal() {
+    setCreateError(null);
     setPendingSlot(null);
+    setModalProviderId("");
+  }
+
+  async function handleSaveCreateAppointment() {
+    if (!pendingSlot) return;
+
+    if (!modalCustomerName.trim() || !modalCustomerPhone.trim()) {
+      setCreateError(
+        "Nome e telefone do cliente são obrigatórios para criar o agendamento."
+      );
+      return;
+    }
+
+    if (!selectedServiceId) {
+      setCreateError("Selecione um serviço para criar o agendamento.");
+      return;
+    }
+
+    const selectedService = services.find(
+      (service) => service.id === selectedServiceId
+    );
+
+    if (!selectedService) {
+      setCreateError("Serviço selecionado inválido.");
+      return;
+    }
+    if (!modalProviderId) {
+      setCreateError("Selecione um profissional para criar o agendamento.");
+      return;
+    }
+
+    try {
+      setCreateError(null);
+      setSavingAppointment(true);
+
+      const [hoursStr, minutesStr] = pendingSlot.time.split(":");
+      const hours = Number(hoursStr);
+      const minutes = Number(minutesStr);
+
+      const startDate = new Date(currentDate);
+      startDate.setHours(hours, minutes, 0, 0);
+
+      const endDate = new Date(startDate);
+      endDate.setMinutes(endDate.getMinutes() + selectedService.durationMin);
+
+      const input: CreateAppointmentInput = {
+        providerId: modalProviderId,
+        serviceId: selectedService.id,
+        startAt: startDate.toISOString(),
+        endAt: endDate.toISOString(),
+        clientName: modalCustomerName.trim(),
+        clientPhone: modalCustomerPhone,
+        // customerPlanId: no futuro
+      };
+
+      await createOwnerAppointment(input);
+
+      // Recarrega a agenda do dia para mostrar o novo slot ocupado
+      const dateStr = formatDateYYYYMMDD(currentDate);
+      const data = await fetchOwnerAgendaDay(dateStr);
+
+      setProfessionals(data.professionals);
+      setAppointments(data.appointments);
+
+      // Fecha o modal
+      setPendingSlot(null);
+    } catch (err: any) {
+      console.error("Erro ao criar agendamento:", err);
+
+      const apiError = err?.data;
+      if (apiError?.code === "CUSTOMER_NAME_CONFLICT") {
+        setCreateError(
+          apiError.message ??
+            "Já existe um cliente com este telefone registado com outro nome."
+        );
+        // no futuro: aqui abrimos fluxo para escolher nome antigo ou atualizar
+      } else {
+        setCreateError("Não foi possível criar o agendamento.");
+      }
+    } finally {
+      setSavingAppointment(false);
+    }
   }
 
   const visibleProfessionals =
@@ -312,13 +452,69 @@ export default function OwnerAgendaPage() {
               </button>
             </div>
 
-            <div className="space-y-2 mb-3">
+            <div className="space-y-3 mb-3">
               <div>
-                <p className="text-[11px] text-slate-400">Profissional</p>
-                <p className="text-sm text-slate-100">
-                  {pendingSlot.professionalName}
+                <p className="text-[11px] text-slate-400 mb-1">
+                  Nome do cliente
                 </p>
+                <input
+                  className="w-full rounded-md bg-slate-900/60 border border-slate-700 px-2 py-1 text-[12px] text-slate-100 outline-none focus:border-emerald-500"
+                  value={modalCustomerName}
+                  onChange={(e) => setModalCustomerName(e.target.value)}
+                  placeholder="Nome do cliente"
+                />
               </div>
+
+              <div>
+                <p className="text-[11px] text-slate-400 mb-1">Telefone</p>
+                <input
+                  className="w-full rounded-md bg-slate-900/60 border border-slate-700 px-2 py-1 text-[12px] text-slate-100 outline-none focus:border-emerald-500"
+                  value={modalCustomerPhone}
+                  onChange={(e) => setModalCustomerPhone(e.target.value)}
+                  placeholder="+351 9xx xxx xxx"
+                />
+              </div>
+
+              <div>
+                <p className="text-[11px] text-slate-400 mb-1">Serviço</p>
+                {servicesLoading ? (
+                  <p className="text-[11px] text-slate-500">
+                    Carregando serviços...
+                  </p>
+                ) : services.length === 0 ? (
+                  <p className="text-[11px] text-rose-400">
+                    Nenhum serviço cadastrado. Crie um serviço primeiro.
+                  </p>
+                ) : (
+                  <select
+                    className="w-full rounded-md bg-slate-900/60 border border-slate-700 px-2 py-1 text-[12px] text-slate-100 outline-none focus:border-emerald-500"
+                    value={selectedServiceId}
+                    onChange={(e) => setSelectedServiceId(e.target.value)}
+                  >
+                    {services.map((service) => (
+                      <option key={service.id} value={service.id}>
+                        {service.name} ({service.durationMin} min)
+                      </option>
+                    ))}
+                  </select>
+                )}
+              </div>
+
+              <div>
+                <p className="text-[11px] text-slate-400 mb-1">Profissional</p>
+                <select
+                  className="w-full rounded-lg border border-slate-700 bg-slate-900/80 px-2 py-1 text-sm text-slate-100"
+                  value={modalProviderId}
+                  onChange={(e) => setModalProviderId(e.target.value)}
+                >
+                  {professionals.map((pro) => (
+                    <option key={pro.id} value={pro.id}>
+                      {pro.name}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
               <div>
                 <p className="text-[11px] text-slate-400">Data</p>
                 <p className="text-sm text-slate-100">Hoje · {weekdayLabel}</p>
@@ -329,6 +525,10 @@ export default function OwnerAgendaPage() {
               </div>
             </div>
 
+            {createError && (
+              <p className="mt-2 text-[11px] text-rose-400">{createError}</p>
+            )}
+
             <div className="mt-4 flex justify-end gap-2">
               <button
                 className="px-3 py-1 rounded-lg border border-slate-700 bg-slate-900 text-[11px]"
@@ -337,10 +537,12 @@ export default function OwnerAgendaPage() {
                 Cancelar
               </button>
               <button
-                className="px-3 py-1 rounded-lg border border-emerald-600 bg-emerald-600/20 text-[11px] text-emerald-100 cursor-not-allowed"
-                disabled
+                className="px-3 py-1 rounded-lg border border-emerald-600 bg-emerald-600/20 text-[11px] text-emerald-100 disabled:opacity-60"
+                type="button"
+                onClick={handleSaveCreateAppointment}
+                disabled={savingAppointment}
               >
-                Salvar (em breve)
+                {savingAppointment ? "Salvando..." : "Salvar"}
               </button>
             </div>
           </div>

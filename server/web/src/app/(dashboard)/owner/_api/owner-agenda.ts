@@ -40,6 +40,10 @@ type BackendAppointment = {
     durationMin: number;
   } | null;
 };
+type BackendProvider = {
+  id: string;
+  name: string;
+};
 
 export type OwnerAgendaDay = {
   professionals: AgendaProfessional[];
@@ -54,17 +58,66 @@ export type OwnerAgendaDay = {
 export async function fetchOwnerAgendaDay(
   dateYYYYMMDD: string
 ): Promise<OwnerAgendaDay> {
-  const data = await apiClient<BackendAppointment[]>(
-    `/appointments?date=${encodeURIComponent(dateYYYYMMDD)}`,
-    { method: "GET" }
-  );
+  const [appointmentsData, providersResponse] = await Promise.all([
+    apiClient<BackendAppointment[]>(
+      `/appointments?date=${encodeURIComponent(dateYYYYMMDD)}`,
+      { method: "GET" }
+    ),
+    apiClient<any>("/providers", {
+      method: "GET",
+    }),
+  ]);
+
+  // DEBUG opcional: se quiser ver a estrutura exata no console
+  // console.log("PROVIDERS RAW RESPONSE", providersResponse);
+
+  // ------------------------------------------------------------------
+  // Normaliza a resposta de /providers para um array de { id, name }
+  // ------------------------------------------------------------------
+  let providersArray: BackendProvider[] = [];
+
+  if (Array.isArray(providersResponse)) {
+    // caso simples: [ { id, name, ... }, ... ]
+    providersArray = providersResponse;
+  } else if (providersResponse && typeof providersResponse === "object") {
+    // tenta achar alguma propriedade que seja um array de objetos com id/name
+    for (const value of Object.values(providersResponse)) {
+      if (
+        Array.isArray(value) &&
+        value.length > 0 &&
+        typeof value[0] === "object" &&
+        value[0] !== null &&
+        "id" in value[0] &&
+        "name" in value[0]
+      ) {
+        providersArray = value as BackendProvider[];
+        break;
+      }
+    }
+  }
 
   const professionalsMap = new Map<string, AgendaProfessional>();
 
-  const appointments: AgendaAppointment[] = data.map((appt) => {
+  // adiciona todos providers como profissionais base da agenda
+  for (const provider of providersArray) {
+    if (!provider || !provider.id) continue;
+
+    if (!professionalsMap.has(provider.id)) {
+      professionalsMap.set(provider.id, {
+        id: provider.id,
+        name: provider.name,
+      });
+    }
+  }
+
+  // ------------------------------------------------------------------
+  // Mapeia appointments -> formato de tela
+  // ------------------------------------------------------------------
+  const appointments: AgendaAppointment[] = appointmentsData.map((appt) => {
     const providerId = appt.provider?.id ?? appt.providerId;
     const providerName = appt.provider?.name ?? "Profissional";
 
+    // garante que o provider do appointment também está no mapa
     if (providerId && !professionalsMap.has(providerId)) {
       professionalsMap.set(providerId, {
         id: providerId,
