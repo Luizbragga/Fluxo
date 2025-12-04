@@ -1,7 +1,5 @@
 // src/app/(dashboard)/owner/_api/owner-customers.ts
-
-// Quando tivermos o endpoint real /v1/customers,
-// aqui vai virar chamada à API. Por enquanto é só mock.
+import { apiClient } from "@/lib/api-client";
 
 export type OwnerCustomer = {
   id: string;
@@ -15,7 +13,8 @@ export type OwnerCustomer = {
 };
 
 export type OwnerCustomerPlan = {
-  customerId: string;
+  id: string; // ID real do customerPlan
+  customerId: string; // telefone normalizado como “chave lógica”
   planName: string;
   status: "active" | "paused" | "cancelled" | "none";
   visitsUsed: number;
@@ -27,145 +26,111 @@ export type OwnerCustomerPlan = {
 export type OwnerCustomerAppointmentHistory = {
   id: string;
   customerId: string;
-  date: string; // "18 Nov 2025" (texto para exibir)
+  date: string; // "18 Nov 2025"
   time: string; // "09:00"
   professionalName: string;
   serviceName: string;
   source: "plan" | "single" | "walk_in" | "app";
   status: "done" | "no_show" | "cancelled";
 
-  // NOVOS CAMPOS para perfil financeiro (mock-only por enquanto)
-  price: number; // valor da visita em euros
-  year: number; // ano numérico (2025, 2024…)
-  month: number; // 1-12 (1=Jan, 11=Nov, etc.)
+  // para o perfil financeiro (por enquanto ainda mock vazio)
+  price: number;
+  year: number;
+  month: number;
 };
 
-// ---- MOCKS POR ENQUANTO ------------------------------------
+type BackendCustomer = {
+  name: string;
+  phone: string;
+  hasActivePlan: boolean;
+  planName?: string;
+  lastVisitDate?: string;
+  nextVisitDate?: string;
+  totalVisits: number;
+};
 
-const customersMock: OwnerCustomer[] = [
-  {
-    id: "1",
-    name: "Miguel Silva",
-    phone: "+351 912 345 678",
-    hasActivePlan: true,
-    planName: "Plano Corte Mensal",
-    lastVisitDate: "18 Nov 2025",
-    nextVisitDate: "02 Dez 2025",
-    totalVisits: 14,
-  },
-  {
-    id: "2",
-    name: "Bianca Costa",
-    phone: "+351 934 222 111",
-    hasActivePlan: true,
-    planName: "Plano Nails Premium",
-    lastVisitDate: "20 Nov 2025",
-    nextVisitDate: "27 Nov 2025",
-    totalVisits: 9,
-  },
-  {
-    id: "3",
-    name: "Carlos Andrade",
-    phone: "+351 968 555 000",
-    hasActivePlan: false,
-    lastVisitDate: "05 Nov 2025",
-    totalVisits: 3,
-  },
-];
+type BackendCustomerPlan = {
+  id: string;
+  customerName: string;
+  customerPhone: string;
+  status: "active" | "suspended" | "late" | "cancelled";
+  currentCycleEnd: string;
+  visitsUsedInCycle: number;
+  planTemplate: {
+    name: string;
+    visitsPerInterval?: number | null;
+  };
+};
 
-const customerPlansMock: OwnerCustomerPlan[] = [
-  {
-    customerId: "1",
-    planName: "Plano Corte Mensal",
-    status: "active",
-    visitsUsed: 2,
-    visitsTotal: 4,
-    renewsAt: "02 Jan 2026",
-    nextChargeAmount: 45,
-  },
-  {
-    customerId: "2",
-    planName: "Plano Nails Premium",
-    status: "active",
-    visitsUsed: 3,
-    visitsTotal: 6,
-    renewsAt: "27 Dez 2025",
-    nextChargeAmount: 65,
-  },
-  {
-    customerId: "3",
-    planName: "",
-    status: "none",
-    visitsUsed: 0,
-    visitsTotal: 0,
-  },
-];
+const normalizePhone = (phone: string) => phone.replace(/\D+/g, "");
 
-const appointmentHistoryMock: OwnerCustomerAppointmentHistory[] = [
-  {
-    id: "h1",
-    customerId: "1",
-    date: "18 Nov 2025",
-    time: "09:00",
-    professionalName: "Rafa Barber",
-    serviceName: "Corte + Barba",
-    source: "plan",
-    status: "done",
-    price: 25,
-    year: 2025,
-    month: 11,
-  },
-  {
-    id: "h2",
-    customerId: "1",
-    date: "04 Nov 2025",
-    time: "18:30",
-    professionalName: "João Fade",
-    serviceName: "Corte masculino",
-    source: "single",
-    status: "done",
-    price: 15,
-    year: 2025,
-    month: 11,
-  },
-  {
-    id: "h3",
-    customerId: "2",
-    date: "20 Out 2025",
-    time: "15:00",
-    professionalName: "Ana Nails",
-    serviceName: "Manicure gel",
-    source: "plan",
-    status: "done",
-    price: 30,
-    year: 2025,
-    month: 10,
-  },
-  {
-    id: "h4",
-    customerId: "3",
-    date: "05 Set 2025",
-    time: "19:00",
-    professionalName: "Rafa Barber",
-    serviceName: "Corte masculino",
-    source: "walk_in",
-    status: "done",
-    price: 15,
-    year: 2025,
-    month: 9,
-  },
-];
-
-// Função única de fetch que a página usa.
-// Depois a gente troca por chamada real à API.
+// Busca clientes + planos em chamadas separadas
 export async function fetchOwnerCustomers(): Promise<{
   customers: OwnerCustomer[];
   plans: OwnerCustomerPlan[];
   history: OwnerCustomerAppointmentHistory[];
 }> {
-  return {
-    customers: customersMock,
-    plans: customerPlansMock,
-    history: appointmentHistoryMock,
-  };
+  const [customersResponse, plansResponse] = await Promise.all([
+    apiClient<{ customers: BackendCustomer[] }>("/owner/customers", {
+      method: "GET",
+    }),
+    apiClient<BackendCustomerPlan[]>("/plans/customer-plans", {
+      method: "GET",
+    }),
+  ]);
+
+  const backendCustomers = customersResponse.customers ?? [];
+
+  const customers: OwnerCustomer[] = backendCustomers.map((c) => {
+    const id = normalizePhone(c.phone);
+
+    return {
+      id,
+      name: c.name,
+      phone: c.phone,
+      hasActivePlan: c.hasActivePlan,
+      planName: c.planName,
+      lastVisitDate: c.lastVisitDate,
+      nextVisitDate: c.nextVisitDate,
+      totalVisits: c.totalVisits,
+    };
+  });
+
+  const plans: OwnerCustomerPlan[] = plansResponse.map((p) => {
+    const customerId = normalizePhone(p.customerPhone);
+
+    return {
+      id: p.id,
+      customerId,
+      planName: p.planTemplate?.name ?? "",
+      status: p.status === "active" ? "active" : "none",
+      visitsUsed: p.visitsUsedInCycle ?? 0,
+      visitsTotal: p.planTemplate?.visitsPerInterval ?? 0,
+      renewsAt: new Date(p.currentCycleEnd).toLocaleDateString("pt-PT", {
+        day: "2-digit",
+        month: "short",
+        year: "numeric",
+      }),
+      nextChargeAmount: undefined,
+    };
+  });
+
+  // por enquanto seguimos sem histórico real
+  const history: OwnerCustomerAppointmentHistory[] = [];
+
+  return { customers, plans, history };
+}
+
+export async function registerCustomerPlanPayment(params: {
+  customerPlanId: string;
+  amountCents: number;
+  paidAt?: string; // "YYYY-MM-DD"
+}) {
+  await apiClient(`/plans/customer-plans/${params.customerPlanId}/pay`, {
+    method: "POST",
+    body: {
+      amountCents: params.amountCents,
+      paidAt: params.paidAt,
+    },
+  });
 }

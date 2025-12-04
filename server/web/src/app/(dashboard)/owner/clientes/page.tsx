@@ -4,10 +4,14 @@ import { useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
 import {
   fetchOwnerCustomers,
+  registerCustomerPlanPayment,
   type OwnerCustomer,
   type OwnerCustomerPlan,
   type OwnerCustomerAppointmentHistory,
 } from "../_api/owner-customers";
+
+// Filtro de frequência de visita
+type LastVisitFilter = "all" | "never" | "15_plus" | "30_plus" | "90_plus";
 
 export default function OwnerClientesPage() {
   const [customers, setCustomers] = useState<OwnerCustomer[]>([]);
@@ -17,6 +21,13 @@ export default function OwnerClientesPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const router = useRouter();
+
+  const [filterType, setFilterType] = useState<
+    "all" | "withPlan" | "withoutPlan"
+  >("all");
+  const [lastVisitFilter, setLastVisitFilter] =
+    useState<LastVisitFilter>("all");
+
   // Modal de registro de pagamento de plano
   const [isRegisterPaymentOpen, setIsRegisterPaymentOpen] = useState(false);
   const [registerPaymentAmount, setRegisterPaymentAmount] =
@@ -28,10 +39,14 @@ export default function OwnerClientesPage() {
     string | null
   >(null);
   const [savingRegisterPayment, setSavingRegisterPayment] = useState(false);
+
   // Modal de perfil financeiro
   const [isFinancialProfileOpen, setIsFinancialProfileOpen] = useState(false);
   const [financialYear, setFinancialYear] = useState<number | null>(null);
   const [financialMonth, setFinancialMonth] = useState<"all" | number>("all");
+
+  // Modal de histórico completo
+  const [isFullHistoryOpen, setIsFullHistoryOpen] = useState(false);
 
   useEffect(() => {
     async function load() {
@@ -63,16 +78,54 @@ export default function OwnerClientesPage() {
   const selectedHistory = selectedCustomer
     ? history.filter((h) => h.customerId === selectedCustomer.id)
     : [];
+
+  // Aplica os mesmos filtros usados na lista (plano + frequência)
+  const filteredCustomers: OwnerCustomer[] = customers
+    .filter((customer) => {
+      if (filterType === "withPlan") {
+        return customer.hasActivePlan;
+      }
+      if (filterType === "withoutPlan") {
+        return !customer.hasActivePlan;
+      }
+      return true; // "all"
+    })
+    .filter((customer) => {
+      if (lastVisitFilter === "all") return true;
+
+      const last = customer.lastVisitDate;
+
+      // nunca visitou
+      if (!last || !last.trim()) {
+        return lastVisitFilter === "never";
+      }
+
+      const parsed = new Date(last);
+      if (Number.isNaN(parsed.getTime())) {
+        // se não conseguir interpretar a data, não entra nos filtros por tempo
+        return false;
+      }
+
+      const diffMs = Date.now() - parsed.getTime();
+      const diffDays = diffMs / (1000 * 60 * 60 * 24);
+
+      if (lastVisitFilter === "15_plus") return diffDays >= 15;
+      if (lastVisitFilter === "30_plus") return diffDays >= 30;
+      if (lastVisitFilter === "90_plus") return diffDays >= 90;
+      if (lastVisitFilter === "never") return false; // já tratamos acima
+
+      return true;
+    });
+
   async function handleConfirmRegisterPayment() {
     if (!selectedCustomer || !selectedPlan) return;
 
-    // validações simples
     if (!registerPaymentAmount.trim()) {
       setRegisterPaymentError("Informe o valor pago.");
       return;
     }
 
-    const normalized = registerPaymentAmount.replace(",", "."); // aceita "45,00"
+    const normalized = registerPaymentAmount.replace(",", ".");
     const valueNumber = Number(normalized);
 
     if (!Number.isFinite(valueNumber) || valueNumber <= 0) {
@@ -82,43 +135,96 @@ export default function OwnerClientesPage() {
 
     const amountCents = Math.round(valueNumber * 100);
 
+    const paidAt =
+      registerPaymentDate && registerPaymentDate.trim().length > 0
+        ? registerPaymentDate
+        : new Date().toISOString().slice(0, 10); // "YYYY-MM-DD"
+
     setRegisterPaymentError(null);
     setSavingRegisterPayment(true);
 
     try {
-      // 🔗 FUTURO: aqui vamos chamar o endpoint real:
-      // POST /plans/customer-plans/:id/pay
-      // por enquanto só simulamos no estado local
-
-      console.log("Registrar pagamento de plano (mock por enquanto)", {
-        customerId: selectedCustomer.id,
-        customerName: selectedCustomer.name,
-        method: registerPaymentMethod,
+      // 1) CHAMA BACKEND REAL
+      await registerCustomerPlanPayment({
+        customerPlanId: selectedPlan.id,
         amountCents,
-        paidAt: registerPaymentDate || new Date().toISOString().slice(0, 10),
+        paidAt,
       });
 
-      // atualiza no estado local para "dar sensação" de plano em dia
+      // 2) Atualiza estado local só para refletir visualmente
       setPlans((prev) =>
         prev.map((plan) => {
-          if (plan.customerId !== selectedCustomer.id) return plan;
+          if (plan.id !== selectedPlan.id) return plan;
 
           return {
             ...plan,
             status: "active",
-            // no mock vamos só repetir a data de renovação
-            // depois, quando ligar no backend, isto vem da API atualizada
+            renewsAt: plan.renewsAt ?? paidAt,
           };
         })
       );
 
+      // 3) Fecha modal e limpa campos
       setIsRegisterPaymentOpen(false);
-    } catch (err) {
+      setRegisterPaymentAmount("");
+      setRegisterPaymentDate("");
+      setRegisterPaymentMethod("mbway");
+    } catch (err: any) {
       console.error(err);
-      setRegisterPaymentError("Não foi possível registar o pagamento (ainda).");
+      setRegisterPaymentError(
+        err?.message ?? "Não foi possível registar o pagamento."
+      );
     } finally {
       setSavingRegisterPayment(false);
     }
+  }
+
+  // Exporta lista (já filtrada) de clientes para CSV
+  function handleExportCustomers(customersToExport: OwnerCustomer[]) {
+    if (!customersToExport || customersToExport.length === 0) {
+      return;
+    }
+
+    const header = [
+      "Nome",
+      "Telefone",
+      "Tem plano ativo",
+      "Plano",
+      "Última visita",
+      "Próxima visita",
+      "Total de visitas",
+    ];
+
+    const rows = customersToExport.map((c) => [
+      c.name ?? "",
+      c.phone ?? "",
+      c.hasActivePlan ? "Sim" : "Não",
+      c.planName ?? "",
+      c.lastVisitDate ?? "",
+      c.nextVisitDate ?? "",
+      String(c.totalVisits ?? 0),
+    ]);
+
+    const csvContent = [header, ...rows]
+      .map((row) =>
+        row
+          .map((field) => `"${String(field ?? "").replace(/"/g, '""')}"`)
+          .join(";")
+      )
+      .join("\n");
+
+    const blob = new Blob([csvContent], {
+      type: "text/csv;charset=utf-8;",
+    });
+    const url = URL.createObjectURL(blob);
+
+    const link = document.createElement("a");
+    link.href = url;
+    link.setAttribute("download", "clientes-fluxo.csv");
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
   }
 
   return (
@@ -132,22 +238,44 @@ export default function OwnerClientesPage() {
           </p>
         </div>
 
-        <div className="flex flex-wrap gap-2 text-xs">
-          <button className="px-3 py-1 rounded-lg border border-slate-800 bg-slate-900/80">
+        <div className="flex items-center gap-2">
+          <button
+            onClick={() => setFilterType("all")}
+            className={`px-3 py-1 text-[11px] rounded-lg border ${
+              filterType === "all"
+                ? "bg-emerald-600/20 border-emerald-600 text-emerald-200"
+                : "border-slate-600 text-slate-400 hover:text-emerald-300"
+            }`}
+          >
             Todos
           </button>
-          <button className="px-3 py-1 rounded-lg border border-slate-800 bg-slate-900/80">
+
+          <button
+            onClick={() => setFilterType("withPlan")}
+            className={`px-3 py-1 text-[11px] rounded-lg border ${
+              filterType === "withPlan"
+                ? "bg-emerald-600/20 border-emerald-600 text-emerald-200"
+                : "border-slate-600 text-slate-400 hover:text-emerald-300"
+            }`}
+          >
             Com plano
           </button>
-          <button className="px-3 py-1 rounded-lg border border-slate-800 bg-slate-900/80">
+
+          <button
+            onClick={() => setFilterType("withoutPlan")}
+            className={`px-3 py-1 text-[11px] rounded-lg border ${
+              filterType === "withoutPlan"
+                ? "bg-emerald-600/20 border-emerald-600 text-emerald-200"
+                : "border-slate-600 text-slate-400 hover:text-emerald-300"
+            }`}
+          >
             Sem plano
           </button>
+
           <button
-            className="px-3 py-1 rounded-lg border border-emerald-600 bg-emerald-600/20 text-emerald-200"
-            onClick={() => {
-              // aqui depois vamos abrir o fluxo/modal de criação de agendamento
-              console.log("Criar agendamento para este cliente (em breve)");
-            }}
+            type="button"
+            onClick={() => router.push("/owner/agenda")}
+            className="px-3 py-1 rounded-lg border border-emerald-600 bg-emerald-600/20 text-[11px] text-emerald-200"
           >
             Criar agendamento
           </button>
@@ -160,9 +288,31 @@ export default function OwnerClientesPage() {
         <div className="lg:col-span-1 rounded-2xl border border-slate-800 bg-slate-900/60 p-4">
           <div className="flex items-center justify-between mb-3 text-xs">
             <p className="text-slate-400">Lista de clientes</p>
-            <button className="text-[11px] text-emerald-400 hover:underline">
-              Exportar
-            </button>
+
+            <div className="flex items-center gap-2">
+              <select
+                value={lastVisitFilter}
+                onChange={(e) =>
+                  setLastVisitFilter(e.target.value as LastVisitFilter)
+                }
+                className="rounded-lg border border-slate-800 bg-slate-950/70 px-2 py-1 text-[11px] text-slate-200 focus:outline-none focus:ring-1 focus:ring-emerald-500"
+              >
+                <option value="all">Todos</option>
+                <option value="never">Nunca visitaram</option>
+                <option value="15_plus">Sem visita há 15+ dias</option>
+                <option value="30_plus">Sem visita há 30+ dias</option>
+                <option value="90_plus">Sem visita há 3+ meses</option>
+              </select>
+
+              <button
+                className="text-[11px] text-emerald-400 hover:underline disabled:opacity-40 disabled:cursor-not-allowed"
+                type="button"
+                disabled={filteredCustomers.length === 0}
+                onClick={() => handleExportCustomers(filteredCustomers)}
+              >
+                Exportar
+              </button>
+            </div>
           </div>
 
           <div className="mb-3">
@@ -184,7 +334,7 @@ export default function OwnerClientesPage() {
             </p>
           ) : (
             <div className="space-y-2 text-xs">
-              {customers.map((customer) => {
+              {filteredCustomers.map((customer) => {
                 const isSelected = customer.id === selectedId;
 
                 return (
@@ -293,10 +443,31 @@ export default function OwnerClientesPage() {
                         )}
                       </>
                     ) : (
-                      <p className="mt-1 text-[11px] text-slate-400">
-                        Cliente sem plano ativo. Depois vamos permitir atribuir
-                        um plano diretamente aqui.
-                      </p>
+                      <div className="mt-1 space-y-2">
+                        <p className="text-[11px] text-slate-400">
+                          Cliente sem plano ativo. Você pode atribuir um plano
+                          para este cliente.
+                        </p>
+
+                        <button
+                          className="px-3 py-1 rounded-lg border border-emerald-600 bg-emerald-600/20 text-[11px] text-emerald-200"
+                          onClick={() => {
+                            if (!selectedCustomer) return;
+
+                            const params = new URLSearchParams({
+                              customerName: selectedCustomer.name,
+                              customerPhone: selectedCustomer.phone,
+                            });
+
+                            const qs = params.toString();
+                            router.push(
+                              qs ? `/owner/planos?${qs}` : "/owner/planos"
+                            );
+                          }}
+                        >
+                          Atribuir plano a este cliente
+                        </button>
+                      </div>
                     )}
                   </div>
 
@@ -329,7 +500,6 @@ export default function OwnerClientesPage() {
                           if (!selectedPlan || selectedPlan.status === "none")
                             return;
 
-                          // valor sugerido = próxima cobrança (se existir)
                           const defaultAmount = selectedPlan.nextChargeAmount
                             ? String(selectedPlan.nextChargeAmount)
                             : "";
@@ -372,6 +542,7 @@ export default function OwnerClientesPage() {
                     </div>
                   </div>
                 </div>
+
                 {isRegisterPaymentOpen && selectedCustomer && selectedPlan && (
                   <div className="fixed inset-0 z-40 flex items-center justify-center bg-black/60">
                     <div className="w-full max-w-md rounded-2xl border border-slate-800 bg-slate-950 p-4 text-xs shadow-xl">
@@ -481,6 +652,7 @@ export default function OwnerClientesPage() {
                     </div>
                   </div>
                 )}
+
                 {isFinancialProfileOpen && selectedCustomer && (
                   <FinancialProfileModal
                     customer={selectedCustomer}
@@ -490,6 +662,14 @@ export default function OwnerClientesPage() {
                     onClose={() => setIsFinancialProfileOpen(false)}
                     onChangeYear={(y) => setFinancialYear(y)}
                     onChangeMonth={(m) => setFinancialMonth(m)}
+                  />
+                )}
+
+                {isFullHistoryOpen && selectedCustomer && (
+                  <FullHistoryModal
+                    customer={selectedCustomer}
+                    history={selectedHistory}
+                    onClose={() => setIsFullHistoryOpen(false)}
                   />
                 )}
               </>
@@ -504,7 +684,15 @@ export default function OwnerClientesPage() {
           <div className="rounded-2xl border border-slate-800 bg-slate-900/60 p-4 text-xs">
             <div className="flex items-center justify-between mb-3">
               <p className="text-slate-400">Histórico de visitas</p>
-              <button className="text-[11px] text-emerald-400 hover:underline">
+              <button
+                className="text-[11px] text-emerald-400 hover:underline disabled:opacity-40 disabled:cursor-not-allowed"
+                type="button"
+                disabled={!selectedCustomer || selectedHistory.length === 0}
+                onClick={() => {
+                  if (!selectedCustomer || selectedHistory.length === 0) return;
+                  setIsFullHistoryOpen(true);
+                }}
+              >
                 Ver todos
               </button>
             </div>
@@ -602,6 +790,7 @@ function StatusBadge({
       return null;
   }
 }
+
 type FinancialProfileModalProps = {
   customer: OwnerCustomer;
   history: OwnerCustomerAppointmentHistory[];
@@ -839,6 +1028,71 @@ function FinancialProfileModal({
             )}
           </div>
         </div>
+      </div>
+    </div>
+  );
+}
+
+type FullHistoryModalProps = {
+  customer: OwnerCustomer;
+  history: OwnerCustomerAppointmentHistory[];
+  onClose: () => void;
+};
+
+function FullHistoryModal({
+  customer,
+  history,
+  onClose,
+}: FullHistoryModalProps) {
+  return (
+    <div className="fixed inset-0 z-40 flex items-center justify-center bg-black/60">
+      <div className="w-full max-w-2xl max-h-[85vh] overflow-hidden rounded-2xl border border-slate-800 bg-slate-950 p-4 text-xs shadow-xl">
+        <div className="flex items-start justify-between mb-3">
+          <div>
+            <p className="text-[11px] uppercase tracking-wide text-slate-400">
+              Histórico completo de visitas
+            </p>
+            <p className="text-sm font-semibold text-slate-100">
+              {customer.name}
+            </p>
+            <p className="text-[11px] text-slate-400">{customer.phone}</p>
+          </div>
+          <button
+            className="text-[11px] text-slate-400 hover:text-slate-100"
+            onClick={onClose}
+          >
+            Fechar
+          </button>
+        </div>
+
+        {history.length === 0 ? (
+          <p className="text-[11px] text-slate-500">
+            Ainda não há visitas registadas para este cliente.
+          </p>
+        ) : (
+          <div className="max-h-[70vh] overflow-y-auto space-y-2 pr-1">
+            {history.map((h) => (
+              <div
+                key={h.id}
+                className="rounded-xl border border-slate-800 bg-slate-950/70 px-3 py-2 flex items-center justify-between"
+              >
+                <div>
+                  <p className="text-[11px] text-slate-300">
+                    {h.date} · {h.time}
+                  </p>
+                  <p className="text-[11px] font-medium">{h.serviceName}</p>
+                  <p className="text-[10px] text-slate-400">
+                    {h.professionalName}
+                  </p>
+                </div>
+                <div className="text-right">
+                  <SourceBadge source={h.source} />
+                  <StatusBadge status={h.status} />
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
       </div>
     </div>
   );

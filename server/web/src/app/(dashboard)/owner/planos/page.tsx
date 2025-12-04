@@ -71,6 +71,8 @@ export default function OwnerPlanosPage() {
   const searchParams = useSearchParams();
   const ADVANCE_PAYMENT_DAYS = 5; // quantos dias antes do fim do ciclo pode adiantar o próximo mês
   const initialLocationId = searchParams.get("locationId") ?? undefined;
+  const initialCustomerName = searchParams.get("customerName") ?? "";
+  const initialCustomerPhone = searchParams.get("customerPhone") ?? "";
 
   // location selecionada para a tela inteira
   const [selectedLocationId, setSelectedLocationId] = useState<
@@ -123,6 +125,8 @@ export default function OwnerPlanosPage() {
   const [createCustomerError, setCreateCustomerError] = useState<string | null>(
     null
   );
+  const [hasAppliedCustomerFromUrl, setHasAppliedCustomerFromUrl] =
+    useState(false);
 
   // novas regras
   const [formStartTime, setFormStartTime] = useState(""); // ex: "15:00"
@@ -193,6 +197,20 @@ export default function OwnerPlanosPage() {
       cancelled = true;
     };
   }, [initialLocationId]);
+  useEffect(() => {
+    // só aplica uma vez e só se vier algo na URL
+    if (hasAppliedCustomerFromUrl) return;
+
+    if (!initialCustomerName && !initialCustomerPhone) return;
+
+    setNewCustomerName(initialCustomerName || "");
+    setNewCustomerPhone(initialCustomerPhone || "");
+
+    // já abre o form de "Adicionar cliente" automaticamente
+    setIsCreatingCustomer(true);
+
+    setHasAppliedCustomerFromUrl(true);
+  }, [hasAppliedCustomerFromUrl, initialCustomerName, initialCustomerPhone]);
 
   // sempre que mudar de unidade, limpamos os serviços selecionados
   useEffect(() => {
