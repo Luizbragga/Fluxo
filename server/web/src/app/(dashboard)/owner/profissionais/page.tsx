@@ -3,7 +3,11 @@
 import { useEffect, useState } from "react";
 import {
   fetchOwnerProfessionals,
+  fetchOwnerProviderEarnings,
+  fetchOwnerProviderCommissions,
   type OwnerProfessional,
+  type OwnerProviderEarningsItem,
+  type OwnerProviderCommission,
 } from "../_api/owner-professionals";
 
 // --- Tipos de resumo (por enquanto ainda mockados) ---------------------------
@@ -65,16 +69,20 @@ export default function OwnerProfessionalsPage() {
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [providerEarnings, setProviderEarnings] = useState<
+    OwnerProviderEarningsItem[]
+  >([]);
+  const [commissions, setCommissions] = useState<OwnerProviderCommission[]>([]);
 
   // carrega profissionais reais do tenant
+  // carrega profissionais reais do tenant + earnings agregados
   useEffect(() => {
     async function load() {
       try {
+        // 1) Profissionais (lista principal)
         const data = await fetchOwnerProfessionals();
-
         setProfessionals(data);
         setSelectedId(data[0]?.id ?? null);
-
         setError(null);
       } catch (err: any) {
         console.error(err);
@@ -84,19 +92,72 @@ export default function OwnerProfessionalsPage() {
       } finally {
         setLoading(false);
       }
+
+      // 2) Earnings por provider (não bloqueia a tela se der erro)
+      try {
+        const earnings = await fetchOwnerProviderEarnings();
+        setProviderEarnings(earnings);
+      } catch (err) {
+        console.error(
+          "Falha ao carregar resumo financeiro dos providers:",
+          err
+        );
+        // se falhar, seguimos usando o mock para os cards
+      }
     }
 
     load();
   }, []); // sem dependências
+  // carrega regras de comissão sempre que o profissional selecionado muda
+  useEffect(() => {
+    if (!selectedId) {
+      setCommissions([]);
+      return;
+    }
+
+    async function loadCommissions() {
+      try {
+        const data = await fetchOwnerProviderCommissions(selectedId!);
+        setCommissions(data);
+      } catch (err) {
+        console.error("Erro ao carregar comissões do provider:", err);
+        // se der erro, mantemos lista vazia para não quebrar a tela
+        setCommissions([]);
+      }
+    }
+
+    loadCommissions();
+  }, [selectedId]);
 
   const selectedProfessional =
     professionals.find((p) => p.id === selectedId) ?? null;
 
   const selectedIndex = professionals.findIndex((p) => p.id === selectedId);
-  const selectedSummary =
-    selectedProfessional && selectedIndex >= 0
+
+  // earnings reais para o profissional selecionado (se existir no relatório)
+  const selectedEarnings =
+    selectedProfessional &&
+    providerEarnings.find((e) => e.providerId === selectedProfessional.id);
+
+  const selectedSummary: ProfessionalSummary | null = selectedProfessional
+    ? selectedEarnings
+      ? {
+          id: selectedProfessional.id,
+          totalAppointmentsMonth: selectedEarnings.appointmentsCount,
+          totalRevenueMonth: Math.round(
+            selectedEarnings.servicePriceCents / 100
+          ),
+          professionalShareMonth: Math.round(
+            selectedEarnings.providerEarningsCents / 100
+          ),
+          spaceShareMonth: Math.round(
+            selectedEarnings.houseEarningsCents / 100
+          ),
+        }
+      : selectedIndex >= 0
       ? buildMockSummaryFor(selectedProfessional, selectedIndex)
-      : null;
+      : null
+    : null;
 
   return (
     <>
@@ -274,34 +335,43 @@ export default function OwnerProfessionalsPage() {
                 </button>
               </div>
               <div className="space-y-2">
-                {payoutSummaries.map((payout) => (
-                  <div
-                    key={payout.id}
-                    className={[
-                      "rounded-xl border px-3 py-2 flex items-center justify-between",
-                      payout.status === "pending"
-                        ? "border-amber-500/40 bg-amber-500/10"
-                        : "border-slate-800 bg-slate-950/60 opacity-70",
-                    ].join(" ")}
-                  >
-                    <div>
-                      <p className="text-[11px] text-slate-300">
-                        {payout.periodLabel}
-                      </p>
-                      <p className="text-sm font-semibold">€ {payout.amount}</p>
-                    </div>
-                    <span
-                      className={[
-                        "text-[10px] px-2 py-[1px] rounded-full",
-                        payout.status === "pending"
-                          ? "bg-amber-500/30 text-amber-100"
-                          : "bg-emerald-500/20 text-emerald-100",
-                      ].join(" ")}
-                    >
-                      {payout.status === "pending" ? "Pendente" : "Pago"}
+                {!selectedProfessional ? (
+                  <p className="text-[11px] text-slate-400">
+                    Selecione um profissional para ver as regras de comissão.
+                  </p>
+                ) : commissions.length === 0 ? (
+                  <div className="rounded-xl border border-dashed border-slate-700/80 bg-slate-950/40 px-3 py-2 text-[11px] text-slate-500">
+                    Nenhuma regra de comissão configurada ainda para{" "}
+                    <span className="font-medium text-slate-300">
+                      {selectedProfessional.name}
+                    </span>
+                    .{" "}
+                    <span className="block mt-1">
+                      Use o botão{" "}
+                      <span className="font-semibold">“Gerir comissão”</span>{" "}
+                      para definir as regras padrão ou por serviço.
                     </span>
                   </div>
-                ))}
+                ) : (
+                  commissions.map((c) => (
+                    <div
+                      key={c.id}
+                      className="rounded-xl border border-slate-800 bg-slate-950/60 px-3 py-2"
+                    >
+                      <p className="text-[11px] text-slate-300">
+                        {c.service?.name ?? "Regra padrão (todos os serviços)"}
+                      </p>
+                      <p className="text-[11px] text-slate-400">
+                        {c.percentage}% do valor do serviço para o profissional
+                      </p>
+                      {!c.active && (
+                        <p className="mt-1 text-[10px] text-slate-500">
+                          Regra inativa
+                        </p>
+                      )}
+                    </div>
+                  ))
+                )}
               </div>
             </div>
 

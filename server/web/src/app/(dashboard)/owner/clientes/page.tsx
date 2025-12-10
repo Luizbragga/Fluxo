@@ -295,6 +295,15 @@ export default function OwnerClientesPage() {
             Sem plano
           </button>
 
+          {/* 👉 Novo botão para ir à tela de Relatórios */}
+          <button
+            type="button"
+            onClick={() => router.push("/owner/relatorios")}
+            className="px-3 py-1 rounded-lg border border-slate-700 text-[11px] text-slate-300 hover:border-emerald-500"
+          >
+            Ver relatórios
+          </button>
+
           <button
             type="button"
             onClick={() => router.push("/owner/agenda")}

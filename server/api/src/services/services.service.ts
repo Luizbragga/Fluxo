@@ -98,6 +98,7 @@ export class ServicesService {
       customerPlanId?: string;
     },
   ) {
+    // defaults seguros
     const page = params?.page && params.page > 0 ? params.page : 1;
 
     const pageSize =
@@ -108,18 +109,75 @@ export class ServicesService {
     const skip = (page - 1) * pageSize;
     const take = pageSize;
 
-    const where: any = {
+    // -------------------------------
+    // Estatísticas do mês atual
+    // -------------------------------
+    const now = new Date();
+
+    const monthStart = new Date(
+      Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1, 0, 0, 0),
+    );
+    const monthEnd = new Date(
+      Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + 1, 1, 0, 0, 0),
+    );
+
+    const statsWhere: any = {
       tenantId,
-      active: true,
+      status: 'done',
+      startAt: {
+        gte: monthStart,
+        lt: monthEnd,
+      },
     };
 
-    // filtro de location (já existia)
     if (params?.locationId) {
-      where.locationId = params.locationId;
+      statsWhere.locationId = params.locationId;
     }
 
-    // 🔴 NOVO: se vier customerPlanId, pegar o template do plano
-    // e usar o JSON sameDayServiceIds (array de serviceId) como filtro
+    // Agrupa por serviço (nome + locationId) no mês atual
+    const statsGrouped = await this.prisma.appointment.groupBy({
+      by: ['serviceName', 'locationId'],
+      where: statsWhere,
+      _count: { _all: true },
+      _sum: { servicePriceCents: true },
+    });
+
+    // Mapa: "serviceName::locationId" -> { uses, revenue }
+    const serviceStatsMap = new Map<
+      string,
+      { usesThisMonth: number; revenueThisMonth: number }
+    >();
+
+    for (const row of statsGrouped) {
+      const key = `${row.serviceName ?? ''}::${row.locationId ?? 'none'}`;
+
+      const uses = row._count._all;
+      const revenueCents = row._sum.servicePriceCents ?? 0;
+      const revenueEuros = revenueCents / 100;
+
+      serviceStatsMap.set(key, {
+        usesThisMonth: uses,
+        revenueThisMonth: revenueEuros,
+      });
+    }
+
+    // Helper para anexar estatísticas a cada serviço
+    const attachStats = (service: Service) => {
+      const key = `${service.name ?? ''}::${service.locationId ?? 'none'}`;
+      const stats = serviceStatsMap.get(key);
+
+      const base = this.toViewModel(service);
+
+      return {
+        ...base,
+        usesThisMonth: stats?.usesThisMonth ?? 0,
+        revenueThisMonth: stats?.revenueThisMonth ?? 0,
+      };
+    };
+
+    // ------------------------------------------------------------
+    // CASO 1: veio customerPlanId -> pegar serviços do plano
+    // ------------------------------------------------------------
     if (params?.customerPlanId) {
       const customerPlan = await this.prisma.customerPlan.findFirst({
         where: {
@@ -127,32 +185,79 @@ export class ServicesService {
           tenantId,
         },
         include: {
-          planTemplate: true,
+          planTemplate: {
+            select: {
+              sameDayServiceIds: true,
+            },
+          },
         },
       });
 
-      if (!customerPlan) {
+      if (!customerPlan || !customerPlan.planTemplate) {
         throw new BadRequestException(
-          'Plano de cliente não encontrado para este tenant.',
+          'Plano do cliente não encontrado para este tenant.',
         );
       }
 
-      const raw = customerPlan.planTemplate.sameDayServiceIds as unknown;
+      const serviceIds = customerPlan.planTemplate
+        .sameDayServiceIds as string[];
 
-      let allowedServiceIds: string[] = [];
-
-      if (Array.isArray(raw)) {
-        allowedServiceIds = raw.filter(
-          (v): v is string => typeof v === 'string',
-        );
+      if (!Array.isArray(serviceIds) || serviceIds.length === 0) {
+        // plano sem serviços associados -> devolve vazio pra ficar claro
+        return {
+          items: [],
+          meta: {
+            page: 1,
+            pageSize,
+            total: 0,
+            totalPages: 1,
+          },
+        };
       }
 
-      // Se o plano tiver IDs configurados, filtramos só eles.
-      // Se o array estiver vazio, deixamos sem filtro extra
-      // (interpretação: plano permite qualquer serviço).
-      if (allowedServiceIds.length > 0) {
-        where.id = { in: allowedServiceIds };
+      const where: any = {
+        tenantId,
+        active: true,
+        id: { in: serviceIds },
+      };
+
+      if (params.locationId) {
+        where.locationId = params.locationId;
       }
+
+      const [services, total] = await Promise.all([
+        this.prisma.service.findMany({
+          where,
+          orderBy: { name: 'asc' },
+          skip,
+          take,
+        }),
+        this.prisma.service.count({ where }),
+      ]);
+
+      const totalPages = total === 0 ? 1 : Math.ceil(total / pageSize);
+
+      return {
+        items: services.map((s) => attachStats(s)),
+        meta: {
+          page,
+          pageSize,
+          total,
+          totalPages,
+        },
+      };
+    }
+
+    // ------------------------------------------------------------
+    // CASO 2: sem customerPlanId -> lista normal do tenant
+    // ------------------------------------------------------------
+    const where: any = {
+      tenantId,
+      active: true,
+    };
+
+    if (params?.locationId) {
+      where.locationId = params.locationId;
     }
 
     const [services, total] = await Promise.all([
@@ -168,7 +273,7 @@ export class ServicesService {
     const totalPages = total === 0 ? 1 : Math.ceil(total / pageSize);
 
     return {
-      items: services.map((s) => this.toViewModel(s)),
+      items: services.map((s) => attachStats(s)),
       meta: {
         page,
         pageSize,
@@ -177,6 +282,7 @@ export class ServicesService {
       },
     };
   }
+
   async findOne(tenantId: string, id: string) {
     const service = await this.prisma.service.findFirst({
       where: { id, tenantId },

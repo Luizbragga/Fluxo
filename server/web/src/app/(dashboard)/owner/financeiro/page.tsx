@@ -9,7 +9,6 @@ import {
   type OwnerFinanceiroData,
   type PayoutItem,
   type PlanPaymentItem,
-  type DailyRevenueItem,
 } from "../_api/owner-financeiro";
 import Link from "next/link";
 
@@ -34,6 +33,7 @@ function getCurrentWeekRange() {
     to: nextMonday.toISOString(),
   };
 }
+
 const formatCurrency = (value: number) =>
   value.toLocaleString("pt-PT", {
     style: "currency",
@@ -68,11 +68,11 @@ export default function OwnerFinanceiroPage() {
 
         let result: OwnerFinanceiroData;
 
-        // 1) Se o user aplicou um intervalo customizado (datas escolhidas)
+        // 1) Intervalo customizado
         if (appliedRange && (appliedRange.from || appliedRange.to)) {
           result = await fetchOwnerFinanceiroWithRange(appliedRange);
         } else if (period === "month") {
-          // 2) Comportamento padrão: mês atual (backend resolve)
+          // 2) Mês atual (backend resolve)
           result = await fetchOwnerFinanceiro();
         } else {
           // 3) Semana atual: segunda → segunda
@@ -113,12 +113,94 @@ export default function OwnerFinanceiroPage() {
     dailyRevenue,
   } = data;
 
-  // garante que nunca vamos dividir por 0
-  const maxDailyRevenueRaw = dailyRevenue.reduce(
-    (max, d) => (d.totalRevenue > max ? d.totalRevenue : max),
+  // ---------------------------
+  // PREPARAÇÃO DOS DADOS DO GRÁFICO
+  // ---------------------------
+
+  const isCustomRange = appliedRange && (appliedRange.from || appliedRange.to);
+
+  type ChartPoint = { label: string; value: number };
+
+  let chartPoints: ChartPoint[] = [];
+
+  if (isCustomRange) {
+    // Intervalo customizado -> por dia (dd/mm)
+    chartPoints = dailyRevenue.map((item) => {
+      const d = new Date(item.date);
+      const label = d.toLocaleDateString("pt-PT", {
+        day: "2-digit",
+        month: "2-digit",
+      });
+      return { label, value: item.totalRevenue };
+    });
+  } else if (period === "week") {
+    // Semana -> sempre 7 dias (Seg–Dom)
+    const weekDaysOrder: { key: number; label: string }[] = [
+      { key: 1, label: "Seg" },
+      { key: 2, label: "Ter" },
+      { key: 3, label: "Qua" },
+      { key: 4, label: "Qui" },
+      { key: 5, label: "Sex" },
+      { key: 6, label: "Sáb" },
+      { key: 0, label: "Dom" },
+    ];
+
+    const totalsByWeekday = new Map<number, number>();
+
+    for (const item of dailyRevenue) {
+      const d = new Date(item.date);
+      const weekday = d.getDay(); // 0–6
+      totalsByWeekday.set(
+        weekday,
+        (totalsByWeekday.get(weekday) ?? 0) + item.totalRevenue
+      );
+    }
+
+    chartPoints = weekDaysOrder.map(({ key, label }) => ({
+      label,
+      value: totalsByWeekday.get(key) ?? 0,
+    }));
+  } else {
+    // Mês -> sempre 12 meses (Jan–Dez)
+    const monthLabels = [
+      "Jan",
+      "Fev",
+      "Mar",
+      "Abr",
+      "Mai",
+      "Jun",
+      "Jul",
+      "Ago",
+      "Set",
+      "Out",
+      "Nov",
+      "Dez",
+    ];
+
+    const totalsByMonth = new Array(12).fill(0);
+
+    for (const item of dailyRevenue) {
+      const d = new Date(item.date);
+      const m = d.getMonth(); // 0–11
+      totalsByMonth[m] += item.totalRevenue;
+    }
+
+    chartPoints = monthLabels.map((label, index) => ({
+      label,
+      value: totalsByMonth[index] ?? 0,
+    }));
+  }
+
+  const maxChartValue = chartPoints.reduce(
+    (max, p) => (p.value > max ? p.value : max),
     0
   );
-  const maxDailyRevenue = maxDailyRevenueRaw > 0 ? maxDailyRevenueRaw : 1;
+  const safeMaxChartValue = maxChartValue > 0 ? maxChartValue : 1;
+
+  // ---------------------------
+  // FUNÇÕES AUXILIARES
+  // ---------------------------
+
   function applyCustomRange() {
     if (!dateFromInput && !dateToInput) {
       setAppliedRange(null);
@@ -145,6 +227,7 @@ export default function OwnerFinanceiroPage() {
     setDateToInput("");
     setAppliedRange(null);
   }
+
   const handleExportProfessionalEarnings = () => {
     if (!professionalEarnings || professionalEarnings.length === 0) {
       alert("Não há dados de ganhos por profissionais para exportar.");
@@ -190,6 +273,10 @@ export default function OwnerFinanceiroPage() {
     document.body.removeChild(link);
     URL.revokeObjectURL(url);
   };
+
+  // ---------------------------
+  // RENDER
+  // ---------------------------
 
   return (
     <>
@@ -237,6 +324,7 @@ export default function OwnerFinanceiroPage() {
             </button>
           </div>
         </div>
+
         <div className="mt-2 flex flex-wrap items-center gap-2 text-[11px] md:mt-0">
           <span className="text-slate-500">Filtro por data:</span>
           <input
@@ -271,7 +359,7 @@ export default function OwnerFinanceiroPage() {
         </div>
       </header>
 
-      {/* Bloco de resumo + "gráfico" simples */}
+      {/* Bloco de resumo + gráfico */}
       <section className="grid grid-cols-1 lg:grid-cols-3 gap-4 mb-4">
         <div className="lg:col-span-2 rounded-2xl border border-slate-800 bg-slate-900/60 p-4">
           <p className="text-xs text-slate-400 mb-3">
@@ -297,7 +385,14 @@ export default function OwnerFinanceiroPage() {
 
         <div className="rounded-2xl border border-slate-800 bg-slate-900/60 p-4 text-xs">
           <div className="flex items-center justify-between mb-3">
-            <p className="text-slate-400">Faturamento por dia</p>
+            <p className="text-slate-400">
+              {period === "week"
+                ? "Faturamento por dia da semana"
+                : period === "month"
+                ? "Faturamento por mês"
+                : "Faturamento por dia"}
+            </p>
+
             <Link
               href="/owner/relatorios?tab=daily-revenue"
               className="text-[11px] text-emerald-400 hover:underline"
@@ -306,34 +401,34 @@ export default function OwnerFinanceiroPage() {
             </Link>
           </div>
 
-          {dailyRevenue.length === 0 ? (
+          {chartPoints.length === 0 ? (
             <p className="mt-4 text-[11px] text-slate-500">
               Não há faturamento registrado neste período.
             </p>
           ) : (
             <>
               <div className="h-32 flex items-end gap-1">
-                {dailyRevenue.map((item) => {
-                  // evita NaN / Infinity e garante uma barra mínima
+                {chartPoints.map((point, index) => {
                   const ratio =
-                    maxDailyRevenue > 0
-                      ? item.totalRevenue / maxDailyRevenue
-                      : 0;
-                  const height = Math.max(Math.round(ratio * 100), 8); // pelo menos 8%
-
-                  const dateLabel = new Date(item.date).getDate();
+                    safeMaxChartValue > 0 ? point.value / safeMaxChartValue : 0;
+                  const height = Math.max(Math.round(ratio * 100), 8); // mínimo 8%
 
                   return (
                     <div
-                      key={item.date}
+                      key={point.label + index}
                       className="flex-1 flex flex-col justify-end items-center h-full"
                     >
+                      <span className="mb-1 text-[9px] text-slate-300">
+                        {formatCurrency(point.value)}
+                      </span>
+
                       <div
                         className="w-full max-w-[16px] rounded-t-lg bg-emerald-500/60"
                         style={{ height: `${height}%` }}
                       />
+
                       <span className="mt-1 text-[9px] text-slate-500">
-                        {dateLabel}
+                        {point.label}
                       </span>
                     </div>
                   );
@@ -341,8 +436,8 @@ export default function OwnerFinanceiroPage() {
               </div>
 
               <p className="mt-2 text-[10px] text-slate-500">
-                Faturamento diário com base em atendimentos concluídos no
-                período atual.
+                Faturamento com base em atendimentos concluídos no período
+                selecionado.
               </p>
             </>
           )}
@@ -456,7 +551,6 @@ export default function OwnerFinanceiroPage() {
                         setMarkingPayoutId(payout.id);
                         await markPayoutAsPaid(payout.id);
 
-                        // recarrega os dados financeiros após marcar como pago
                         let updated: OwnerFinanceiroData;
                         if (period === "month") {
                           updated = await fetchOwnerFinanceiro();
@@ -486,7 +580,7 @@ export default function OwnerFinanceiroPage() {
           </div>
         </div>
 
-        {/* Pagamentos de planos (por enquanto mockados no _api) */}
+        {/* Pagamentos de planos */}
         <div className="rounded-2xl border border-slate-800 bg-slate-900/60 p-4 text-xs">
           <div className="flex items-center justify-between mb-3">
             <p className="text-slate-400">Pagamentos de planos</p>

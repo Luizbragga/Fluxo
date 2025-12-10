@@ -119,7 +119,8 @@ export class CustomersService {
           name: appt.clientName ?? dbCustomer?.name ?? 'Cliente',
           phone: appt.clientPhone ?? dbCustomer?.phone ?? '',
           hasActivePlan: false,
-          totalVisits: 1,
+          // só conta como visita se estiver concluído
+          totalVisits: appt.status === 'done' ? 1 : 0,
           lastVisitDate: appt.status === 'done' ? formattedDate : undefined,
           nextVisitDate:
             appt.status === 'scheduled' ? formattedDate : undefined,
@@ -130,9 +131,9 @@ export class CustomersService {
           existing.id = customerId;
         }
 
-        existing.totalVisits += 1;
-
+        // incrementa visitas apenas para atendimentos concluídos
         if (appt.status === 'done') {
+          existing.totalVisits += 1;
           existing.lastVisitDate = formattedDate;
         }
 

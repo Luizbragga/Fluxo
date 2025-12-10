@@ -790,6 +790,49 @@ export default function OwnerPlanosPage() {
   const customers: PlanCustomer[] = selectedId
     ? planCustomersByPlan[selectedId] ?? []
     : [];
+  const billingSummary = (() => {
+    if (customers.length === 0) return null;
+
+    let inDay = 0;
+    let late = 0;
+    let noData = 0;
+
+    const now = new Date();
+    let nextCharge: Date | null = null;
+
+    for (const c of customers) {
+      if (!c.nextChargeDate || !c.nextChargeAmount) {
+        noData += 1;
+        continue;
+      }
+
+      const nextDate = new Date(c.nextChargeDate);
+      if (Number.isNaN(nextDate.getTime())) {
+        noData += 1;
+        continue;
+      }
+
+      // NOVA REGRA: em dia até a própria data de cobrança; depois disso, atraso
+      if (now <= nextDate) {
+        inDay += 1;
+      } else {
+        late += 1;
+      }
+
+      if (!nextCharge || nextDate < nextCharge) {
+        nextCharge = nextDate;
+      }
+    }
+
+    return {
+      inDay,
+      late,
+      noData,
+      nextChargeLabel: nextCharge
+        ? nextCharge.toLocaleDateString("pt-PT")
+        : null,
+    };
+  })();
 
   // textos derivados para mostrar as regras do plano selecionado
   let selectedPlanWeekdaysLabel = "";
@@ -1576,147 +1619,6 @@ export default function OwnerPlanosPage() {
                     <p className="mt-1 text-[10px] text-slate-500">
                       Estas regras são opcionais. Se não forem definidas, o
                       plano é válido em qualquer dia e horário.
-                    </p>
-                  </div>
-
-                  {/* Cobranças & pagamentos */}
-                  <div className="rounded-xl border border-slate-800 bg-slate-950/60 p-3">
-                    <p className="text-[11px] text-slate-400">
-                      Cobranças &amp; pagamentos
-                    </p>
-
-                    <p className="mt-1 text-sm font-semibold">
-                      {customers.length} cliente
-                      {customers.length === 1 ? "" : "s"} com este plano
-                    </p>
-
-                    {customers.length === 0 ? (
-                      <p className="mt-1 text-[11px] text-slate-500">
-                        Ainda não há clientes com este plano. Assim que
-                        começarem a aderir, vais ver aqui o status de uso e de
-                        pagamento.
-                      </p>
-                    ) : (
-                      <div className="mt-2 max-h-40 overflow-y-auto space-y-2">
-                        {customers.map((c) => {
-                          const usageStatusLabel = (() => {
-                            if (c.status === "active") return "Em uso";
-                            if (c.status === "cancelled") return "Cancelado";
-                            if (c.status === "suspended") return "Suspenso";
-                            return c.status;
-                          })();
-
-                          const financialStatus = (() => {
-                            if (!c.nextChargeDate || !c.nextChargeAmount) {
-                              return {
-                                label: "Sem dados de cobrança",
-                                variant: "neutral" as const,
-                              };
-                            }
-
-                            const nextDate = new Date(c.nextChargeDate);
-                            const dueDate = new Date(nextDate);
-                            dueDate.setDate(dueDate.getDate() + 8);
-
-                            const now = new Date();
-
-                            if (now <= dueDate) {
-                              return {
-                                label: "Em dia",
-                                variant: "ok" as const,
-                              };
-                            }
-
-                            return {
-                              label: "Pagamento em atraso",
-                              variant: "late" as const,
-                            };
-                          })();
-
-                          const actionState = getPaymentActionState(
-                            c,
-                            ADVANCE_PAYMENT_DAYS
-                          );
-
-                          const badgeBase =
-                            "inline-flex rounded-full px-2 py-[1px] text-[9px]";
-                          const badgeClass =
-                            financialStatus.variant === "ok"
-                              ? "bg-emerald-500/20 text-emerald-100"
-                              : financialStatus.variant === "late"
-                              ? "bg-amber-500/20 text-amber-100"
-                              : "bg-slate-700 text-slate-200";
-
-                          return (
-                            <div
-                              key={c.id}
-                              className="rounded-lg border border-slate-800 bg-slate-900/80 px-3 py-2"
-                            >
-                              <div className="flex items-center justify-between gap-2">
-                                <div>
-                                  <p className="text-[11px] font-medium">
-                                    {c.name}
-                                  </p>
-                                  <p className="text-[10px] text-slate-400">
-                                    Uso: {usageStatusLabel}
-                                  </p>
-                                  {c.nextChargeAmount && (
-                                    <p className="text-[10px] text-slate-400">
-                                      Próxima cobrança: €{" "}
-                                      {c.nextChargeAmount.toFixed(2)}
-                                    </p>
-                                  )}
-                                </div>
-
-                                <div className="text-right">
-                                  {actionState === "canPay" && (
-                                    <button
-                                      type="button"
-                                      onClick={() => handleRegisterPayment(c)}
-                                      disabled={registeringPaymentId === c.id}
-                                      className="mt-1 inline-flex items-center justify-center rounded-full border border-emerald-600 bg-emerald-600/20 px-2 py-[2px] text-[9px] text-emerald-50 hover:bg-emerald-500/30 disabled:opacity-60"
-                                    >
-                                      {registeringPaymentId === c.id
-                                        ? "Registrando..."
-                                        : "Registrar próximo mês"}
-                                    </button>
-                                  )}
-
-                                  {actionState === "alreadyAdvanced" && (
-                                    <span className="mt-1 inline-flex items-center justify-center rounded-full border border-emerald-700 bg-slate-900 px-2 py-[2px] text-[9px] text-emerald-200">
-                                      Próx. mês já pago
-                                    </span>
-                                  )}
-
-                                  {actionState === "tooEarly" && (
-                                    <span className="mt-1 inline-flex items-center justify-center rounded-full border border-slate-700 bg-slate-900 px-2 py-[2px] text-[9px] text-slate-300">
-                                      Pagamento disponível mais perto da data
-                                    </span>
-                                  )}
-
-                                  <span
-                                    className={`${badgeBase} ${badgeClass} mt-1`}
-                                  >
-                                    {financialStatus.label}
-                                  </span>
-                                  {c.nextChargeDate && (
-                                    <p className="mt-1 text-[9px] text-slate-500">
-                                      Pagamento até 8 dias após{" "}
-                                      {c.nextChargeDate}
-                                    </p>
-                                  )}
-                                </div>
-                              </div>
-                            </div>
-                          );
-                        })}
-                      </div>
-                    )}
-
-                    <p className="mt-2 text-[10px] text-slate-500">
-                      Regra visual atual: consideramos o pagamento em dia até 8
-                      dias depois da data de próxima cobrança. Depois disso, o
-                      cliente aparece como pagamento em atraso.
                     </p>
                   </div>
                 </div>

@@ -128,7 +128,6 @@ export class ReportsService {
         appointmentsCount: number;
       }
     >();
-
     for (const e of earnings) {
       totals.servicePriceCents += e.servicePriceCents;
       totals.providerEarningsCents += e.providerEarningsCents;
@@ -152,14 +151,13 @@ export class ReportsService {
           houseEarningsCents: 0,
           appointmentsCount: 0,
         };
-        bucket.appointmentsCount += 1;
-
         byProvider.set(key, bucket);
       }
 
       bucket.servicePriceCents += e.servicePriceCents;
       bucket.providerEarningsCents += e.providerEarningsCents;
       bucket.houseEarningsCents += e.houseEarningsCents;
+      bucket.appointmentsCount += 1; // ← AGORA AQUI, SEMPRE
     }
 
     return {

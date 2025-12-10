@@ -58,6 +58,10 @@ type RawServiceFromApi = {
   locationId?: string | null;
   category?: string | null;
   notes?: string | null;
+
+  // vindo do backend (findAll), opcional para não quebrar create/update:
+  usesThisMonth?: number;
+  revenueThisMonth?: number;
 };
 
 /**
@@ -131,13 +135,19 @@ export async function fetchOwnerServices(locationId?: string): Promise<{
     notes: service.notes ?? null,
   }));
 
-  // Por enquanto, estatísticas mockadas (0 pra tudo).
-  const stats: OwnerServiceStats[] = services.map((service) => ({
-    serviceId: service.id,
-    timesBookedMonth: 0,
-    revenueMonth: 0,
-    averageTicketWhenUsed: 0,
-  }));
+  // Estatísticas do serviço, usando o que vem do backend
+  // Estatísticas do serviço, usando o que vem do backend
+  const stats: OwnerServiceStats[] = data.items.map((service) => {
+    const times = service.usesThisMonth ?? 0;
+    const revenue = service.revenueThisMonth ?? 0;
+
+    return {
+      serviceId: service.id,
+      timesBookedMonth: times,
+      revenueMonth: revenue,
+      averageTicketWhenUsed: times > 0 ? revenue / times : 0,
+    };
+  });
 
   return { services, stats };
 }
