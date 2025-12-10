@@ -1,8 +1,9 @@
 "use client";
 
 import { useSearchParams } from "next/navigation";
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useRequireAuth } from "@/lib/use-auth";
+import { restoreOwnerPlanVisitFromAppointment } from "../_api/owner-plans";
 import {
   fetchOwnerAgendaDay,
   updateAppointmentStatus,
@@ -59,7 +60,7 @@ export default function OwnerAgendaPage() {
     requiredRole: "owner",
   });
 
-  const [currentDate] = useState<Date>(new Date());
+  const [selectedDate, setSelectedDate] = useState<Date>(new Date());
   const [professionals, setProfessionals] = useState<AgendaProfessional[]>([]);
   const [appointments, setAppointments] = useState<AgendaAppointment[]>([]);
   const [selectedProfessionalId, setSelectedProfessionalId] =
@@ -68,7 +69,57 @@ export default function OwnerAgendaPage() {
   const [error, setError] = useState<string | null>(null);
   const [savingAppointment, setSavingAppointment] = useState(false);
   const [createError, setCreateError] = useState<string | null>(null);
+  const [restoredPlanVisits, setRestoredPlanVisits] = useState<string[]>([]);
+  // RESUMO DO DIA (contagens simples)
+  const agendaStats = useMemo(() => {
+    const total = appointments.length;
 
+    let planCount = 0;
+    let avulsoCount = 0;
+
+    let scheduled = 0;
+    let inService = 0;
+    let done = 0;
+    let noShow = 0;
+    let cancelled = 0;
+
+    for (const appt of appointments) {
+      if (appt.billingType === "plan") {
+        planCount++;
+      } else {
+        avulsoCount++;
+      }
+
+      switch (appt.status) {
+        case "scheduled":
+          scheduled++;
+          break;
+        case "in_service":
+          inService++;
+          break;
+        case "done":
+          done++;
+          break;
+        case "no_show":
+          noShow++;
+          break;
+        case "cancelled":
+          cancelled++;
+          break;
+      }
+    }
+
+    return {
+      total,
+      planCount,
+      avulsoCount,
+      scheduled,
+      inService,
+      done,
+      noShow,
+      cancelled,
+    };
+  }, [appointments]);
   // Slot clicado para criar agendamento
   const [pendingSlot, setPendingSlot] = useState<PendingAppointmentSlot | null>(
     null
@@ -79,7 +130,28 @@ export default function OwnerAgendaPage() {
   const searchParams = useSearchParams();
   const customerNameFromUrl = searchParams.get("customerName");
   const customerPhoneFromUrl = searchParams.get("customerPhone");
+  const customerPlanIdFromUrl = searchParams.get("customerPlanId");
+
+  // NOVO: lista de serviços permitidos pelo plano (ids separados por vírgula)
+  const planServiceIdsParam = searchParams.get("planServiceIds");
+  const planServiceIds = useMemo(
+    () =>
+      planServiceIdsParam
+        ? planServiceIdsParam
+            .split(",")
+            .map((id) => id.trim())
+            .filter(Boolean)
+        : null,
+    [planServiceIdsParam]
+  );
+
   const hasCustomerPrefill = !!customerNameFromUrl || !!customerPhoneFromUrl;
+
+  // Se veio um customerPlanId na URL, por padrão marcamos "usar plano"
+  const [usePlanForAppointment, setUsePlanForAppointment] = useState<boolean>(
+    !!customerPlanIdFromUrl
+  );
+
   const [services, setServices] = useState<OwnerServiceForAppointment[]>([]);
   const [servicesLoading, setServicesLoading] = useState(false);
   const [selectedServiceId, setSelectedServiceId] = useState<string>("");
@@ -94,11 +166,12 @@ export default function OwnerAgendaPage() {
         setLoadingAgenda(true);
         setError(null);
 
-        const dateStr = formatDateYYYYMMDD(currentDate);
+        const dateStr = formatDateYYYYMMDD(selectedDate);
         const data = await fetchOwnerAgendaDay(dateStr);
 
         setProfessionals(data.professionals);
         setAppointments(data.appointments);
+        setRestoredPlanVisits([]);
       } catch (err) {
         console.error("Erro ao carregar agenda do owner:", err);
         setError("Erro ao carregar a agenda do dia.");
@@ -108,7 +181,7 @@ export default function OwnerAgendaPage() {
     }
 
     loadAgenda();
-  }, [authLoading, user, currentDate]);
+  }, [authLoading, user, selectedDate]);
 
   useEffect(() => {
     if (customerNameFromUrl) {
@@ -125,18 +198,25 @@ export default function OwnerAgendaPage() {
     async function loadServices() {
       try {
         setServicesLoading(true);
-        const items = await fetchOwnerServicesForAppointment();
+
+        const items = await fetchOwnerServicesForAppointment(
+          usePlanForAppointment && customerPlanIdFromUrl
+            ? customerPlanIdFromUrl
+            : undefined
+        );
+
         if (!isMounted) return;
 
         setServices(items);
 
-        // define um serviço padrão selecionado (primeiro da lista)
         if (items.length > 0) {
           setSelectedServiceId(items[0].id);
+        } else {
+          setSelectedServiceId("");
         }
       } catch (err) {
         console.error("Erro ao carregar serviços:", err);
-        // por enquanto só loga; no futuro podemos mostrar erro na UI
+        // no futuro podemos exibir erro na UI
       } finally {
         if (isMounted) {
           setServicesLoading(false);
@@ -149,16 +229,55 @@ export default function OwnerAgendaPage() {
     return () => {
       isMounted = false;
     };
-  }, []);
+  }, [usePlanForAppointment, customerPlanIdFromUrl]);
 
-  // Handler: clique no card para avançar o status
+  // NOVO: serviços que serão exibidos no select,
+  // dependendo se está usando plano ou não
+  const displayedServices = useMemo(() => {
+    // se não estiver usando plano, mostra todos
+    if (!usePlanForAppointment) {
+      return services;
+    }
+
+    // se não tiver lista de serviços do plano, mostra todos (fallback seguro)
+    if (!planServiceIds || planServiceIds.length === 0) {
+      return services;
+    }
+
+    // usando plano: só serviços cujos IDs estão na lista do plano
+    return services.filter((service) => planServiceIds.includes(service.id));
+  }, [services, usePlanForAppointment, planServiceIds]);
+
+  // NOVO: garante que, ao usar plano, o serviço selecionado
+  // sempre seja um dos permitidos pelo plano
+  useEffect(() => {
+    if (!usePlanForAppointment) return;
+    if (!planServiceIds || planServiceIds.length === 0) return;
+
+    if (!selectedServiceId || !planServiceIds.includes(selectedServiceId)) {
+      const firstAllowed = displayedServices[0];
+      if (firstAllowed) {
+        setSelectedServiceId(firstAllowed.id);
+      }
+    }
+  }, [
+    usePlanForAppointment,
+    planServiceIds,
+    selectedServiceId,
+    displayedServices,
+  ]);
+
+  // Handler: mudança de status
+  // - se NÃO passar forceStatus, segue o fluxo normal (scheduled -> in_service -> done)
+  // - se passar forceStatus (no_show / cancelled), aplica diretamente esse status
   async function handleChangeStatus(
     appointmentId: string,
-    currentStatus: AgendaAppointment["status"]
+    currentStatus: AgendaAppointment["status"],
+    forceStatus?: AgendaAppointment["status"]
   ) {
-    const nextStatus = getNextStatusForClick(currentStatus);
+    const nextStatus = forceStatus ?? getNextStatusForClick(currentStatus);
 
-    // nada a fazer (done / no_show / cancelled)
+    // nada a fazer (done / no_show / cancelled sem mudança)
     if (!nextStatus || nextStatus === currentStatus) {
       return;
     }
@@ -184,6 +303,28 @@ export default function OwnerAgendaPage() {
           a.id === appointmentId ? { ...a, status: currentStatus } : a
         )
       );
+    }
+  }
+  // Devolver 1 visita do plano (quando o owner decide perdoar a falta)
+  async function handleRestorePlanVisit(appointmentId: string) {
+    try {
+      setError(null);
+
+      // chama o backend para devolver 1 visita
+      await restoreOwnerPlanVisitFromAppointment(appointmentId);
+
+      // recarrega a agenda do dia para refletir a contagem correta
+      const dateStr = formatDateYYYYMMDD(selectedDate);
+      const data = await fetchOwnerAgendaDay(dateStr);
+
+      setProfessionals(data.professionals);
+      setAppointments(data.appointments);
+      setRestoredPlanVisits((prev) =>
+        prev.includes(appointmentId) ? prev : [...prev, appointmentId]
+      );
+    } catch (err) {
+      console.error("Erro ao devolver visita do plano:", err);
+      setError("Não foi possível devolver a visita do plano.");
     }
   }
 
@@ -235,7 +376,7 @@ export default function OwnerAgendaPage() {
       const hours = Number(hoursStr);
       const minutes = Number(minutesStr);
 
-      const startDate = new Date(currentDate);
+      const startDate = new Date(selectedDate);
       startDate.setHours(hours, minutes, 0, 0);
 
       const endDate = new Date(startDate);
@@ -248,13 +389,17 @@ export default function OwnerAgendaPage() {
         endAt: endDate.toISOString(),
         clientName: modalCustomerName.trim(),
         clientPhone: modalCustomerPhone,
-        // customerPlanId: no futuro
+        // Se veio plano na URL e o utilizador escolheu usar plano,
+        // enviamos o customerPlanId; caso contrário, vai como avulso
+        ...(customerPlanIdFromUrl && usePlanForAppointment
+          ? { customerPlanId: customerPlanIdFromUrl }
+          : {}),
       };
 
       await createOwnerAppointment(input);
 
       // Recarrega a agenda do dia para mostrar o novo slot ocupado
-      const dateStr = formatDateYYYYMMDD(currentDate);
+      const dateStr = formatDateYYYYMMDD(selectedDate);
       const data = await fetchOwnerAgendaDay(dateStr);
 
       setProfessionals(data.professionals);
@@ -266,14 +411,104 @@ export default function OwnerAgendaPage() {
       console.error("Erro ao criar agendamento:", err);
 
       const apiError = err?.data;
+
+      // Normaliza a mensagem que veio do backend
+      let backendMessage: string | undefined;
+
+      if (typeof apiError?.message === "string") {
+        backendMessage = apiError.message;
+      } else if (Array.isArray(apiError?.message)) {
+        backendMessage = apiError.message.join(" ");
+      } else if (typeof err?.message === "string") {
+        backendMessage = err.message;
+      }
+
+      const msg = backendMessage ?? "";
+
       if (apiError?.code === "CUSTOMER_NAME_CONFLICT") {
         setCreateError(
           apiError.message ??
             "Já existe um cliente com este telefone registado com outro nome."
         );
-        // no futuro: aqui abrimos fluxo para escolher nome antigo ou atualizar
-      } else {
-        setCreateError("Não foi possível criar o agendamento.");
+      }
+      // Plano esgotado -> força atendimento avulso
+      else if (
+        msg.includes(
+          "Cliente já utilizou todas as visitas disponíveis neste ciclo do plano"
+        )
+      ) {
+        setUsePlanForAppointment(false);
+        setCreateError(
+          "Os atendimentos do plano deste cliente já foram todos usados neste ciclo. " +
+            "Este agendamento será registado como atendimento avulso."
+        );
+      }
+      // Data fora do ciclo -> também força avulso
+      else if (
+        msg.includes(
+          "Data do agendamento está fora do ciclo atual do plano do cliente"
+        )
+      ) {
+        setUsePlanForAppointment(false);
+        setCreateError(
+          "A data escolhida está fora do ciclo atual do plano deste cliente. " +
+            "Este agendamento será registado como atendimento avulso."
+        );
+      }
+      // Dia da semana não permitido pelo plano
+      else if (
+        msg.includes(
+          "Este plano não permite agendamentos neste dia da semana"
+        ) ||
+        msg.includes("Este dia da semana não é permitido para este plano")
+      ) {
+        setCreateError(
+          msg ||
+            "Este plano não permite agendamentos neste dia da semana. Escolha um dia permitido pelo plano."
+        );
+      }
+      // Horário não permitido pelo plano
+      else if (
+        msg.includes("Horário inicial não é permitido por este plano") ||
+        msg.includes("Horário final não é permitido por este plano") ||
+        msg.includes("Este plano só pode ser utilizado nos horários permitidos")
+      ) {
+        setCreateError(
+          msg ||
+            "Horário não permitido para este plano. Escolha um horário dentro da janela permitida."
+        );
+      }
+      // Serviço fora do plano
+      else if (
+        msg.includes("Este serviço não faz parte do plano selecionado") ||
+        msg.includes(
+          "O serviço escolhido não faz parte dos serviços incluídos neste plano"
+        )
+      ) {
+        setCreateError(
+          msg ||
+            "Este serviço não faz parte do plano selecionado. Altere o serviço ou marque como atendimento avulso."
+        );
+      }
+      // Intervalo mínimo entre visitas
+      else if (
+        msg.includes("intervalo mínimo de") &&
+        msg.includes("entre visitas")
+      ) {
+        setCreateError(msg);
+      }
+      // Antecedência mínima
+      else if (
+        msg.includes("exige agendamento com pelo menos") &&
+        msg.includes("dia(s) de antecedência")
+      ) {
+        setCreateError(msg);
+      }
+      // Qualquer outro erro
+      else {
+        setCreateError(
+          msg || "Não foi possível criar o agendamento. Tente novamente."
+        );
       }
     } finally {
       setSavingAppointment(false);
@@ -284,8 +519,20 @@ export default function OwnerAgendaPage() {
     selectedProfessionalId === "all"
       ? professionals
       : professionals.filter((pro) => pro.id === selectedProfessionalId);
+  const weekdayLabel = getWeekdayLabel(selectedDate);
 
-  const weekdayLabel = getWeekdayLabel(currentDate);
+  const today = new Date();
+  const todayStr = formatDateYYYYMMDD(today);
+  const selectedDateStr = formatDateYYYYMMDD(selectedDate);
+  const maxDate = addDays(today, 30);
+  const maxDateStr = formatDateYYYYMMDD(maxDate);
+
+  const isToday = selectedDateStr === todayStr;
+
+  // label bonitinho
+  const dateLabel = isToday
+    ? `Hoje · ${weekdayLabel}`
+    : `${selectedDate.toLocaleDateString("pt-PT")} · ${weekdayLabel}`;
 
   if (authLoading || loadingAgenda) {
     return (
@@ -309,9 +556,24 @@ export default function OwnerAgendaPage() {
           </div>
 
           <div className="flex flex-wrap gap-2 text-xs">
-            <button className="px-3 py-1 rounded-lg border border-slate-700 bg-slate-900/80">
-              Hoje · {weekdayLabel}
-            </button>
+            <div className="flex items-center gap-2">
+              <button className="px-3 py-1 rounded-lg border border-slate-700 bg-slate-900/80">
+                {dateLabel}
+              </button>
+
+              <input
+                type="date"
+                className="px-2 py-1 rounded-lg border border-slate-800 bg-slate-900/80 text-slate-200 text-xs"
+                value={selectedDateStr}
+                min={todayStr}
+                max={maxDateStr}
+                onChange={(e) => {
+                  if (!e.target.value) return;
+                  const [y, m, d] = e.target.value.split("-").map(Number);
+                  setSelectedDate(new Date(y, m - 1, d, 0, 0, 0, 0));
+                }}
+              />
+            </div>
           </div>
         </header>
 
@@ -335,9 +597,25 @@ export default function OwnerAgendaPage() {
         </div>
 
         <div className="flex flex-wrap gap-2 text-xs">
-          <button className="px-3 py-1 rounded-lg border border-slate-700 bg-slate-900/80">
-            Hoje · {weekdayLabel}
-          </button>
+          <div className="flex items-center gap-2">
+            <button className="px-3 py-1 rounded-lg border border-slate-700 bg-slate-900/80">
+              {dateLabel}
+            </button>
+
+            <input
+              type="date"
+              className="px-2 py-1 rounded-lg border border-slate-800 bg-slate-900/80 text-slate-200 text-xs"
+              value={selectedDateStr}
+              min={todayStr}
+              max={maxDateStr}
+              onChange={(e) => {
+                if (!e.target.value) return;
+                const [y, m, d] = e.target.value.split("-").map(Number);
+                setSelectedDate(new Date(y, m - 1, d, 0, 0, 0, 0));
+              }}
+            />
+          </div>
+
           <select className="px-3 py-1 rounded-lg border border-slate-800 bg-slate-900/80 text-slate-200">
             <option>Unidade atual do tenant</option>
           </select>
@@ -367,6 +645,56 @@ export default function OwnerAgendaPage() {
           </div>
         </div>
       </header>
+      {/* Resumo rápido do dia */}
+      <section className="mb-4 grid gap-2 text-xs md:grid-cols-4">
+        <div className="rounded-2xl border border-slate-800 bg-slate-900/70 px-3 py-2">
+          <p className="text-[11px] text-slate-400">Atendimentos do dia</p>
+          <p className="text-lg font-semibold text-slate-50">
+            {agendaStats.total}
+          </p>
+        </div>
+
+        <div className="rounded-2xl border border-slate-800 bg-slate-900/70 px-3 py-2 flex items-center justify-between">
+          <div>
+            <p className="text-[11px] text-slate-400">Plano</p>
+            <p className="text-sm font-semibold text-emerald-300">
+              {agendaStats.planCount}
+            </p>
+          </div>
+          <div>
+            <p className="text-[11px] text-slate-400">Avulso</p>
+            <p className="text-sm font-semibold text-slate-100">
+              {agendaStats.avulsoCount}
+            </p>
+          </div>
+        </div>
+
+        <div className="rounded-2xl border border-slate-800 bg-slate-900/70 px-3 py-2">
+          <p className="text-[11px] text-slate-400 mb-1">Status</p>
+          <p className="text-[11px] text-slate-300">
+            Agendados:{" "}
+            <span className="text-slate-50">{agendaStats.scheduled}</span>
+          </p>
+          <p className="text-[11px] text-slate-300">
+            Em atendimento:{" "}
+            <span className="text-emerald-300">{agendaStats.inService}</span>
+          </p>
+          <p className="text-[11px] text-slate-300">
+            Concluídos: <span className="text-sky-300">{agendaStats.done}</span>
+          </p>
+        </div>
+
+        <div className="rounded-2xl border border-slate-800 bg-slate-900/70 px-3 py-2">
+          <p className="text-[11px] text-slate-400 mb-1">Ausências</p>
+          <p className="text-[11px] text-slate-300">
+            Faltas: <span className="text-amber-300">{agendaStats.noShow}</span>
+          </p>
+          <p className="text-[11px] text-slate-300">
+            Cancelados:{" "}
+            <span className="text-rose-300">{agendaStats.cancelled}</span>
+          </p>
+        </div>
+      </section>
 
       {/* Banner de agendamento vindo da tela de cliente */}
       {hasCustomerPrefill && (
@@ -421,6 +749,8 @@ export default function OwnerAgendaPage() {
               appointments={appointments}
               onChangeStatus={handleChangeStatus}
               onCreateAppointment={handleCreateAppointmentClick}
+              onRestorePlanVisit={handleRestorePlanVisit}
+              restoredPlanVisits={restoredPlanVisits}
             />
           ))}
         </div>
@@ -491,7 +821,7 @@ export default function OwnerAgendaPage() {
                     value={selectedServiceId}
                     onChange={(e) => setSelectedServiceId(e.target.value)}
                   >
-                    {services.map((service) => (
+                    {displayedServices.map((service) => (
                       <option key={service.id} value={service.id}>
                         {service.name} ({service.durationMin} min)
                       </option>
@@ -499,6 +829,57 @@ export default function OwnerAgendaPage() {
                   </select>
                 )}
               </div>
+
+              {customerPlanIdFromUrl && (
+                <div>
+                  <p className="text-[11px] text-slate-400 mb-1">
+                    Tipo de atendimento
+                  </p>
+
+                  <div className="flex flex-col gap-1">
+                    {/* Usar regras do plano normalmente */}
+                    <label className="inline-flex items-center gap-2 text-[11px] text-slate-200">
+                      <input
+                        type="radio"
+                        className="h-3 w-3"
+                        checked={usePlanForAppointment}
+                        onChange={() => setUsePlanForAppointment(true)}
+                      />
+                      <span>
+                        Usar plano deste cliente{" "}
+                        <span className="text-[10px] text-slate-400">
+                          (conta visita e aplica regras de dia/horário)
+                        </span>
+                      </span>
+                    </label>
+
+                    {/* Exceção do plano = atendimento fora do plano */}
+                    <label className="inline-flex items-center gap-2 text-[11px] text-amber-200">
+                      <input
+                        type="radio"
+                        className="h-3 w-3"
+                        checked={!usePlanForAppointment}
+                        onChange={() => setUsePlanForAppointment(false)}
+                      />
+                      <span>
+                        Abrir exceção (atendimento avulso){" "}
+                        <span className="text-[10px] text-amber-300/80">
+                          não usa visitas do plano nem regras de dia/horário
+                        </span>
+                      </span>
+                    </label>
+                  </div>
+
+                  <p className="mt-1 text-[10px] text-slate-500">
+                    Dica: se o plano bloquear o dia, horário ou serviço e você
+                    realmente quiser encaixar o cliente assim mesmo, marque{" "}
+                    <span className="text-amber-300/90">
+                      “Abrir exceção (atendimento avulso)”
+                    </span>
+                    .
+                  </p>
+                </div>
+              )}
 
               <div>
                 <p className="text-[11px] text-slate-400 mb-1">Profissional</p>
@@ -517,7 +898,7 @@ export default function OwnerAgendaPage() {
 
               <div>
                 <p className="text-[11px] text-slate-400">Data</p>
-                <p className="text-sm text-slate-100">Hoje · {weekdayLabel}</p>
+                <p className="text-sm text-slate-100">{dateLabel}</p>
               </div>
               <div>
                 <p className="text-[11px] text-slate-400">Horário</p>
@@ -558,20 +939,28 @@ function RowTimeSlot({
   appointments,
   onChangeStatus,
   onCreateAppointment,
+  onRestorePlanVisit,
+  restoredPlanVisits,
 }: {
   slot: string;
   professionals: AgendaProfessional[];
   appointments: AgendaAppointment[];
   onChangeStatus?: (
     appointmentId: string,
-    currentStatus: AgendaAppointment["status"]
+    currentStatus: AgendaAppointment["status"],
+    forceStatus?: AgendaAppointment["status"]
   ) => void;
   onCreateAppointment?: (params: {
     time: string;
     professionalId: string;
     professionalName: string;
   }) => void;
+  onRestorePlanVisit?: (appointmentId: string) => void;
+  restoredPlanVisits: string[];
 }) {
+  const slotStartMinutes = timeStrToMinutes(slot);
+  const slotEndMinutes = slotStartMinutes + 30; // cada slot = 30min
+
   return (
     <>
       {/* Coluna de horário */}
@@ -581,10 +970,26 @@ function RowTimeSlot({
 
       {/* Colunas por profissional */}
       {professionals.map((pro) => {
-        const appt = appointments.find(
-          (a) => a.professionalId === pro.id && a.time === slot
-        );
+        // procura algum agendamento que ocupe este slot
+        const appt = appointments
+          .filter((a) => a.professionalId === pro.id)
+          .find((a) => {
+            const startMin = timeStrToMinutes(a.time);
+            const durationMin = ((a as any).serviceDurationMin ??
+              (a as any).durationMin ??
+              30) as number;
 
+            // arredonda pra cima em blocos de 30min
+            const slotsNeeded = Math.ceil(durationMin / 30);
+            const apptEndMin = startMin + slotsNeeded * 30;
+
+            // este slot está entre [start, apptEndMin) ?
+            return (
+              slotStartMinutes >= startMin && slotStartMinutes < apptEndMin
+            );
+          });
+
+        // se não tem agendamento cobrindo esse slot -> botão vazio (criar)
         if (!appt) {
           return (
             <button
@@ -603,25 +1008,116 @@ function RowTimeSlot({
         }
 
         const statusStyles = getStatusClasses(appt.status);
+        const isStart = timeStrToMinutes(appt.time) === slotStartMinutes;
+        const billingType = (appt as any).billingType as
+          | "plan"
+          | "single"
+          | undefined;
+        const isRestored =
+          Array.isArray(restoredPlanVisits) &&
+          restoredPlanVisits.includes(appt.id);
+        // se é o slot de início, mostra card completo
+        if (isStart) {
+          return (
+            <div
+              key={pro.id}
+              className={`h-14 rounded-xl border px-2 py-1 flex flex-col justify-between cursor-pointer ${statusStyles.container}`}
+              onClick={() => onChangeStatus?.(appt.id, appt.status)}
+            >
+              <p className="text-[11px] font-medium">{appt.serviceName}</p>
+              <p className="text-[10px] text-slate-300">{appt.customerName}</p>
 
+              {/* Linha de badges: status + tipo (Plano/Avulso) */}
+              <div className="mt-0.5 flex items-center gap-1">
+                <span
+                  className={`text-[9px] px-1 rounded ${statusStyles.badge}`}
+                >
+                  {statusStyles.label}
+                </span>
+
+                <span
+                  className={`text-[9px] px-1 rounded border ml-auto ${
+                    billingType === "plan"
+                      ? "bg-emerald-500/15 text-emerald-100 border-emerald-400/60"
+                      : "bg-slate-700/40 text-slate-100 border-slate-500/60"
+                  }`}
+                >
+                  {billingType === "plan" ? "Plano" : "Avulso"}
+                </span>
+              </div>
+
+              {/* Ações rápidas: Falta / Cancelar (quando ainda não é falta/cancelado) */}
+              {(appt.status === "scheduled" ||
+                appt.status === "in_service") && (
+                <div className="mt-1 flex gap-1">
+                  <button
+                    type="button"
+                    className="text-[9px] px-1 rounded border border-amber-400/60 text-amber-200 bg-amber-500/10"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      onChangeStatus?.(appt.id, appt.status, "no_show");
+                    }}
+                  >
+                    Marcar falta
+                  </button>
+                  <button
+                    type="button"
+                    className="text-[9px] px-1 rounded border border-rose-400/60 text-rose-200 bg-rose-500/10"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      onChangeStatus?.(appt.id, appt.status, "cancelled");
+                    }}
+                  >
+                    Cancelar
+                  </button>
+                </div>
+              )}
+
+              {/* Botão para devolver visita do plano em caso de falta/cancelamento */}
+              {billingType === "plan" &&
+                (appt.status === "no_show" || appt.status === "cancelled") &&
+                (isRestored ? (
+                  <span className="mt-1 self-start text-[9px] px-1 rounded bg-emerald-600/20 text-emerald-200 border border-emerald-500/60">
+                    Visita devolvida ao plano
+                  </span>
+                ) : (
+                  <button
+                    type="button"
+                    className="mt-1 self-start text-[9px] px-1 rounded border border-emerald-400/60 text-emerald-200 bg-emerald-500/10 hover:bg-emerald-500/20"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      onRestorePlanVisit?.(appt.id);
+                    }}
+                  >
+                    Devolver visita ao plano
+                  </button>
+                ))}
+            </div>
+          );
+        }
+
+        // continuação do agendamento (slot seguinte)
         return (
           <div
             key={pro.id}
-            className={`h-14 rounded-xl border px-2 py-1 flex flex-col justify-between cursor-pointer ${statusStyles.container}`}
-            onClick={() => onChangeStatus?.(appt.id, appt.status)}
+            className={`h-14 rounded-xl border px-2 py-1 flex items-center text-[10px] text-slate-300 ${statusStyles.container}`}
           >
-            <p className="text-[11px] font-medium">{appt.serviceName}</p>
-            <p className="text-[10px] text-slate-300">{appt.customerName}</p>
-            <span
-              className={`self-start text-[9px] px-1 rounded ${statusStyles.badge}`}
-            >
-              {statusStyles.label}
+            <span className="truncate">
+              Continuação · {appt.serviceName} · {appt.customerName} ·{" "}
+              {billingType === "plan" ? "Plano" : "Avulso"}
             </span>
           </div>
         );
       })}
     </>
   );
+}
+
+function timeStrToMinutes(time: string): number {
+  const [hStr, mStr] = time.split(":");
+  const h = Number(hStr) || 0;
+  const m = Number(mStr) || 0;
+  return h * 60 + m;
 }
 
 function getStatusClasses(status: AgendaAppointment["status"]) {
@@ -684,4 +1180,9 @@ function getWeekdayLabel(date: Date): string {
   const formatter = new Intl.DateTimeFormat("pt-PT", { weekday: "long" });
   const label = formatter.format(date); // ex: "terça-feira"
   return label.charAt(0).toUpperCase() + label.slice(1);
+}
+function addDays(date: Date, amount: number): Date {
+  const result = new Date(date);
+  result.setDate(result.getDate() + amount);
+  return result;
 }

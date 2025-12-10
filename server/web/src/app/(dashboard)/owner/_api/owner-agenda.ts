@@ -16,10 +16,23 @@ export type AgendaAppointmentStatus =
 export type AgendaAppointment = {
   id: string;
   professionalId: string;
+
+  // horário de início (para exibir no card)
   time: string; // "09:00"
+
   customerName: string;
   serviceName: string;
   status: AgendaAppointmentStatus;
+
+  // duração real do serviço
+  durationMin: number;
+
+  // intervalo em minutos desde 00:00 (para saber quantos slots ocupa)
+  startMinutes: number; // ex.: 14:00 -> 14*60 = 840
+  endMinutes: number; // startMinutes + durationMin
+
+  //Se veio de plano ou avulso
+  billingType: "plan" | "avulso";
 };
 
 // Shape aproximado do que o Nest devolve em /appointments
@@ -30,6 +43,13 @@ type BackendAppointment = {
   status: AgendaAppointmentStatus;
   clientName: string | null;
   serviceName: string | null;
+
+  //Duração já gravada no appointment
+  serviceDurationMin?: number | null;
+
+  //Se está ligado a um plano
+  customerPlanId?: string | null;
+
   provider?: {
     id: string;
     name: string;
@@ -40,6 +60,7 @@ type BackendAppointment = {
     durationMin: number;
   } | null;
 };
+
 type BackendProvider = {
   id: string;
   name: string;
@@ -67,9 +88,6 @@ export async function fetchOwnerAgendaDay(
       method: "GET",
     }),
   ]);
-
-  // DEBUG opcional: se quiser ver a estrutura exata no console
-  // console.log("PROVIDERS RAW RESPONSE", providersResponse);
 
   // ------------------------------------------------------------------
   // Normaliza a resposta de /providers para um array de { id, name }
@@ -126,16 +144,40 @@ export async function fetchOwnerAgendaDay(
     }
 
     const start = new Date(appt.startAt);
-    const hours = String(start.getHours()).padStart(2, "0");
-    const minutes = String(start.getMinutes()).padStart(2, "0");
+
+    // horas/minutos reais de início
+    const hours = start.getHours();
+    const minutes = start.getMinutes();
+    const timeLabel = `${String(hours).padStart(2, "0")}:${String(
+      minutes
+    ).padStart(2, "0")}`;
+
+    // minutos desde meia-noite
+    const startMinutes = hours * 60 + minutes;
+
+    // duração do serviço (usa valor do appointment se existir)
+    const durationMin =
+      appt.serviceDurationMin ?? appt.service?.durationMin ?? 30;
+
+    // fim em minutos desde meia-noite
+    const endMinutes = startMinutes + durationMin;
+
+    // NOVO: se tem customerPlanId -> plano, senão avulso
+    const billingType: "plan" | "avulso" = appt.customerPlanId
+      ? "plan"
+      : "avulso";
 
     return {
       id: appt.id,
       professionalId: providerId,
-      time: `${hours}:${minutes}`,
+      time: timeLabel,
       customerName: appt.clientName ?? "Cliente",
       serviceName: appt.serviceName ?? appt.service?.name ?? "Serviço",
       status: appt.status,
+      durationMin,
+      startMinutes,
+      endMinutes,
+      billingType,
     };
   });
 

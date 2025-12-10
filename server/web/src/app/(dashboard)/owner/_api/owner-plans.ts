@@ -136,18 +136,27 @@ export type PayCustomerPlanInput = {
 };
 export async function payOwnerCustomerPlan(
   input: PayCustomerPlanInput
-): Promise<CustomerPlanDto> {
+): Promise<void> {
   const body: { amountCents: number; paidAt?: string } = {
     amountCents: Math.round(input.amountEuro * 100),
     ...(input.paidAt ? { paidAt: input.paidAt } : {}),
   };
 
-  // backend está com @Post(':id/pay')
-  return apiClient<CustomerPlanDto>(
-    `/plans/customer-plans/${input.customerPlanId}/pay`,
+  // backend: @Post(':id/pay') em /plans/customer-plans
+  await apiClient(`/plans/customer-plans/${input.customerPlanId}/pay`, {
+    method: "POST",
+    body,
+  });
+}
+
+// Devolver 1 visita de um agendamento (quando o owner decidir)
+export async function restoreOwnerPlanVisitFromAppointment(
+  appointmentId: string
+): Promise<void> {
+  await apiClient(
+    `/plans/customer-plans/restore-visit-from-appointment/${appointmentId}`,
     {
       method: "POST",
-      body,
     }
   );
 }

@@ -36,7 +36,7 @@ export class ServicesController {
     return this.services.create(tenantId, dto);
   }
 
-  // Lista serviços do tenant com paginação + filtro opcional por location
+  // Lista serviços do tenant com paginação + filtro opcional por location / plano
   @Get()
   @ApiQuery({
     name: 'page',
@@ -58,11 +58,19 @@ export class ServicesController {
     type: String,
     description: 'Filtra serviços por location (cuid/uuid)',
   })
+  @ApiQuery({
+    name: 'customerPlanId',
+    required: false,
+    type: String,
+    description:
+      'Se enviado, retorna apenas serviços permitidos por este plano de cliente',
+  })
   findAll(
     @Req() req: Request,
     @Query('page') page?: string,
     @Query('pageSize') pageSize?: string,
     @Query('locationId') locationId?: string,
+    @Query('customerPlanId') customerPlanId?: string,
   ) {
     const tenantId = (req as any).user?.tenantId as string;
 
@@ -73,6 +81,7 @@ export class ServicesController {
       page: pageNum,
       pageSize: pageSizeNum,
       locationId: locationId || undefined,
+      customerPlanId: customerPlanId || undefined,
     });
   }
 

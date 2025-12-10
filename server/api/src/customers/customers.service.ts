@@ -6,10 +6,11 @@ export class CustomersService {
   constructor(private prisma: PrismaService) {}
 
   async listAll(tenantId: string) {
-    const normalizePhone = (phone: string) => phone.replace(/\D+/g, '');
+    const normalizePhone = (phone: string | null | undefined) =>
+      phone ? phone.replace(/\D+/g, '') : '';
 
-    // 1) Buscar agendamentos e planos em paralelo
-    const [appointments, plans] = await Promise.all([
+    // 1) Buscar agendamentos, planos e clientes REAIS em paralelo
+    const [appointments, plans, customersDb] = await Promise.all([
       this.prisma.appointment.findMany({
         where: { tenantId },
         select: {
@@ -46,14 +47,40 @@ export class CustomersService {
           },
         },
       }),
+
+      this.prisma.customer.findMany({
+        where: { tenantId },
+        select: {
+          id: true,
+          name: true,
+          phone: true,
+        },
+      }),
     ]);
 
+    // Mapa telefone normalizado -> Customer real do banco
+    const phoneToCustomerDb = new Map<
+      string,
+      { id: string; name: string; phone: string }
+    >();
+
+    for (const c of customersDb) {
+      const key = normalizePhone(c.phone);
+      if (!key) continue;
+      phoneToCustomerDb.set(key, {
+        id: c.id,
+        name: c.name,
+        phone: c.phone,
+      });
+    }
+
     // ----------------------------------------------------------------
-    // 2) Construir o "mapa" de clientes (mesma ideia que você já tinha)
+    // 2) Construir o "mapa" de clientes, agora COM id consistente
     // ----------------------------------------------------------------
     const customersMap = new Map<
       string,
       {
+        id: string;
         name: string;
         phone: string;
         hasActivePlan: boolean;
@@ -66,10 +93,16 @@ export class CustomersService {
 
     // Agendamentos → alimentam nome, telefone, total de visitas, última/próxima visita
     for (const appt of appointments) {
-      if (!appt.clientPhone) continue;
-
       const key = normalizePhone(appt.clientPhone);
-      const existing = customersMap.get(key);
+      if (!key) continue;
+
+      const dbCustomer = phoneToCustomerDb.get(key);
+
+      // Regra de prioridade do ID:
+      // 1) appointment.customerId (já ligado em algum fluxo)
+      // 2) Customer.id baseado no telefone
+      // 3) telefone normalizado (fallback)
+      const customerId = appt.customerId ?? dbCustomer?.id ?? key;
 
       const date = new Date(appt.startAt);
       const formattedDate = date.toLocaleDateString('pt-PT', {
@@ -78,10 +111,13 @@ export class CustomersService {
         year: 'numeric',
       });
 
+      const existing = customersMap.get(key);
+
       if (!existing) {
         customersMap.set(key, {
-          name: appt.clientName ?? 'Cliente',
-          phone: appt.clientPhone,
+          id: customerId,
+          name: appt.clientName ?? dbCustomer?.name ?? 'Cliente',
+          phone: appt.clientPhone ?? dbCustomer?.phone ?? '',
           hasActivePlan: false,
           totalVisits: 1,
           lastVisitDate: appt.status === 'done' ? formattedDate : undefined,
@@ -89,6 +125,11 @@ export class CustomersService {
             appt.status === 'scheduled' ? formattedDate : undefined,
         });
       } else {
+        // Se antes era fallback e agora conhecemos um id real, atualizamos
+        if (existing.id === key && customerId !== key) {
+          existing.id = customerId;
+        }
+
         existing.totalVisits += 1;
 
         if (appt.status === 'done') {
@@ -104,7 +145,12 @@ export class CustomersService {
     // Planos → ligam info de plano a esse mesmo mapa (por telefone)
     for (const plan of plans) {
       const key = normalizePhone(plan.customerPhone);
+      if (!key) continue;
+
+      const dbCustomer = phoneToCustomerDb.get(key);
       const existing = customersMap.get(key);
+
+      const customerId = existing?.id ?? dbCustomer?.id ?? key;
 
       const formattedRenewal = plan.currentCycleEnd.toLocaleDateString(
         'pt-PT',
@@ -117,8 +163,9 @@ export class CustomersService {
 
       if (!existing) {
         customersMap.set(key, {
-          name: plan.customerName,
-          phone: plan.customerPhone,
+          id: customerId,
+          name: plan.customerName ?? dbCustomer?.name ?? 'Cliente',
+          phone: plan.customerPhone ?? dbCustomer?.phone ?? '',
           hasActivePlan: plan.status === 'active',
           planName: plan.planTemplate.name,
           totalVisits: plan.visitsUsedInCycle,
@@ -137,10 +184,14 @@ export class CustomersService {
     );
 
     // ----------------------------------------------------------------
-    // 3) "plans" no formato que o front novo espera
+    // 3) "plans" no formato que o front espera, com customerId consistente
     // ----------------------------------------------------------------
     const plansView = plans.map((p) => {
-      const customerId = normalizePhone(p.customerPhone);
+      const key = normalizePhone(p.customerPhone);
+      const dbCustomer = phoneToCustomerDb.get(key);
+      const mappedCustomer = customersMap.get(key);
+
+      const customerId = mappedCustomer?.id ?? dbCustomer?.id ?? key;
 
       return {
         id: p.id,
@@ -163,12 +214,13 @@ export class CustomersService {
     // ----------------------------------------------------------------
     const history = appointments
       .map((appt) => {
-        const baseCustomerId =
-          appt.customerId ??
-          (appt.clientPhone ? normalizePhone(appt.clientPhone) : null);
+        const key = normalizePhone(appt.clientPhone);
+        const dbCustomer = phoneToCustomerDb.get(key);
 
-        if (!baseCustomerId) {
-          // sem cliente identificável, ignora no histórico
+        // mesma regra de prioridade:
+        const customerId = appt.customerId ?? dbCustomer?.id ?? key;
+
+        if (!customerId) {
           return null;
         }
 
@@ -198,7 +250,7 @@ export class CustomersService {
 
         return {
           id: appt.id,
-          customerId: baseCustomerId,
+          customerId,
           date: formattedDate,
           time: formattedTime,
           professionalName: appt.provider?.name ?? '',
@@ -213,7 +265,7 @@ export class CustomersService {
       .filter((x): x is NonNullable<typeof x> => x !== null);
 
     // ----------------------------------------------------------------
-    // 5) Retorno no formato que o owner-customers.ts novo espera
+    // 5) Retorno no formato que o owner-customers.ts espera
     // ----------------------------------------------------------------
     return {
       customers,

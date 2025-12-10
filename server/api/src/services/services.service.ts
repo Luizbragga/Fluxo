@@ -85,11 +85,19 @@ export class ServicesService {
    *   meta: { page, pageSize, total, totalPages }
    * }
    */
+  /**
+   * Lista serviços com paginação simples.
+   * Se vier customerPlanId, filtra apenas os serviços permitidos pelo plano.
+   */
   async findAll(
     tenantId: string,
-    params?: { page?: number; pageSize?: number; locationId?: string },
+    params?: {
+      page?: number;
+      pageSize?: number;
+      locationId?: string;
+      customerPlanId?: string;
+    },
   ) {
-    // defaults seguros
     const page = params?.page && params.page > 0 ? params.page : 1;
 
     const pageSize =
@@ -105,8 +113,46 @@ export class ServicesService {
       active: true,
     };
 
+    // filtro de location (já existia)
     if (params?.locationId) {
       where.locationId = params.locationId;
+    }
+
+    // 🔴 NOVO: se vier customerPlanId, pegar o template do plano
+    // e usar o JSON sameDayServiceIds (array de serviceId) como filtro
+    if (params?.customerPlanId) {
+      const customerPlan = await this.prisma.customerPlan.findFirst({
+        where: {
+          id: params.customerPlanId,
+          tenantId,
+        },
+        include: {
+          planTemplate: true,
+        },
+      });
+
+      if (!customerPlan) {
+        throw new BadRequestException(
+          'Plano de cliente não encontrado para este tenant.',
+        );
+      }
+
+      const raw = customerPlan.planTemplate.sameDayServiceIds as unknown;
+
+      let allowedServiceIds: string[] = [];
+
+      if (Array.isArray(raw)) {
+        allowedServiceIds = raw.filter(
+          (v): v is string => typeof v === 'string',
+        );
+      }
+
+      // Se o plano tiver IDs configurados, filtramos só eles.
+      // Se o array estiver vazio, deixamos sem filtro extra
+      // (interpretação: plano permite qualquer serviço).
+      if (allowedServiceIds.length > 0) {
+        where.id = { in: allowedServiceIds };
+      }
     }
 
     const [services, total] = await Promise.all([
@@ -131,7 +177,6 @@ export class ServicesService {
       },
     };
   }
-
   async findOne(tenantId: string, id: string) {
     const service = await this.prisma.service.findFirst({
       where: { id, tenantId },

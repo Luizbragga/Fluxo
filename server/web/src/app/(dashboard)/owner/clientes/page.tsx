@@ -78,6 +78,24 @@ export default function OwnerClientesPage() {
   const selectedHistory = selectedCustomer
     ? history.filter((h) => h.customerId === selectedCustomer.id)
     : [];
+  // Mapa: última visita CONCLUÍDA de cada cliente (baseado no histórico real)
+  const lastDoneVisitByCustomerId = new Map<string, Date>();
+
+  for (const h of history) {
+    if (h.status !== "done") continue;
+
+    // h.date vem em formato local ("04/12/2025" ou "04 dez 2025").
+    // Pegamos só o dia pelo início da string.
+    const dayMatch = h.date.match(/^(\d{1,2})/);
+    const day = dayMatch ? Number(dayMatch[1]) || 1 : 1;
+
+    const visitDate = new Date(Date.UTC(h.year, h.month - 1, day));
+
+    const current = lastDoneVisitByCustomerId.get(h.customerId);
+    if (!current || visitDate > current) {
+      lastDoneVisitByCustomerId.set(h.customerId, visitDate);
+    }
+  }
 
   // Aplica os mesmos filtros usados na lista (plano + frequência)
   const filteredCustomers: OwnerCustomer[] = customers
@@ -93,20 +111,25 @@ export default function OwnerClientesPage() {
     .filter((customer) => {
       if (lastVisitFilter === "all") return true;
 
-      const last = customer.lastVisitDate;
-
-      // nunca visitou
-      if (!last || !last.trim()) {
-        return lastVisitFilter === "never";
-      }
-
-      const parsed = new Date(last);
-      if (Number.isNaN(parsed.getTime())) {
-        // se não conseguir interpretar a data, não entra nos filtros por tempo
+      // Clientes com plano ativo não entram nos filtros de "sem visita X dias"
+      // (como você comentou que não faz sentido aparecerem aí).
+      if (
+        customer.hasActivePlan &&
+        (lastVisitFilter === "15_plus" ||
+          lastVisitFilter === "30_plus" ||
+          lastVisitFilter === "90_plus")
+      ) {
         return false;
       }
 
-      const diffMs = Date.now() - parsed.getTime();
+      const lastVisitDate = lastDoneVisitByCustomerId.get(customer.id);
+
+      // Nunca teve visita concluída
+      if (!lastVisitDate) {
+        return lastVisitFilter === "never";
+      }
+
+      const diffMs = Date.now() - lastVisitDate.getTime();
       const diffDays = diffMs / (1000 * 60 * 60 * 24);
 
       if (lastVisitFilter === "15_plus") return diffDays >= 15;
@@ -485,6 +508,14 @@ export default function OwnerClientesPage() {
                             customerPhone: selectedCustomer.phone,
                           });
 
+                          // Se o cliente tiver um plano ativo, já mandamos o id do plano na URL
+                          if (
+                            selectedPlan &&
+                            selectedPlan.status === "active"
+                          ) {
+                            params.set("customerPlanId", selectedPlan.id);
+                          }
+
                           router.push(`/owner/agenda?${params.toString()}`);
                         }}
                       >
@@ -844,6 +875,15 @@ function FinancialProfileModal({
 
   // ---- Métricas anuais ----
   const totalVisitsYear = yearHistory.filter((h) => h.status === "done").length;
+
+  const totalPlanVisitsYear = yearHistory.filter(
+    (h) => h.status === "done" && h.source === "plan"
+  ).length;
+
+  const totalSingleVisitsYear = yearHistory.filter(
+    (h) => h.status === "done" && h.source === "single"
+  ).length;
+
   const totalSpentYear = yearHistory.reduce(
     (sum, h) => (h.status === "done" ? sum + h.price : sum),
     0
@@ -856,6 +896,15 @@ function FinancialProfileModal({
   const totalVisitsPeriod = periodHistory.filter(
     (h) => h.status === "done"
   ).length;
+
+  const totalPlanVisitsPeriod = periodHistory.filter(
+    (h) => h.status === "done" && h.source === "plan"
+  ).length;
+
+  const totalSingleVisitsPeriod = periodHistory.filter(
+    (h) => h.status === "done" && h.source === "single"
+  ).length;
+
   const totalSpentPeriod = periodHistory.reduce(
     (sum, h) => (h.status === "done" ? sum + h.price : sum),
     0
@@ -947,7 +996,11 @@ function FinancialProfileModal({
           <div className="rounded-xl border border-slate-800 bg-slate-900/80 p-3">
             <p className="text-[11px] text-slate-400">Visitas no ano</p>
             <p className="mt-1 text-lg font-semibold">{totalVisitsYear}</p>
+            <p className="mt-1 text-[11px] text-slate-400">
+              Plano: {totalPlanVisitsYear} · Avulsas: {totalSingleVisitsYear}
+            </p>
           </div>
+
           <div className="rounded-xl border border-slate-800 bg-slate-900/80 p-3">
             <p className="text-[11px] text-slate-400">Média de visitas / mês</p>
             <p className="mt-1 text-lg font-semibold">
@@ -966,6 +1019,10 @@ function FinancialProfileModal({
             </p>
             <p className="mt-1 text-lg font-semibold">
               {formatMoney(totalSpentPeriod)}
+            </p>
+            <p className="mt-1 text-[11px] text-slate-400">
+              Visitas de plano: {totalPlanVisitsPeriod} · Avulsas:{" "}
+              {totalSingleVisitsPeriod}
             </p>
           </div>
         </div>

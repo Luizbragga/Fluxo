@@ -13,8 +13,8 @@ export type OwnerCustomer = {
 };
 
 export type OwnerCustomerPlan = {
-  id: string; // ID real do customerPlan
-  customerId: string; // telefone normalizado como “chave lógica”
+  id: string; // ID real do customerPlan (view)
+  customerId: string; // mesmo ID usado em OwnerCustomer.id
   planName: string;
   status: "active" | "paused" | "cancelled" | "none";
   visitsUsed: number;
@@ -33,90 +33,110 @@ export type OwnerCustomerAppointmentHistory = {
   source: "plan" | "single" | "walk_in" | "app";
   status: "done" | "no_show" | "cancelled";
 
-  // para o perfil financeiro (por enquanto ainda mock vazio)
   price: number;
   year: number;
   month: number;
 };
 
-type BackendCustomer = {
-  name: string;
-  phone: string;
-  hasActivePlan: boolean;
-  planName?: string;
-  lastVisitDate?: string;
-  nextVisitDate?: string;
-  totalVisits: number;
-};
-
-type BackendCustomerPlan = {
-  id: string;
-  customerName: string;
-  customerPhone: string;
-  status: "active" | "suspended" | "late" | "cancelled";
-  currentCycleEnd: string;
-  visitsUsedInCycle: number;
-  planTemplate: {
+// TIPOS QUE REPRESENTAM EXATAMENTE O QUE O BACKEND ENVIA
+type BackendCustomersResponse = {
+  customers: {
+    id: string;
     name: string;
-    visitsPerInterval?: number | null;
-  };
+    phone: string;
+    hasActivePlan: boolean;
+    planName?: string;
+    lastVisitDate?: string;
+    nextVisitDate?: string;
+    totalVisits: number;
+  }[];
+  plans: {
+    id: string;
+    customerId: string;
+    planName: string;
+    status: "active" | "suspended" | "late" | "cancelled";
+    visitsUsed: number;
+    visitsTotal: number;
+    renewsAt?: string;
+    nextChargeAmount: number | null;
+  }[];
+  history: {
+    id: string;
+    customerId: string;
+    date: string;
+    time: string;
+    professionalName: string;
+    serviceName: string;
+    source: "plan" | "single";
+    status: "done" | "no_show" | "cancelled";
+    price: number;
+    year: number;
+    month: number;
+  }[];
 };
 
-const normalizePhone = (phone: string) => phone.replace(/\D+/g, "");
-
-// Busca clientes + planos em chamadas separadas
+// Busca clientes + planos + histórico em UMA chamada ao backend
 export async function fetchOwnerCustomers(): Promise<{
   customers: OwnerCustomer[];
   plans: OwnerCustomerPlan[];
   history: OwnerCustomerAppointmentHistory[];
 }> {
-  const [customersResponse, plansResponse] = await Promise.all([
-    apiClient<{ customers: BackendCustomer[] }>("/owner/customers", {
-      method: "GET",
-    }),
-    apiClient<BackendCustomerPlan[]>("/plans/customer-plans", {
-      method: "GET",
-    }),
-  ]);
-
-  const backendCustomers = customersResponse.customers ?? [];
-
-  const customers: OwnerCustomer[] = backendCustomers.map((c) => {
-    const id = normalizePhone(c.phone);
-
-    return {
-      id,
-      name: c.name,
-      phone: c.phone,
-      hasActivePlan: c.hasActivePlan,
-      planName: c.planName,
-      lastVisitDate: c.lastVisitDate,
-      nextVisitDate: c.nextVisitDate,
-      totalVisits: c.totalVisits,
-    };
+  const data = await apiClient<BackendCustomersResponse>("/owner/customers", {
+    method: "GET",
   });
 
-  const plans: OwnerCustomerPlan[] = plansResponse.map((p) => {
-    const customerId = normalizePhone(p.customerPhone);
+  const backendCustomers = data.customers ?? [];
+  const backendPlans = data.plans ?? [];
+  const backendHistory = data.history ?? [];
 
-    return {
-      id: p.id,
-      customerId,
-      planName: p.planTemplate?.name ?? "",
-      status: p.status === "active" ? "active" : "none",
-      visitsUsed: p.visitsUsedInCycle ?? 0,
-      visitsTotal: p.planTemplate?.visitsPerInterval ?? 0,
-      renewsAt: new Date(p.currentCycleEnd).toLocaleDateString("pt-PT", {
-        day: "2-digit",
-        month: "short",
-        year: "numeric",
-      }),
-      nextChargeAmount: undefined,
-    };
-  });
+  // -----------------------------
+  // CUSTOMERS
+  // -----------------------------
+  const customers: OwnerCustomer[] = backendCustomers.map((c) => ({
+    id: c.id, // <-- agora usamos o id real enviado pelo backend
+    name: c.name,
+    phone: c.phone,
+    hasActivePlan: c.hasActivePlan,
+    planName: c.planName,
+    lastVisitDate: c.lastVisitDate,
+    nextVisitDate: c.nextVisitDate,
+    totalVisits: c.totalVisits,
+  }));
 
-  // por enquanto seguimos sem histórico real
-  const history: OwnerCustomerAppointmentHistory[] = [];
+  // -----------------------------
+  // PLANS
+  // -----------------------------
+  const plans: OwnerCustomerPlan[] = backendPlans.map((p) => ({
+    id: p.id,
+    customerId: p.customerId, // <-- mesmo ID que OwnerCustomer.id
+    planName: p.planName,
+    // comprimimos os estados do backend em "active" | "none" como antes
+    status: p.status === "active" ? "active" : "none",
+    visitsUsed: p.visitsUsed ?? 0,
+    visitsTotal: p.visitsTotal ?? 0,
+    renewsAt: p.renewsAt,
+    nextChargeAmount:
+      typeof p.nextChargeAmount === "number" ? p.nextChargeAmount : undefined,
+  }));
+
+  // -----------------------------
+  // HISTORY
+  // -----------------------------
+  const history: OwnerCustomerAppointmentHistory[] = backendHistory.map(
+    (h) => ({
+      id: h.id,
+      customerId: h.customerId, // <-- já vem alinhado com customers[].id
+      date: h.date,
+      time: h.time,
+      professionalName: h.professionalName,
+      serviceName: h.serviceName,
+      source: h.source,
+      status: h.status,
+      price: h.price,
+      year: h.year,
+      month: h.month,
+    })
+  );
 
   return { customers, plans, history };
 }

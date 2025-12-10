@@ -18,11 +18,7 @@ export class AppointmentsService {
 
   async create(tenantId: string, userId: string, dto: CreateAppointmentDto) {
     const startAt = new Date(dto.startAt);
-    const endAt = new Date(dto.endAt);
-
-    if (isBefore(endAt, startAt)) {
-      throw new BadRequestException('endAt deve ser após startAt.');
-    }
+    let endAt = new Date(dto.endAt);
 
     // ----------------------------------------------------------------
     // Provider válido e do tenant
@@ -51,6 +47,18 @@ export class AppointmentsService {
       throw new ForbiddenException('Service inválido para este tenant.');
     }
 
+    // Valores “efetivos” (podem mudar se for plano com combo)
+    let effectiveDurationMin = service.durationMin;
+    let effectiveServicePriceCents = service.priceCents;
+    let effectiveServiceName = service.name;
+
+    // helper pra mensagens de horário
+    const formatMinutesToTime = (minutes: number) => {
+      const h = Math.floor(minutes / 60);
+      const m = minutes % 60;
+      return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`;
+    };
+
     // ----------------------------------------------------------------
     // LÓGICA DE PLANO DO CLIENTE (CustomerPlan)
     // ----------------------------------------------------------------
@@ -77,9 +85,188 @@ export class AppointmentsService {
           'Plano do cliente inválido para este tenant/local ou não está ativo.',
         );
       }
+      customerPlanId = customerPlan.id;
+      const template = customerPlan.planTemplate;
 
-      // ciclo do plano
-      if (startAt > customerPlan.currentCycleEnd) {
+      // ----------------------------------------------------------------
+      // 1) RESTRIÇÃO DE SERVIÇOS DO PLANO (sameDayServiceIds)
+      //    - impede usar o plano com serviço fora da lista
+      // ----------------------------------------------------------------
+      if (template?.sameDayServiceIds) {
+        const allowedServiceIds =
+          template.sameDayServiceIds as unknown as string[];
+
+        if (
+          Array.isArray(allowedServiceIds) &&
+          allowedServiceIds.length > 0 &&
+          !allowedServiceIds.includes(dto.serviceId)
+        ) {
+          throw new BadRequestException(
+            'Este serviço não faz parte do plano selecionado.',
+          );
+        }
+      }
+
+      // ----------------------------------------------------------------
+      // 2) DIAS DA SEMANA PERMITIDOS
+      // ----------------------------------------------------------------
+      // 2) DIAS DA SEMANA PERMITIDOS (usando números 0–6 do getDay)
+      if (template && template.allowedWeekdays) {
+        const rawWeekdays = template.allowedWeekdays as any;
+
+        // garantimos um array de números entre 0 e 6
+        const allowedNumbers: number[] = (
+          Array.isArray(rawWeekdays) ? rawWeekdays : []
+        )
+          .map((v) => (typeof v === 'string' ? Number(v) : v))
+          .filter((v) => Number.isInteger(v) && v >= 0 && v <= 6);
+
+        if (allowedNumbers.length > 0) {
+          const weekdayIndex = startAt.getDay(); // 0 = domingo ... 6 = sábado
+
+          if (!allowedNumbers.includes(weekdayIndex)) {
+            const weekdayLabel: Record<number, string> = {
+              0: 'domingo',
+              1: 'segunda-feira',
+              2: 'terça-feira',
+              3: 'quarta-feira',
+              4: 'quinta-feira',
+              5: 'sexta-feira',
+              6: 'sábado',
+            };
+
+            const allowedLabels = allowedNumbers
+              .sort((a, b) => a - b)
+              .map((n) => weekdayLabel[n] ?? String(n))
+              .join(', ');
+
+            throw new BadRequestException(
+              `Este plano só permite agendamentos nos dias: ${allowedLabels}.`,
+            );
+          }
+        }
+      }
+
+      // ----------------------------------------------------------------
+      // 3) ANTECEDÊNCIA MÍNIMA (minAdvanceDays)
+      // ----------------------------------------------------------------
+      if (template?.minAdvanceDays && template.minAdvanceDays > 0) {
+        const now = new Date();
+
+        const todayUtc = new Date(
+          Date.UTC(
+            now.getUTCFullYear(),
+            now.getUTCMonth(),
+            now.getUTCDate(),
+            0,
+            0,
+            0,
+          ),
+        );
+        const apptDateUtc = new Date(
+          Date.UTC(
+            startAt.getUTCFullYear(),
+            startAt.getUTCMonth(),
+            startAt.getUTCDate(),
+            0,
+            0,
+            0,
+          ),
+        );
+
+        const diffMs = apptDateUtc.getTime() - todayUtc.getTime();
+        const diffDays = Math.round(diffMs / (24 * 60 * 60 * 1000));
+
+        if (diffDays < template.minAdvanceDays) {
+          throw new BadRequestException(
+            `Este plano exige agendamento com pelo menos ${template.minAdvanceDays} dia(s) de antecedência.`,
+          );
+        }
+      }
+
+      // ----------------------------------------------------------------
+      // 4) INTERVALO MÍNIMO ENTRE VISITAS (minDaysBetweenVisits)
+      // ----------------------------------------------------------------
+      if (template?.minDaysBetweenVisits && template.minDaysBetweenVisits > 0) {
+        const lastVisit = await this.prisma.appointment.findFirst({
+          where: {
+            tenantId,
+            customerPlanId: customerPlan.id,
+            status: { not: 'cancelled' as any },
+            startAt: { lt: startAt },
+          },
+          orderBy: { startAt: 'desc' },
+          select: { startAt: true },
+        });
+
+        if (lastVisit) {
+          const lastDateUtc = new Date(
+            Date.UTC(
+              lastVisit.startAt.getUTCFullYear(),
+              lastVisit.startAt.getUTCMonth(),
+              lastVisit.startAt.getUTCDate(),
+              0,
+              0,
+              0,
+            ),
+          );
+          const apptDateUtc = new Date(
+            Date.UTC(
+              startAt.getUTCFullYear(),
+              startAt.getUTCMonth(),
+              startAt.getUTCDate(),
+              0,
+              0,
+              0,
+            ),
+          );
+
+          const diffMs = apptDateUtc.getTime() - lastDateUtc.getTime();
+          const diffDays = Math.round(diffMs / (24 * 60 * 60 * 1000));
+
+          if (diffDays < template.minDaysBetweenVisits) {
+            throw new BadRequestException(
+              `O plano exige um intervalo mínimo de ${template.minDaysBetweenVisits} dia(s) entre visitas.`,
+            );
+          }
+        }
+      }
+
+      // ----------------------------------------------------------------
+      // 5) CICLO DO PLANO + CONTROLE DE VISITAS (comparando por DIA)
+      // ----------------------------------------------------------------
+      const apptDateOnly = new Date(
+        startAt.getFullYear(),
+        startAt.getMonth(),
+        startAt.getDate(),
+        0,
+        0,
+        0,
+        0,
+      );
+
+      const cycleStartDateOnly = new Date(
+        customerPlan.currentCycleStart.getFullYear(),
+        customerPlan.currentCycleStart.getMonth(),
+        customerPlan.currentCycleStart.getDate(),
+        0,
+        0,
+        0,
+        0,
+      );
+
+      const cycleEndDateOnly = new Date(
+        customerPlan.currentCycleEnd.getFullYear(),
+        customerPlan.currentCycleEnd.getMonth(),
+        customerPlan.currentCycleEnd.getDate(),
+        0,
+        0,
+        0,
+        0,
+      );
+
+      // Se a DATA do agendamento é DEPOIS do fim do ciclo, marca plano como atrasado
+      if (apptDateOnly > cycleEndDateOnly) {
         await this.prisma.customerPlan.update({
           where: { id: customerPlan.id },
           data: {
@@ -93,18 +280,15 @@ export class AppointmentsService {
         );
       }
 
-      if (
-        startAt < customerPlan.currentCycleStart ||
-        startAt > customerPlan.currentCycleEnd
-      ) {
+      // Se a DATA é ANTES do início do ciclo atual, também não pode usar o plano
+      if (apptDateOnly < cycleStartDateOnly) {
         throw new BadRequestException(
           'Data do agendamento está fora do ciclo atual do plano do cliente.',
         );
       }
 
       const visitsLimit =
-        customerPlan.planTemplate.visitsPerInterval +
-        customerPlan.carryOverVisits;
+        template.visitsPerInterval + customerPlan.carryOverVisits;
 
       const nextVisitsUsed = customerPlan.visitsUsedInCycle + 1;
 
@@ -121,7 +305,82 @@ export class AppointmentsService {
         },
       });
 
-      customerPlanId = customerPlan.id;
+      // ----------------------------------------------------------------
+      // 6) AJUSTE DE DURAÇÃO / PREÇO PARA COMBOS (sameDayServiceIds)
+      // ----------------------------------------------------------------
+      if (template?.sameDayServiceIds) {
+        const comboIds = template.sameDayServiceIds as unknown as string[];
+
+        if (Array.isArray(comboIds) && comboIds.length > 0) {
+          const comboServices = await this.prisma.service.findMany({
+            where: {
+              tenantId,
+              id: { in: comboIds },
+            },
+          });
+
+          if (comboServices.length > 0) {
+            effectiveDurationMin = comboServices.reduce(
+              (sum, srv) => sum + srv.durationMin,
+              0,
+            );
+
+            effectiveServicePriceCents = comboServices.reduce(
+              (sum, srv) => sum + srv.priceCents,
+              0,
+            );
+
+            // nome exibido na agenda / histórico
+            effectiveServiceName = template.name ?? service.name;
+          }
+        }
+      }
+
+      // ----------------------------------------------------------------
+      // 7) JANELA DE HORÁRIO DO PLANO (usa a duração EFETIVA da visita)
+      // ----------------------------------------------------------------
+      if (
+        template?.allowedStartTimeMinutes != null &&
+        template.allowedEndTimeMinutes != null
+      ) {
+        const startMinutes = startAt.getHours() * 60 + startAt.getMinutes();
+        const endMinutes = startMinutes + effectiveDurationMin;
+
+        const from = formatMinutesToTime(template.allowedStartTimeMinutes);
+        const to = formatMinutesToTime(template.allowedEndTimeMinutes);
+
+        if (
+          startMinutes < template.allowedStartTimeMinutes ||
+          endMinutes > template.allowedEndTimeMinutes
+        ) {
+          throw new BadRequestException(
+            `Este plano só pode ser utilizado entre ${from} e ${to}.`,
+          );
+        }
+      }
+
+      // endAt sempre baseado na duração efetiva da visita de plano
+      endAt = addMinutes(startAt, effectiveDurationMin);
+    }
+
+    // Se endAt veio vazio ou inválido, normaliza
+    if (Number.isNaN(endAt.getTime())) {
+      endAt = addMinutes(startAt, effectiveDurationMin);
+    }
+
+    // Garante ordem cronológica
+    if (isBefore(endAt, startAt)) {
+      throw new BadRequestException('endAt deve ser após startAt.');
+    }
+
+    // Para atendimentos AVULSOS (sem plano) garante que duração bate o serviço
+    if (!dto.customerPlanId) {
+      const expectedEnd = addMinutes(startAt, service.durationMin);
+      if (expectedEnd.getTime() !== endAt.getTime()) {
+        throw new BadRequestException(
+          `Duração deve ser ${service.durationMin} minutos.`,
+        );
+      }
     }
 
     // ----------------------------------------------------------------
@@ -159,19 +418,8 @@ export class AppointmentsService {
       throw new BadRequestException('Conflito com outro agendamento.');
     }
 
-    // força duração pelo service.durationMin
-    const expectedEnd = addMinutes(startAt, service.durationMin);
-    if (expectedEnd.getTime() !== endAt.getTime()) {
-      throw new BadRequestException(
-        `Duração deve ser ${service.durationMin} minutos.`,
-      );
-    }
-
     // ----------------------------------------------------------------
     // CLIENTE: 1 registro por telefone por tenant
-    // - Normaliza telefone para só dígitos
-    // - Se for telefone novo -> cria Customer
-    // - Se existir com mesmo telefone e nome diferente -> conflito explícito
     // ----------------------------------------------------------------
     const normalizedPhone = dto.clientPhone.replace(/\D+/g, '');
     const newNameNorm = dto.clientName.trim().toLowerCase();
@@ -186,13 +434,11 @@ export class AppointmentsService {
     });
 
     if (!existingCustomer) {
-      // primeira vez desse telefone -> cria cliente
       const created = await this.prisma.customer.create({
         data: {
           tenantId,
           name: dto.clientName.trim(),
           phone: normalizedPhone,
-          // email opcional no futuro
         },
       });
       customerId = created.id;
@@ -200,7 +446,6 @@ export class AppointmentsService {
       const existingNameNorm = existingCustomer.name.trim().toLowerCase();
 
       if (existingNameNorm !== newNameNorm) {
-        // conflito: mesmo telefone, nome diferente -> front decide o que fazer
         throw new BadRequestException({
           code: 'CUSTOMER_NAME_CONFLICT',
           message:
@@ -214,7 +459,6 @@ export class AppointmentsService {
         });
       }
 
-      // nome equivalente -> reutiliza o mesmo cliente
       customerId = existingCustomer.id;
     }
 
@@ -233,9 +477,9 @@ export class AppointmentsService {
         clientPhone: dto.clientPhone,
         createdById: userId,
 
-        serviceName: service.name,
-        serviceDurationMin: service.durationMin,
-        servicePriceCents: service.priceCents,
+        serviceName: effectiveServiceName,
+        serviceDurationMin: effectiveDurationMin,
+        servicePriceCents: effectiveServicePriceCents,
 
         customerId,
         customerPlanId,

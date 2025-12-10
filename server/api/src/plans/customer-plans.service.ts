@@ -198,12 +198,6 @@ export class CustomerPlansService {
   // ---------------------------------------------------------------------------
   // REGISTAR PAGAMENTO DO PLANO (renovação usada pelo owner)
   // ---------------------------------------------------------------------------
-  // ---------------------------------------------------------------------------
-  // REGISTAR PAGAMENTO DO PLANO (renovação usada pelo owner)
-  // ---------------------------------------------------------------------------
-  // ---------------------------------------------------------------------------
-  // REGISTAR PAGAMENTO DO PLANO (renovação usada pelo owner)
-  // ---------------------------------------------------------------------------
   async registerPayment(
     tenantId: string,
     id: string,
@@ -234,7 +228,7 @@ export class CustomerPlansService {
             'Só é possível adiantar um mês de cada vez.',
         );
       }
-      // 2) Data em que o dinheiro entrou
+
       const paidAt = dto.paidAt ? new Date(dto.paidAt) : new Date();
 
       if (Number.isNaN(paidAt.getTime())) {
@@ -245,20 +239,14 @@ export class CustomerPlansService {
         throw new BadRequestException('amountCents deve ser maior que zero.');
       }
 
-      // 3) Calcula o novo ciclo:
-      //    - Base = fim do ciclo atual (plan.currentCycleEnd)
-      //    - Novo ciclo começa quando o anterior termina
-      //    - Novo ciclo termina no "mesmo dia" do mês seguinte (regra de calendário)
       const previousCycleEnd = plan.currentCycleEnd;
       const newCycleStart = previousCycleEnd;
       const newCycleEnd = addMonthsCalendar(previousCycleEnd, 1);
 
-      // 4) Cria o registro de pagamento deste novo ciclo
       await tx.customerPlanPayment.create({
         data: {
           tenantId,
           customerPlanId: plan.id,
-          // dueDate = fim do ciclo que está a ser pago
           dueDate: newCycleEnd,
           amountCents: dto.amountCents,
           status: CustomerPlanPaymentStatus.paid,
@@ -266,7 +254,6 @@ export class CustomerPlansService {
         },
       });
 
-      // 5) Atualiza o plano
       const updated = await tx.customerPlan.update({
         where: { id: plan.id },
         data: {
@@ -286,7 +273,76 @@ export class CustomerPlansService {
       return updated;
     });
   }
+
+  // ---------------------------------------------------------------------------
+  // RESTAURAR 1 VISITA DE UM AGENDAMENTO (quando o owner decide devolver)
+  // ---------------------------------------------------------------------------
+  async restoreVisitFromAppointment(tenantId: string, appointmentId: string) {
+    // 1) Busca o agendamento com o plano associado
+    const appointment = await this.prisma.appointment.findFirst({
+      where: {
+        id: appointmentId,
+        tenantId,
+      },
+      select: {
+        id: true,
+        startAt: true,
+        customerPlanId: true,
+      },
+    });
+
+    // se não tem agendamento ou não está ligado a um plano, não há o que fazer
+    if (!appointment || !appointment.customerPlanId) {
+      return;
+    }
+
+    // 2) Busca o plano para garantir que existe e pegar o ciclo atual
+    const plan = await this.prisma.customerPlan.findFirst({
+      where: {
+        id: appointment.customerPlanId,
+        tenantId,
+      },
+      select: {
+        id: true,
+        currentCycleStart: true,
+        currentCycleEnd: true,
+        visitsUsedInCycle: true,
+      },
+    });
+
+    if (!plan) {
+      return;
+    }
+
+    // 3) Só restaura se o atendimento estiver dentro do ciclo atual
+    const startAt = appointment.startAt;
+
+    if (
+      !startAt ||
+      startAt < plan.currentCycleStart ||
+      startAt >= plan.currentCycleEnd
+    ) {
+      // atendimento fora do ciclo atual → não mexe na contagem
+      return;
+    }
+
+    // 4) Se não há visitas usadas, não há o que restaurar
+    if (!plan.visitsUsedInCycle || plan.visitsUsedInCycle <= 0) {
+      return;
+    }
+
+    // 5) Devolve 1 visita ao plano
+    await this.prisma.customerPlan.update({
+      where: { id: plan.id },
+      data: {
+        visitsUsedInCycle: {
+          decrement: 1,
+        },
+      },
+    });
+  }
 }
+
 // Soma `months` meses a uma data, tentando manter o mesmo dia.
 // Se o mês de destino não tiver esse dia (ex.: 31/01 + 1 mês), usa o último dia do mês.
 function addMonthsCalendar(base: Date, months: number): Date {

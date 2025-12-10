@@ -57,6 +57,7 @@ export class CustomerPlansController {
   ) {
     return this.customerPlansService.update(user.tenantId, id, dto);
   }
+
   @Post(':id/pay')
   registerPayment(
     @CurrentUser() user: AuthUser,
@@ -64,5 +65,25 @@ export class CustomerPlansController {
     @Body() dto: RegisterCustomerPlanPaymentDto,
   ) {
     return this.customerPlansService.registerPayment(user.tenantId, id, dto);
+  }
+
+  // -------------------------------------------------------------------------
+  // RESTAURAR 1 VISITA A PARTIR DE UM AGENDAMENTO
+  // (quando o owner decide devolver a visita do plano)
+  // -------------------------------------------------------------------------
+  @Post('restore-visit-from-appointment/:appointmentId')
+  async restoreVisitFromAppointment(
+    @CurrentUser() user: AuthUser,
+    @Param('appointmentId') appointmentId: string,
+  ) {
+    await this.customerPlansService.restoreVisitFromAppointment(
+      user.tenantId,
+      appointmentId,
+    );
+
+    return {
+      success: true,
+      message: 'Visita do plano restaurada (se houvesse algo para devolver).',
+    };
   }
 }

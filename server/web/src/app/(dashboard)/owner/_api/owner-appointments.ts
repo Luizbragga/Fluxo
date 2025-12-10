@@ -30,8 +30,9 @@ export type CreateAppointmentInput = {
   endAt: string;
   clientName: string;
   clientPhone: string;
-  customerPlanId?: string;
+  customerPlanId?: string; // opcional: se vier, é atendimento de plano
 };
+
 export type OwnerServiceForAppointment = {
   id: string;
   name: string;
@@ -77,13 +78,17 @@ export async function createOwnerAppointment(
 
   return data as BackendAppointment;
 }
-export async function fetchOwnerServicesForAppointment(): Promise<
-  OwnerServiceForAppointment[]
-> {
+export async function fetchOwnerServicesForAppointment(
+  customerPlanId?: string
+): Promise<OwnerServiceForAppointment[]> {
+  const query = customerPlanId
+    ? `?customerPlanId=${encodeURIComponent(customerPlanId)}`
+    : "";
+
   // usamos o apiClient padrão; o backend responde algo como { items: Service[], ... }
   const res = await apiClient<{
     items: { id: string; name: string; durationMin: number }[];
-  }>("/services", {
+  }>(`/services${query}`, {
     method: "GET",
   });
 
