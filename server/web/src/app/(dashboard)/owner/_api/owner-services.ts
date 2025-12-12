@@ -136,7 +136,6 @@ export async function fetchOwnerServices(locationId?: string): Promise<{
   }));
 
   // Estatísticas do serviço, usando o que vem do backend
-  // Estatísticas do serviço, usando o que vem do backend
   const stats: OwnerServiceStats[] = data.items.map((service) => {
     const times = service.usesThisMonth ?? 0;
     const revenue = service.revenueThisMonth ?? 0;

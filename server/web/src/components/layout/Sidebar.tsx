@@ -12,8 +12,9 @@ type NavItem = {
 
 const ownerNavItems: NavItem[] = [
   { label: "Visão geral", href: "/owner", icon: "📊" },
+  { label: "Unidades", href: "/owner/unidades", icon: "🏬" },
   { label: "Agenda", href: "/owner/agenda", icon: "📅" },
-  { label: "Profissionais", href: "/owner/profissionais", icon: "💈" },
+  { label: "Profissionais", href: "/owner/profissionais", icon: "💼" },
   { label: "Clientes", href: "/owner/clientes", icon: "👥" },
   { label: "Serviços", href: "/owner/servicos", icon: "📦" },
   { label: "Financeiro", href: "/owner/financeiro", icon: "💳" },

@@ -1,6 +1,6 @@
 "use client";
 
-import { useSearchParams } from "next/navigation";
+import { useSearchParams, useRouter } from "next/navigation";
 import { useEffect, useMemo, useState } from "react";
 import { useRequireAuth } from "@/lib/use-auth";
 import { restoreOwnerPlanVisitFromAppointment } from "../_api/owner-plans";
@@ -53,13 +53,18 @@ const timeSlots = [
   "20:00",
   "20:30",
 ];
+// manhã = horários antes das 14:00
+const morningSlots = timeSlots.filter((t) => t < "14:00");
+
+// tarde = horários a partir das 14:00
+const afternoonSlots = timeSlots.filter((t) => t >= "14:00");
 
 export default function OwnerAgendaPage() {
   // Protege a rota: só owner logado entra
   const { user, loading: authLoading } = useRequireAuth({
     requiredRole: "owner",
   });
-
+  const router = useRouter();
   const [selectedDate, setSelectedDate] = useState<Date>(new Date());
   const [professionals, setProfessionals] = useState<AgendaProfessional[]>([]);
   const [appointments, setAppointments] = useState<AgendaAppointment[]>([]);
@@ -70,6 +75,9 @@ export default function OwnerAgendaPage() {
   const [savingAppointment, setSavingAppointment] = useState(false);
   const [createError, setCreateError] = useState<string | null>(null);
   const [restoredPlanVisits, setRestoredPlanVisits] = useState<string[]>([]);
+  const [selectedAppointment, setSelectedAppointment] =
+    useState<AgendaAppointment | null>(null);
+
   // RESUMO DO DIA (contagens simples)
   const agendaStats = useMemo(() => {
     const total = appointments.length;
@@ -156,6 +164,44 @@ export default function OwnerAgendaPage() {
   const [servicesLoading, setServicesLoading] = useState(false);
   const [selectedServiceId, setSelectedServiceId] = useState<string>("");
   const [modalProviderId, setModalProviderId] = useState<string>("");
+
+  function handleOpenAppointmentDetails(appt: AgendaAppointment) {
+    setSelectedAppointment(appt);
+  }
+
+  function handleCloseDetailsModal() {
+    setSelectedAppointment(null);
+  }
+
+  function handleDetailsStatusChange(
+    forceStatus?: AgendaAppointment["status"]
+  ) {
+    if (!selectedAppointment) return;
+
+    // usa o handler já existente
+    handleChangeStatus(
+      selectedAppointment.id,
+      selectedAppointment.status,
+      forceStatus
+    );
+
+    setSelectedAppointment(null);
+  }
+
+  function handleDetailsRestoreVisit() {
+    if (!selectedAppointment) return;
+
+    handleRestorePlanVisit(selectedAppointment.id);
+    setSelectedAppointment(null);
+  }
+
+  function handlePrevDay() {
+    setSelectedDate((prev) => addDays(prev, -1));
+  }
+
+  function handleNextDay() {
+    setSelectedDate((prev) => addDays(prev, 1));
+  }
 
   useEffect(() => {
     async function loadAgenda() {
@@ -381,6 +427,13 @@ export default function OwnerAgendaPage() {
 
       const endDate = new Date(startDate);
       endDate.setMinutes(endDate.getMinutes() + selectedService.durationMin);
+      const now = new Date();
+      if (startDate <= now) {
+        setCreateError(
+          "Não é possível criar agendamentos em horários que já passaram."
+        );
+        return;
+      }
 
       const input: CreateAppointmentInput = {
         providerId: modalProviderId,
@@ -528,11 +581,136 @@ export default function OwnerAgendaPage() {
   const maxDateStr = formatDateYYYYMMDD(maxDate);
 
   const isToday = selectedDateStr === todayStr;
+  const isPastDay = selectedDateStr < todayStr;
+  const nowMinutes = today.getHours() * 60 + today.getMinutes();
 
   // label bonitinho
   const dateLabel = isToday
     ? `Hoje · ${weekdayLabel}`
     : `${selectedDate.toLocaleDateString("pt-PT")} · ${weekdayLabel}`;
+  async function findNextDayWithFreeSlot(
+    baseDate: Date,
+    professionalFilter: FilterProfessionalId
+  ): Promise<Date | null> {
+    const today = new Date();
+    const todayStr = formatDateYYYYMMDD(today);
+    const nowMinutesToday = today.getHours() * 60 + today.getMinutes();
+    const maxDaysToSearch = 60; // limite de 60 dias para não ficar infinito
+
+    let current = new Date(
+      baseDate.getFullYear(),
+      baseDate.getMonth(),
+      baseDate.getDate(),
+      0,
+      0,
+      0,
+      0
+    );
+
+    for (let i = 0; i < maxDaysToSearch; i++) {
+      const currentStr = formatDateYYYYMMDD(current);
+      const data = await fetchOwnerAgendaDay(currentStr);
+
+      const prosForSearch =
+        professionalFilter === "all"
+          ? data.professionals
+          : data.professionals.filter((p) => p.id === professionalFilter);
+
+      if (!prosForSearch.length) {
+        current = addDays(current, 1);
+        continue;
+      }
+
+      const isDayPast = currentStr < todayStr;
+      const isDayToday = currentStr === todayStr;
+
+      let hasFreeSlot = false;
+
+      outer: for (const slot of timeSlots) {
+        const slotStartMinutes = timeStrToMinutes(slot);
+        const slotEndMinutes = slotStartMinutes + 30;
+
+        // não considerar slots já passados
+        if (isDayPast || (isDayToday && slotEndMinutes <= nowMinutesToday)) {
+          continue;
+        }
+
+        for (const pro of prosForSearch) {
+          const appt = data.appointments
+            .filter(
+              (a) => a.professionalId === pro.id && a.status !== "cancelled"
+            )
+            .find((a) => {
+              const startMin = timeStrToMinutes(a.time);
+              const durationMin = ((a as any).serviceDurationMin ??
+                (a as any).durationMin ??
+                30) as number;
+              const slotsNeeded = Math.ceil(durationMin / 30);
+              const apptEndMin = startMin + slotsNeeded * 30;
+
+              return (
+                slotStartMinutes >= startMin && slotStartMinutes < apptEndMin
+              );
+            });
+
+          // se algum profissional está livre nesse slot, já serve
+          if (!appt) {
+            hasFreeSlot = true;
+            break outer;
+          }
+        }
+      }
+
+      if (hasFreeSlot) {
+        return current;
+      }
+
+      current = addDays(current, 1);
+    }
+
+    return null;
+  }
+
+  async function handleGoToNextFreeSlot() {
+    try {
+      setError(null);
+      setLoadingAgenda(true);
+
+      const today = new Date();
+      const base = selectedDate < today ? today : selectedDate;
+
+      const nextDate = await findNextDayWithFreeSlot(
+        base,
+        selectedProfessionalId
+      );
+
+      if (!nextDate) {
+        setError(
+          "Não encontramos nenhum horário livre nos próximos dias para este filtro de profissional."
+        );
+        return;
+      }
+
+      setSelectedDate(
+        new Date(
+          nextDate.getFullYear(),
+          nextDate.getMonth(),
+          nextDate.getDate(),
+          0,
+          0,
+          0,
+          0
+        )
+      );
+    } catch (err) {
+      console.error("Erro ao procurar próximo horário livre:", err);
+      setError(
+        "Não foi possível procurar o próximo horário livre. Tente novamente."
+      );
+    } finally {
+      setLoadingAgenda(false);
+    }
+  }
 
   if (authLoading || loadingAgenda) {
     return (
@@ -557,6 +735,22 @@ export default function OwnerAgendaPage() {
 
           <div className="flex flex-wrap gap-2 text-xs">
             <div className="flex items-center gap-2">
+              <button
+                type="button"
+                className="px-2 py-1 rounded-lg border border-slate-800 bg-slate-900/80 text-slate-300"
+                onClick={handlePrevDay}
+              >
+                {"<"}
+              </button>
+
+              <button
+                type="button"
+                className="px-2 py-1 rounded-lg border border-slate-800 bg-slate-900/80 text-slate-300"
+                onClick={handleNextDay}
+              >
+                {">"}
+              </button>
+
               <button className="px-3 py-1 rounded-lg border border-slate-700 bg-slate-900/80">
                 {dateLabel}
               </button>
@@ -565,7 +759,6 @@ export default function OwnerAgendaPage() {
                 type="date"
                 className="px-2 py-1 rounded-lg border border-slate-800 bg-slate-900/80 text-slate-200 text-xs"
                 value={selectedDateStr}
-                min={todayStr}
                 max={maxDateStr}
                 onChange={(e) => {
                   if (!e.target.value) return;
@@ -598,6 +791,22 @@ export default function OwnerAgendaPage() {
 
         <div className="flex flex-wrap gap-2 text-xs">
           <div className="flex items-center gap-2">
+            <button
+              type="button"
+              className="px-2 py-1 rounded-lg border border-slate-800 bg-slate-900/80 text-slate-300"
+              onClick={handlePrevDay}
+            >
+              {"<"}
+            </button>
+
+            <button
+              type="button"
+              className="px-2 py-1 rounded-lg border border-slate-800 bg-slate-900/80 text-slate-300"
+              onClick={handleNextDay}
+            >
+              {">"}
+            </button>
+
             <button className="px-3 py-1 rounded-lg border border-slate-700 bg-slate-900/80">
               {dateLabel}
             </button>
@@ -606,7 +815,6 @@ export default function OwnerAgendaPage() {
               type="date"
               className="px-2 py-1 rounded-lg border border-slate-800 bg-slate-900/80 text-slate-200 text-xs"
               value={selectedDateStr}
-              min={todayStr}
               max={maxDateStr}
               onChange={(e) => {
                 if (!e.target.value) return;
@@ -619,6 +827,7 @@ export default function OwnerAgendaPage() {
           <select className="px-3 py-1 rounded-lg border border-slate-800 bg-slate-900/80 text-slate-200">
             <option>Unidade atual do tenant</option>
           </select>
+
           <select
             className="px-3 py-1 rounded-lg border border-slate-800 bg-slate-900/80 text-slate-200"
             value={selectedProfessionalId}
@@ -635,6 +844,7 @@ export default function OwnerAgendaPage() {
               </option>
             ))}
           </select>
+
           <div className="flex rounded-lg border border-slate-800 bg-slate-900/80 overflow-hidden">
             <button className="px-3 py-1 text-slate-50 bg-slate-800 text-[11px]">
               Diário
@@ -643,12 +853,20 @@ export default function OwnerAgendaPage() {
               Semanal
             </button>
           </div>
+
+          <button
+            type="button"
+            className="px-3 py-1 rounded-lg border border-emerald-600 bg-emerald-600/20 text-[11px] text-emerald-200"
+            onClick={handleGoToNextFreeSlot}
+          >
+            Próximo horário livre
+          </button>
         </div>
       </header>
       {/* Resumo rápido do dia */}
       <section className="mb-4 grid gap-2 text-xs md:grid-cols-4">
         <div className="rounded-2xl border border-slate-800 bg-slate-900/70 px-3 py-2">
-          <p className="text-[11px] text-slate-400">Atendimentos do dia</p>
+          <p className="text-[11px] text-slate-400">Agendamentos do dia</p>
           <p className="text-lg font-semibold text-slate-50">
             {agendaStats.total}
           </p>
@@ -693,6 +911,14 @@ export default function OwnerAgendaPage() {
             Cancelados:{" "}
             <span className="text-rose-300">{agendaStats.cancelled}</span>
           </p>
+
+          <button
+            type="button"
+            className="mt-2 text-[11px] text-emerald-400 hover:underline"
+            onClick={() => router.push("/owner/relatorios")}
+          >
+            Análise detalhada
+          </button>
         </div>
       </section>
 
@@ -727,34 +953,217 @@ export default function OwnerAgendaPage() {
       )}
 
       {/* Grid da agenda diária */}
+      {/* Grid da agenda diária: manhã e tarde lado a lado */}
       <section className="rounded-2xl border border-slate-800 bg-slate-900/60 p-4">
-        <div className="grid grid-cols-[80px_repeat(3,minmax(0,1fr))] gap-2 text-xs">
-          {/* Cabeçalho de colunas */}
-          <div />
-          {visibleProfessionals.map((pro) => (
-            <div
-              key={pro.id}
-              className="px-2 py-1 rounded-lg bg-slate-950/50 border border-slate-800/80 font-medium"
-            >
-              {pro.name}
-            </div>
-          ))}
+        <div className="grid gap-6 md:grid-cols-2">
+          {/* COLUNA DA MANHÃ */}
+          <div>
+            <p className="text-[11px] uppercase tracking-wide text-slate-500 mb-2">
+              Período da manhã
+            </p>
 
-          {/* Linhas de horários */}
-          {timeSlots.map((slot) => (
-            <RowTimeSlot
-              key={slot}
-              slot={slot}
-              professionals={visibleProfessionals}
-              appointments={appointments}
-              onChangeStatus={handleChangeStatus}
-              onCreateAppointment={handleCreateAppointmentClick}
-              onRestorePlanVisit={handleRestorePlanVisit}
-              restoredPlanVisits={restoredPlanVisits}
-            />
-          ))}
+            <div
+              className="grid gap-2 text-xs"
+              style={{
+                gridTemplateColumns: `80px repeat(${visibleProfessionals.length}, minmax(0, 1fr))`,
+              }}
+            >
+              {/* coluna de horários à esquerda */}
+              <div />
+
+              {/* cabeçalhos de profissionais */}
+              {visibleProfessionals.map((pro) => (
+                <div
+                  key={pro.id}
+                  className="px-2 py-2 rounded-2xl border border-slate-700/80 bg-slate-950/70 flex flex-col"
+                >
+                  <span className="text-[10px] uppercase tracking-wide text-slate-400">
+                    Profissional
+                  </span>
+                  <span className="text-sm font-semibold text-slate-50">
+                    {pro.name}
+                  </span>
+                </div>
+              ))}
+
+              {morningSlots.map((slot) => (
+                <RowTimeSlot
+                  key={slot}
+                  slot={slot}
+                  professionals={visibleProfessionals}
+                  appointments={appointments}
+                  onCreateAppointment={handleCreateAppointmentClick}
+                  onOpenDetails={handleOpenAppointmentDetails}
+                  isPastDay={isPastDay}
+                  isToday={isToday}
+                  nowMinutes={nowMinutes}
+                />
+              ))}
+            </div>
+          </div>
+
+          {/* COLUNA DA TARDE */}
+          <div>
+            <p className="text-[11px] uppercase tracking-wide text-slate-500 mb-2">
+              Período da tarde
+            </p>
+
+            <div
+              className="grid gap-2 text-xs"
+              style={{
+                gridTemplateColumns: `80px repeat(${visibleProfessionals.length}, minmax(0, 1fr))`,
+              }}
+            >
+              {/* coluna de horários à esquerda */}
+              <div />
+
+              {/* cabeçalhos de profissionais */}
+              {visibleProfessionals.map((pro) => (
+                <div
+                  key={pro.id}
+                  className="px-2 py-2 rounded-2xl border border-slate-700/80 bg-slate-950/70 flex flex-col"
+                >
+                  <span className="text-[10px] uppercase tracking-wide text-slate-400">
+                    Profissional
+                  </span>
+                  <span className="text-sm font-semibold text-slate-50">
+                    {pro.name}
+                  </span>
+                </div>
+              ))}
+
+              {/* linhas de horários da tarde */}
+              {afternoonSlots.map((slot) => (
+                <RowTimeSlot
+                  key={slot}
+                  slot={slot}
+                  professionals={visibleProfessionals}
+                  appointments={appointments}
+                  onCreateAppointment={handleCreateAppointmentClick}
+                  onOpenDetails={handleOpenAppointmentDetails}
+                  isPastDay={isPastDay}
+                  isToday={isToday}
+                  nowMinutes={nowMinutes}
+                />
+              ))}
+            </div>
+          </div>
         </div>
       </section>
+      {selectedAppointment &&
+        (() => {
+          const statusStyles = getStatusClasses(selectedAppointment.status);
+          const billingType = (selectedAppointment as any).billingType as
+            | "plan"
+            | "single"
+            | undefined;
+
+          return (
+            <div className="fixed inset-0 z-40 flex items-center justify-center bg-black/60">
+              <div className="w-full max-w-md rounded-2xl border border-slate-800 bg-slate-950 p-4 text-xs shadow-xl">
+                <div className="flex items-start justify-between mb-3">
+                  <div>
+                    <p className="text-[11px] uppercase tracking-wide text-slate-400">
+                      Detalhes do agendamento
+                    </p>
+                    <p className="text-sm font-semibold text-slate-100">
+                      {selectedAppointment.serviceName}
+                    </p>
+                    <p className="text-[11px] text-slate-300">
+                      Cliente: {selectedAppointment.customerName}
+                    </p>
+                    <p className="text-[11px] text-slate-400">
+                      Horário: {selectedAppointment.time}
+                    </p>
+                  </div>
+
+                  <button
+                    className="text-[11px] text-slate-400 hover:text-slate-100"
+                    onClick={handleCloseDetailsModal}
+                  >
+                    Fechar
+                  </button>
+                </div>
+
+                <div className="flex gap-2 mb-4">
+                  <span
+                    className={`text-[10px] px-2 py-0.5 rounded ${statusStyles.badge}`}
+                  >
+                    {statusStyles.label}
+                  </span>
+                  <span
+                    className={`text-[10px] px-2 py-0.5 rounded border ${
+                      billingType === "plan"
+                        ? "bg-emerald-500/15 text-emerald-100 border-emerald-400/60"
+                        : "bg-slate-700/40 text-slate-100 border-slate-500/60"
+                    }`}
+                  >
+                    {billingType === "plan" ? "Plano" : "Avulso"}
+                  </span>
+                </div>
+
+                <div className="space-y-2 mb-4">
+                  {selectedAppointment.status === "scheduled" && (
+                    <button
+                      type="button"
+                      className="w-full px-3 py-1 rounded-lg border border-emerald-500 bg-emerald-500/10 text-[11px] text-emerald-100"
+                      onClick={() => handleDetailsStatusChange()}
+                    >
+                      Iniciar atendimento
+                    </button>
+                  )}
+
+                  {selectedAppointment.status === "in_service" && (
+                    <button
+                      type="button"
+                      className="w-full px-3 py-1 rounded-lg border border-sky-500 bg-sky-500/10 text-[11px] text-sky-100"
+                      onClick={() => handleDetailsStatusChange()}
+                    >
+                      Marcar como concluído
+                    </button>
+                  )}
+
+                  {(selectedAppointment.status === "scheduled" ||
+                    selectedAppointment.status === "in_service") && (
+                    <div className="flex gap-2">
+                      <button
+                        type="button"
+                        className="flex-1 px-3 py-1 rounded-lg border border-amber-400 bg-amber-500/10 text-[11px] text-amber-200"
+                        onClick={() => handleDetailsStatusChange("no_show")}
+                      >
+                        Marcar falta
+                      </button>
+                      <button
+                        type="button"
+                        className="flex-1 px-3 py-1 rounded-lg border border-rose-400 bg-rose-500/10 text-[11px] text-rose-200"
+                        onClick={() => handleDetailsStatusChange("cancelled")}
+                      >
+                        Cancelar
+                      </button>
+                    </div>
+                  )}
+
+                  {billingType === "plan" &&
+                    (selectedAppointment.status === "no_show" ||
+                      selectedAppointment.status === "cancelled") && (
+                      <button
+                        type="button"
+                        className="w-full px-3 py-1 rounded-lg border border-emerald-400 bg-emerald-500/10 text-[11px] text-emerald-200"
+                        onClick={handleDetailsRestoreVisit}
+                      >
+                        Devolver visita ao plano
+                      </button>
+                    )}
+                </div>
+
+                <p className="text-[10px] text-slate-500">
+                  Dica: use este painel para controlar status, faltas e exceções
+                  de forma segura, sem lotar o slot da agenda.
+                </p>
+              </div>
+            </div>
+          );
+        })()}
 
       {/* Modal simples para criar agendamento */}
       {pendingSlot && (
@@ -937,60 +1346,68 @@ function RowTimeSlot({
   slot,
   professionals,
   appointments,
-  onChangeStatus,
   onCreateAppointment,
-  onRestorePlanVisit,
-  restoredPlanVisits,
+  onOpenDetails,
+  isPastDay,
+  isToday,
+  nowMinutes,
 }: {
   slot: string;
   professionals: AgendaProfessional[];
   appointments: AgendaAppointment[];
-  onChangeStatus?: (
-    appointmentId: string,
-    currentStatus: AgendaAppointment["status"],
-    forceStatus?: AgendaAppointment["status"]
-  ) => void;
   onCreateAppointment?: (params: {
     time: string;
     professionalId: string;
     professionalName: string;
   }) => void;
-  onRestorePlanVisit?: (appointmentId: string) => void;
-  restoredPlanVisits: string[];
+  onOpenDetails?: (appointment: AgendaAppointment) => void;
+  isPastDay: boolean;
+  isToday: boolean;
+  nowMinutes: number;
 }) {
   const slotStartMinutes = timeStrToMinutes(slot);
   const slotEndMinutes = slotStartMinutes + 30; // cada slot = 30min
 
+  const isPastSlot = isPastDay || (isToday && slotEndMinutes <= nowMinutes);
+
   return (
     <>
-      {/* Coluna de horário */}
+      {/* Coluna de horário (esquerda) */}
       <div className="flex items-start justify-end pr-1 pt-2 text-[10px] text-slate-500">
         {slot}
       </div>
 
       {/* Colunas por profissional */}
       {professionals.map((pro) => {
-        // procura algum agendamento que ocupe este slot
         const appt = appointments
-          .filter((a) => a.professionalId === pro.id)
+          .filter(
+            (a) => a.professionalId === pro.id && a.status !== "cancelled"
+          )
           .find((a) => {
             const startMin = timeStrToMinutes(a.time);
             const durationMin = ((a as any).serviceDurationMin ??
               (a as any).durationMin ??
               30) as number;
 
-            // arredonda pra cima em blocos de 30min
             const slotsNeeded = Math.ceil(durationMin / 30);
             const apptEndMin = startMin + slotsNeeded * 30;
 
-            // este slot está entre [start, apptEndMin) ?
             return (
               slotStartMinutes >= startMin && slotStartMinutes < apptEndMin
             );
           });
 
-        // se não tem agendamento cobrindo esse slot -> botão vazio (criar)
+        // Sem agendamento ocupando este slot
         if (!appt) {
+          if (isPastSlot) {
+            return (
+              <div
+                key={pro.id}
+                className="h-14 rounded-xl border border-slate-900/60 bg-slate-950/40 opacity-40 cursor-not-allowed"
+              />
+            );
+          }
+
           return (
             <button
               key={pro.id}
@@ -1013,30 +1430,33 @@ function RowTimeSlot({
           | "plan"
           | "single"
           | undefined;
-        const isRestored =
-          Array.isArray(restoredPlanVisits) &&
-          restoredPlanVisits.includes(appt.id);
-        // se é o slot de início, mostra card completo
+
+        // Slot de início -> card compacto clicável
         if (isStart) {
           return (
-            <div
+            <button
               key={pro.id}
-              className={`h-14 rounded-xl border px-2 py-1 flex flex-col justify-between cursor-pointer ${statusStyles.container}`}
-              onClick={() => onChangeStatus?.(appt.id, appt.status)}
+              type="button"
+              className={`h-14 w-full rounded-xl border px-2 py-1.5 flex items-start justify-between text-left ${statusStyles.container}`}
+              onClick={() => onOpenDetails?.(appt)}
             >
-              <p className="text-[11px] font-medium">{appt.serviceName}</p>
-              <p className="text-[10px] text-slate-300">{appt.customerName}</p>
+              <div className="min-w-0">
+                <p className="text-[11px] font-medium truncate">
+                  {appt.serviceName}
+                </p>
+                <p className="text-[10px] text-slate-300 truncate">
+                  Cliente: {appt.customerName}
+                </p>
+              </div>
 
-              {/* Linha de badges: status + tipo (Plano/Avulso) */}
-              <div className="mt-0.5 flex items-center gap-1">
+              <div className="flex flex-col items-end gap-1">
                 <span
                   className={`text-[9px] px-1 rounded ${statusStyles.badge}`}
                 >
                   {statusStyles.label}
                 </span>
-
                 <span
-                  className={`text-[9px] px-1 rounded border ml-auto ${
+                  className={`text-[9px] px-1 rounded border ${
                     billingType === "plan"
                       ? "bg-emerald-500/15 text-emerald-100 border-emerald-400/60"
                       : "bg-slate-700/40 text-slate-100 border-slate-500/60"
@@ -1045,68 +1465,23 @@ function RowTimeSlot({
                   {billingType === "plan" ? "Plano" : "Avulso"}
                 </span>
               </div>
-
-              {/* Ações rápidas: Falta / Cancelar (quando ainda não é falta/cancelado) */}
-              {(appt.status === "scheduled" ||
-                appt.status === "in_service") && (
-                <div className="mt-1 flex gap-1">
-                  <button
-                    type="button"
-                    className="text-[9px] px-1 rounded border border-amber-400/60 text-amber-200 bg-amber-500/10"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      onChangeStatus?.(appt.id, appt.status, "no_show");
-                    }}
-                  >
-                    Marcar falta
-                  </button>
-                  <button
-                    type="button"
-                    className="text-[9px] px-1 rounded border border-rose-400/60 text-rose-200 bg-rose-500/10"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      onChangeStatus?.(appt.id, appt.status, "cancelled");
-                    }}
-                  >
-                    Cancelar
-                  </button>
-                </div>
-              )}
-
-              {/* Botão para devolver visita do plano em caso de falta/cancelamento */}
-              {billingType === "plan" &&
-                (appt.status === "no_show" || appt.status === "cancelled") &&
-                (isRestored ? (
-                  <span className="mt-1 self-start text-[9px] px-1 rounded bg-emerald-600/20 text-emerald-200 border border-emerald-500/60">
-                    Visita devolvida ao plano
-                  </span>
-                ) : (
-                  <button
-                    type="button"
-                    className="mt-1 self-start text-[9px] px-1 rounded border border-emerald-400/60 text-emerald-200 bg-emerald-500/10 hover:bg-emerald-500/20"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      onRestorePlanVisit?.(appt.id);
-                    }}
-                  >
-                    Devolver visita ao plano
-                  </button>
-                ))}
-            </div>
+            </button>
           );
         }
 
-        // continuação do agendamento (slot seguinte)
+        // Continuação do agendamento -> também abre detalhes se clicar
         return (
-          <div
+          <button
             key={pro.id}
-            className={`h-14 rounded-xl border px-2 py-1 flex items-center text-[10px] text-slate-300 ${statusStyles.container}`}
+            type="button"
+            className={`h-14 rounded-xl border px-2 py-1 flex items-center text-[10px] text-slate-300 text-left ${statusStyles.container}`}
+            onClick={() => onOpenDetails?.(appt)}
           >
             <span className="truncate">
               Continuação · {appt.serviceName} · {appt.customerName} ·{" "}
               {billingType === "plan" ? "Plano" : "Avulso"}
             </span>
-          </div>
+          </button>
         );
       })}
     </>
