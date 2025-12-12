@@ -90,9 +90,18 @@ model Location {
   customerPlans CustomerPlan[]
   services      Service[]
 
+  /// Horário padrão de funcionamento da filial, no mesmo formato do weekdayTemplate do provider:
+  /// {
+  ///   "mon": [["08:00","13:00"], ["14:00","20:00"]],
+  ///   "tue": [["09:00","18:00"]],
+  ///   ...
+  /// }
+  businessHoursTemplate Json?
+
   @@unique([tenantId, slug])
   @@index([tenantId])
 }
+
 
 model User {
   id           String    @id @default(cuid())

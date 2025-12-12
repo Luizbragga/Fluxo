@@ -138,7 +138,7 @@ export class ProvidersService {
     // 1) valida se a location pertence ao mesmo tenant
     const location = await this.prisma.location.findFirst({
       where: { id: dto.locationId, tenantId },
-      select: { id: true },
+      select: { id: true, businessHoursTemplate: true },
     });
 
     if (!location) {
@@ -225,7 +225,10 @@ export class ProvidersService {
         locationId: dto.locationId,
         name: dto.name,
         specialty: dto.specialty ?? 'other',
-        weekdayTemplate: dto.weekdayTemplate ?? undefined,
+        weekdayTemplate:
+          dto.weekdayTemplate ??
+          (location.businessHoursTemplate as any) ??
+          undefined,
         active: dto.active ?? true,
       },
       include: {
@@ -386,7 +389,17 @@ export class ProvidersService {
     // 1) Provider do tenant (e ativo)
     const provider = await this.prisma.provider.findFirst({
       where: { id: providerId, tenantId },
-      select: { id: true, weekdayTemplate: true, active: true, tenantId: true },
+      select: {
+        id: true,
+        weekdayTemplate: true,
+        active: true,
+        tenantId: true,
+        location: {
+          select: {
+            businessHoursTemplate: true,
+          },
+        },
+      },
     });
 
     if (!provider) throw new NotFoundException('Provider não encontrado');
@@ -410,10 +423,15 @@ export class ProvidersService {
     const weekdayKey = keyMap[dayStart.getUTCDay()];
 
     // 3) Intervalos de template (HH:mm) -> minutos no dia
-    const template =
+    const baseTemplate =
       (provider.weekdayTemplate as Record<string, [string, string][]> | null) ??
+      ((provider.location?.businessHoursTemplate ?? null) as Record<
+        string,
+        [string, string][]
+      > | null) ??
       {};
-    const rawIntervals = template[weekdayKey] ?? [];
+
+    const rawIntervals = baseTemplate[weekdayKey] ?? [];
 
     const dayIntervals = rawIntervals
       .map(([start, end]) => {
@@ -506,15 +524,28 @@ export class ProvidersService {
   }) {
     const { tenantId, providerId, serviceId, dateISO } = params;
 
-    // 0) Carrega provider + template e o service (para durationMin)
+    // 0) Carrega provider + template (e horário da location) e o service (para durationMin)
     const [provider, service] = await Promise.all([
       this.prisma.provider.findFirst({
         where: { id: providerId, tenantId },
-        select: { id: true, weekdayTemplate: true, active: true },
+        select: {
+          id: true,
+          weekdayTemplate: true,
+          active: true,
+          location: {
+            select: {
+              businessHoursTemplate: true,
+            },
+          },
+        },
       }),
       this.prisma.service.findFirst({
         where: { id: serviceId, tenantId },
-        select: { id: true, durationMin: true, active: true },
+        select: {
+          id: true,
+          durationMin: true,
+          active: true,
+        },
       }),
     ]);
 
@@ -562,15 +593,25 @@ export class ProvidersService {
     const keyMap = ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat'];
     const weekdayKey = keyMap[weekdayIndex];
 
-    const template =
+    // Prioridade:
+    // 1) weekdayTemplate específico do provider
+    // 2) businessHoursTemplate da location
+    const baseTemplate =
       (provider.weekdayTemplate as Record<string, [string, string][]> | null) ??
+      ((provider.location?.businessHoursTemplate ?? null) as Record<
+        string,
+        [string, string][]
+      > | null) ??
       {};
-    const rawIntervals = template[weekdayKey] ?? [];
 
-    let free = rawIntervals.map(([start, end]) => ({
-      start: toMin(start),
-      end: toMin(end),
-    }));
+    const rawIntervals = (baseTemplate[weekdayKey] ?? []).map(
+      ([start, end]) => ({
+        start: toMin(start),
+        end: toMin(end),
+      }),
+    );
+
+    let free = rawIntervals;
 
     if (free.length === 0) {
       return {
@@ -679,6 +720,7 @@ export class ProvidersService {
       slots,
     };
   }
+
   async getMyEarnings(params: {
     tenantId: string;
     userId: string;
@@ -1014,7 +1056,7 @@ export class ProvidersService {
     // 1) validar location do tenant
     const location = await this.prisma.location.findFirst({
       where: { id: dto.locationId, tenantId },
-      select: { id: true },
+      select: { id: true, businessHoursTemplate: true },
     });
 
     if (!location) {
@@ -1062,7 +1104,10 @@ export class ProvidersService {
           locationId: dto.locationId,
           name: dto.name,
           specialty: dto.specialty ?? Specialty.other,
-          weekdayTemplate: dto.weekdayTemplate ?? undefined,
+          weekdayTemplate:
+            dto.weekdayTemplate ??
+            (location.businessHoursTemplate as any) ??
+            undefined,
           active: true,
         },
         include: {

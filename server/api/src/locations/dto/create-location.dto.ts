@@ -17,4 +17,20 @@ export class CreateLocationDto {
   @IsOptional()
   @IsString()
   slug?: string;
+
+  @ApiPropertyOptional({
+    description:
+      'Template padrão de horário de funcionamento desta unidade. ' +
+      'Ex.: {"mon":[["08:00","13:00"],["14:00","20:00"]],"tue":[["09:00","18:00"]]}',
+    example: {
+      mon: [
+        ['08:00', '13:00'],
+        ['14:00', '20:00'],
+      ],
+      tue: [['09:00', '18:00']],
+    },
+  })
+  @IsOptional()
+  // armazenamos como JSON; aqui aceitamos um objeto genérico
+  businessHoursTemplate?: Record<string, [string, string][]>;
 }

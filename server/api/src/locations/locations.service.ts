@@ -50,6 +50,7 @@ export class LocationsService {
         tenantId,
         name: dto.name,
         slug,
+        businessHoursTemplate: dto.businessHoursTemplate ?? undefined,
       },
     });
 
@@ -160,6 +161,7 @@ export class LocationsService {
       data: {
         name: dto.name ?? undefined,
         slug: slug ?? undefined,
+        businessHoursTemplate: dto.businessHoursTemplate ?? undefined,
       },
     });
 
