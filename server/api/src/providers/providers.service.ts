@@ -7,7 +7,9 @@ import { PrismaService } from '../prisma/prisma.service';
 import { CreateProviderDto } from './dto/create-provider.dto';
 import { UpdateProviderDto } from './dto/update-provider.dto';
 import { UpsertProviderCommissionDto } from './dto/upsert-provider-commission.dto';
-import { Prisma } from '@prisma/client';
+import { Prisma, Role, Specialty } from '@prisma/client';
+import { CreateOwnerProviderDto } from './dto/create-owner-provider.dto';
+import * as bcrypt from 'bcrypt';
 
 // Tipo helper: Provider + user + location completos
 type ProviderWithUserAndLocation = Prisma.ProviderGetPayload<{
@@ -133,22 +135,7 @@ export class ProvidersService {
 
   // cria provider garantindo que user e location pertencem ao mesmo tenant
   async create(tenantId: string, dto: CreateProviderDto) {
-    const user = await this.prisma.user.findUnique({
-      where: { id: dto.userId },
-      select: { id: true, tenantId: true, provider: { select: { id: true } } },
-    });
-
-    if (!user || user.tenantId !== tenantId) {
-      throw new BadRequestException('userId inválido para este tenant');
-    }
-
-    if (user.provider) {
-      throw new BadRequestException(
-        'Este usuário já está vinculado a um provider',
-      );
-    }
-
-    // valida se a location pertence ao mesmo tenant
+    // 1) valida se a location pertence ao mesmo tenant
     const location = await this.prisma.location.findFirst({
       where: { id: dto.locationId, tenantId },
       select: { id: true },
@@ -158,10 +145,83 @@ export class ProvidersService {
       throw new BadRequestException('locationId inválido para este tenant');
     }
 
+    // 2) resolver o user: pode vir userId OU (email + phone)
+    let userId: string;
+
+    if (dto.userId) {
+      // fluxo antigo: usar um usuário já existente
+      const user = await this.prisma.user.findUnique({
+        where: { id: dto.userId },
+        select: {
+          id: true,
+          tenantId: true,
+          provider: { select: { id: true } },
+        },
+      });
+
+      if (!user || user.tenantId !== tenantId) {
+        throw new BadRequestException('userId inválido para este tenant');
+      }
+
+      if (user.provider) {
+        throw new BadRequestException(
+          'Este usuário já está vinculado a um provider',
+        );
+      }
+
+      userId = user.id;
+    } else {
+      // fluxo novo: criar / reutilizar utilizador a partir do email
+      if (!dto.email) {
+        throw new BadRequestException(
+          'É necessário informar "userId" OU "email" para criar o profissional.',
+        );
+      }
+
+      const existingUser = await this.prisma.user.findFirst({
+        where: { tenantId, email: dto.email },
+        select: {
+          id: true,
+          provider: { select: { id: true } },
+        },
+      });
+
+      if (existingUser) {
+        if (existingUser.provider) {
+          throw new BadRequestException(
+            'Já existe um utilizador com este email vinculado a outro profissional.',
+          );
+        }
+
+        userId = existingUser.id;
+      } else {
+        // cria um novo user com role=provider e senha aleatória
+        const randomPassword = Math.random().toString(36).slice(-10);
+        const passwordHash = await bcrypt.hash(randomPassword, 10);
+
+        const newUser = await this.prisma.user.create({
+          data: {
+            tenantId,
+            locationId: dto.locationId,
+            role: Role.provider,
+            name: dto.name,
+            email: dto.email,
+            phone: dto.phone ?? null,
+            passwordHash,
+            active: true,
+          },
+          select: { id: true },
+        });
+
+        userId = newUser.id;
+      }
+    }
+
+    // 3) cria o provider em si
     const provider = await this.prisma.provider.create({
       data: {
         tenantId,
-        userId: dto.userId,
+        userId,
         locationId: dto.locationId,
         name: dto.name,
         specialty: dto.specialty ?? 'other',
@@ -918,5 +978,104 @@ export class ProvidersService {
     }
 
     return { fromDate, toDate };
+  }
+  /**
+   * Lista utilizadores disponíveis para serem vinculados a um provider:
+   * - mesmo tenant
+   * - role = provider
+   * - ativos
+   * - ainda não têm provider associado
+   */
+  async findAvailableUsersForProvider(tenantId: string) {
+    const users = await this.prisma.user.findMany({
+      where: {
+        tenantId,
+        role: Role.provider,
+        active: true,
+        provider: null,
+      },
+      select: {
+        id: true,
+        name: true,
+        email: true,
+        phone: true,
+      },
+      orderBy: { name: 'asc' },
+    });
+
+    return users;
+  }
+  /**
+   * Fluxo simplificado para o dono:
+   * - recebe nome, email, telefone, unidade, especialidade
+   * - cria User (login) + Provider (profissional) numa transação
+   */
+  async createForOwner(tenantId: string, dto: CreateOwnerProviderDto) {
+    // 1) validar location do tenant
+    const location = await this.prisma.location.findFirst({
+      where: { id: dto.locationId, tenantId },
+      select: { id: true },
+    });
+
+    if (!location) {
+      throw new BadRequestException('locationId inválido para este tenant');
+    }
+
+    // 2) validar email único dentro do tenant
+    const existingUser = await this.prisma.user.findFirst({
+      where: {
+        tenantId,
+        email: dto.email,
+      },
+      select: { id: true },
+    });
+
+    if (existingUser) {
+      throw new BadRequestException(
+        'Já existe um utilizador com este email neste tenant',
+      );
+    }
+
+    // 3) gerar uma password aleatória provisória e hash
+    const randomPassword = Math.random().toString(36).slice(-10);
+    const passwordHash = await bcrypt.hash(randomPassword, 10);
+
+    // 4) transação: cria User + Provider
+    const created = await this.prisma.$transaction(async (tx) => {
+      const user = await tx.user.create({
+        data: {
+          tenantId,
+          locationId: dto.locationId,
+          name: dto.name,
+          email: dto.email,
+          phone: dto.phone ?? null,
+          role: Role.provider,
+          passwordHash,
+          active: true,
+        },
+      });
+
+      const provider = await tx.provider.create({
+        data: {
+          tenantId,
+          userId: user.id,
+          locationId: dto.locationId,
+          name: dto.name,
+          specialty: dto.specialty ?? Specialty.other,
+          weekdayTemplate: dto.weekdayTemplate ?? undefined,
+          active: true,
+        },
+        include: {
+          user: true,
+          location: true,
+        },
+      });
+
+      return provider;
+    });
+
+    // TODO: no futuro -> enviar convite por email/whatsapp usando token
+
+    return this.toViewModel(created as ProviderWithUserAndLocation);
   }
 }

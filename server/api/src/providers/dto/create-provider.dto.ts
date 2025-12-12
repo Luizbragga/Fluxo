@@ -3,16 +3,38 @@ import { IsBoolean, IsOptional, IsString, IsEnum } from 'class-validator';
 import { Specialty } from '@prisma/client';
 
 export class CreateProviderDto {
-  @ApiProperty({ example: 'Rafa' })
+  @ApiProperty({ example: 'Rafa Barber' })
   @IsString()
   name!: string;
 
   @ApiProperty({
     example: 'cuid-do-user',
-    description: 'ID do usuário que representa o login deste prestador',
+    description:
+      'ID do usuário que representa o login deste prestador. Opcional – se não for enviado, será criado um usuário novo a partir do email.',
+    required: false,
   })
+  @IsOptional()
   @IsString()
-  userId!: string;
+  userId?: string;
+
+  @ApiProperty({
+    example: 'pro@example.com',
+    description:
+      'Email do utilizador (usado para login) quando ainda não existe userId.',
+    required: false,
+  })
+  @IsOptional()
+  @IsString()
+  email?: string;
+
+  @ApiProperty({
+    example: '+351910000000',
+    description: 'Telefone / WhatsApp do profissional.',
+    required: false,
+  })
+  @IsOptional()
+  @IsString()
+  phone?: string;
 
   @ApiProperty({
     example: 'cuid-da-location',

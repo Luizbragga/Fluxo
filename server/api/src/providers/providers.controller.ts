@@ -21,6 +21,7 @@ import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { RolesGuard } from '../auth/guards/roles.guard';
 import { Roles } from '../auth/decorators/roles.decorator';
 import { Role } from '@prisma/client';
+import { CreateOwnerProviderDto } from './dto/create-owner-provider.dto';
 
 @ApiTags('Providers')
 @ApiBearerAuth()
@@ -35,6 +36,16 @@ export class ProvidersController {
   create(@Req() req: any, @Body() dto: CreateProviderDto) {
     const { tenantId } = req.user as { tenantId: string };
     return this.providersService.create(tenantId, dto);
+  }
+  /**
+   * Fluxo simplificado para o dono:
+   * cria User (login) + Provider (profissional) de uma vez.
+   */
+  @Roles(Role.owner, Role.admin)
+  @Post('owner-create')
+  createForOwner(@Req() req: any, @Body() dto: CreateOwnerProviderDto) {
+    const { tenantId } = req.user as { tenantId: string };
+    return this.providersService.createForOwner(tenantId, dto);
   }
 
   // qualquer autenticado do tenant pode listar (com paginação)
@@ -67,6 +78,13 @@ export class ProvidersController {
       page: pageNum,
       pageSize: pageSizeNum,
     });
+  }
+  // owner/admin podem ver utilizadores disponíveis para virar provider
+  @Roles(Role.owner, Role.admin)
+  @Get('available-users')
+  getAvailableUsers(@Req() req: any) {
+    const { tenantId } = req.user as { tenantId: string };
+    return this.providersService.findAvailableUsersForProvider(tenantId);
   }
 
   // qualquer autenticado do tenant pode ler um provider

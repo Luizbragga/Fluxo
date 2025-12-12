@@ -1,16 +1,43 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { FormEvent, useEffect, useState } from "react";
 import {
   fetchOwnerProfessionals,
   fetchOwnerProviderEarnings,
   fetchOwnerProviderCommissions,
+  fetchOwnerProviderPayouts,
+  upsertOwnerProviderCommission,
+  createOwnerProfessional,
   type OwnerProfessional,
   type OwnerProviderEarningsItem,
   type OwnerProviderCommission,
+  type OwnerProviderPayout,
 } from "../_api/owner-professionals";
+import {
+  fetchOwnerLocations,
+  type OwnerLocation,
+} from "../_api/owner-services";
+import { useRouter } from "next/navigation";
+// ---- Tipos auxiliares ------------------------------------------------------
 
-// --- Tipos de resumo (por enquanto ainda mockados) ---------------------------
+type SpecialtyLiteral =
+  | "barber"
+  | "hairdresser"
+  | "nail"
+  | "esthetic"
+  | "makeup"
+  | "tattoo"
+  | "other";
+
+const SPECIALTY_OPTIONS: { value: SpecialtyLiteral; label: string }[] = [
+  { value: "barber", label: "Barber" },
+  { value: "hairdresser", label: "Cabeleireiro(a)" },
+  { value: "nail", label: "Unhas" },
+  { value: "esthetic", label: "Estética" },
+  { value: "makeup", label: "Maquilhagem" },
+  { value: "tattoo", label: "Tatuagem" },
+  { value: "other", label: "Outra" },
+];
 
 type ProfessionalSummary = {
   id: string;
@@ -19,122 +46,198 @@ type ProfessionalSummary = {
   professionalShareMonth: number;
   spaceShareMonth: number;
 };
-
-type ProfessionalPayoutSummary = {
-  id: string;
-  periodLabel: string;
-  amount: number;
-  status: "pending" | "paid";
-};
-
-// Mock fixo só para a caixinha de “Repasses recentes”.
-// Depois vamos ligar isso no financeiro real.
-const payoutSummaries: ProfessionalPayoutSummary[] = [
-  {
-    id: "1",
-    periodLabel: "Período 18–24 Nov · 12 atendimentos",
-    amount: 210,
-    status: "pending",
-  },
-  {
-    id: "2",
-    periodLabel: "Período 11–17 Nov · pago",
-    amount: 180,
-    status: "paid",
-  },
-];
-
-// gera um resumo “bonitinho” a partir da posição na lista,
-// só pra não ficar tudo 0 enquanto o endpoint de analytics não existe
-function buildMockSummaryFor(
-  professional: OwnerProfessional,
-  index: number
-): ProfessionalSummary {
-  const baseAppointments = 40 + index * 12;
-  const totalRevenueMonth = 1000 + index * 450;
-  const professionalShareMonth = Math.round(totalRevenueMonth * 0.6);
-  const spaceShareMonth = totalRevenueMonth - professionalShareMonth;
-
-  return {
-    id: professional.id,
-    totalAppointmentsMonth: baseAppointments,
-    totalRevenueMonth,
-    professionalShareMonth,
-    spaceShareMonth,
-  };
-}
+type PeriodFilter = "day" | "week" | "month";
 
 export default function OwnerProfessionalsPage() {
+  const router = useRouter();
+  const [period, setPeriod] = useState<PeriodFilter>("month");
+  // lista + seleção
   const [professionals, setProfessionals] = useState<OwnerProfessional[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
+
+  // estado de carregamento/erro geral
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+
+  // earnings agregados
   const [providerEarnings, setProviderEarnings] = useState<
     OwnerProviderEarningsItem[]
   >([]);
+
+  // comissões e repasses
   const [commissions, setCommissions] = useState<OwnerProviderCommission[]>([]);
+  const [isCommissionEditorOpen, setIsCommissionEditorOpen] = useState(false);
+  const [commissionPercentageInput, setCommissionPercentageInput] =
+    useState<string>("50");
 
-  // carrega profissionais reais do tenant
-  // carrega profissionais reais do tenant + earnings agregados
-  useEffect(() => {
-    async function load() {
-      try {
-        // 1) Profissionais (lista principal)
-        const data = await fetchOwnerProfessionals();
-        setProfessionals(data);
-        setSelectedId(data[0]?.id ?? null);
-        setError(null);
-      } catch (err: any) {
-        console.error(err);
-        setError(
-          err?.message ?? "Erro ao carregar profissionais. Tente novamente."
-        );
-      } finally {
-        setLoading(false);
-      }
+  const [payouts, setPayouts] = useState<OwnerProviderPayout[]>([]);
+  const [payoutsLoading, setPayoutsLoading] = useState(false);
+  const [payoutsError, setPayoutsError] = useState<string | null>(null);
 
-      // 2) Earnings por provider (não bloqueia a tela se der erro)
-      try {
-        const earnings = await fetchOwnerProviderEarnings();
-        setProviderEarnings(earnings);
-      } catch (err) {
-        console.error(
-          "Falha ao carregar resumo financeiro dos providers:",
-          err
-        );
-        // se falhar, seguimos usando o mock para os cards
-      }
+  // unidades (locations)
+  const [locations, setLocations] = useState<OwnerLocation[]>([]);
+
+  // modal de criação de profissional
+  const [isCreateOpen, setIsCreateOpen] = useState(false);
+  const [createName, setCreateName] = useState("");
+  const [createEmail, setCreateEmail] = useState("");
+  const [createPhone, setCreatePhone] = useState("");
+  const [createLocationId, setCreateLocationId] = useState<string>("");
+  const [createSpecialty, setCreateSpecialty] =
+    useState<SpecialtyLiteral>("barber");
+  const [createLoading, setCreateLoading] = useState(false);
+  const [createError, setCreateError] = useState<string | null>(null);
+
+  // ---------------------------------------------------------------------------
+  // Carga inicial (profissionais + earnings + locations)
+  // ---------------------------------------------------------------------------
+  function getRangeForPeriod(period: PeriodFilter): {
+    from: string;
+    to: string;
+  } {
+    const now = new Date();
+
+    // Trabalhar sempre em UTC pra bater com o backend
+    const year = now.getUTCFullYear();
+    const month = now.getUTCMonth();
+    const day = now.getUTCDate();
+
+    if (period === "day") {
+      const fromDate = new Date(Date.UTC(year, month, day, 0, 0, 0));
+      const toDate = new Date(Date.UTC(year, month, day + 1, 0, 0, 0));
+      return { from: fromDate.toISOString(), to: toDate.toISOString() };
     }
 
-    load();
-  }, []); // sem dependências
-  // carrega regras de comissão sempre que o profissional selecionado muda
+    if (period === "week") {
+      // aqui vou assumir "últimos 7 dias" (hoje incluído)
+      const toDate = new Date(Date.UTC(year, month, day + 1, 0, 0, 0)); // amanhã 00:00
+      const fromDate = new Date(toDate.getTime() - 7 * 24 * 60 * 60 * 1000);
+      return { from: fromDate.toISOString(), to: toDate.toISOString() };
+    }
+
+    // "month" -> mês atual
+    const fromDate = new Date(Date.UTC(year, month, 1, 0, 0, 0));
+    const toDate = new Date(Date.UTC(year, month + 1, 1, 0, 0, 0));
+    return { from: fromDate.toISOString(), to: toDate.toISOString() };
+  }
+
+  async function loadAll(selectId?: string, periodOverride?: PeriodFilter) {
+    try {
+      setLoading(true);
+
+      const effectivePeriod = periodOverride ?? period;
+      const { from, to } = getRangeForPeriod(effectivePeriod);
+
+      const [professionalsData, earningsData, locationsData] =
+        await Promise.all([
+          fetchOwnerProfessionals(),
+          fetchOwnerProviderEarnings({ from, to }),
+          fetchOwnerLocations(),
+        ]);
+
+      // 1) descobrir o maior nº de atendimentos entre todos os providers
+      const maxAppointments = earningsData.reduce(
+        (max, item) =>
+          item.appointmentsCount > max ? item.appointmentsCount : max,
+        0
+      );
+
+      // 2) calcular a ocupação relativa (0–100) para cada profissional
+      const professionalsWithOccupation =
+        maxAppointments > 0
+          ? professionalsData.map((pro) => {
+              const providerEarning = earningsData.find(
+                (e) => e.providerId === pro.id
+              );
+
+              const occupation = providerEarning
+                ? Math.round(
+                    (providerEarning.appointmentsCount / maxAppointments) * 100
+                  )
+                : 0;
+
+              return {
+                ...pro,
+                averageOccupation: occupation,
+              };
+            })
+          : professionalsData.map((pro) => ({
+              ...pro,
+              averageOccupation: 0,
+            }));
+
+      setProfessionals(professionalsWithOccupation);
+      setProviderEarnings(earningsData);
+      setLocations(locationsData);
+
+      if (professionalsWithOccupation.length === 0) {
+        setSelectedId(null);
+      } else if (selectId) {
+        setSelectedId(selectId);
+      } else {
+        setSelectedId(professionalsWithOccupation[0].id);
+      }
+
+      setError(null);
+    } catch (err: any) {
+      console.error("Erro ao carregar profissionais/earnings/locations:", err);
+      setError(
+        err?.message ?? "Erro ao carregar profissionais. Tente novamente."
+      );
+    } finally {
+      setLoading(false);
+    }
+  }
+  useEffect(() => {
+    loadAll(undefined, period);
+  }, [period]);
+
+  // ---------------------------------------------------------------------------
+  // Carrega comissões + repasses quando muda o selecionado
+  // ---------------------------------------------------------------------------
+
   useEffect(() => {
     if (!selectedId) {
       setCommissions([]);
+      setPayouts([]);
+      setPayoutsError(null);
+      setPayoutsLoading(false);
       return;
     }
 
-    async function loadCommissions() {
+    async function loadCommissionsAndPayouts() {
+      setPayoutsLoading(true);
+
       try {
-        const data = await fetchOwnerProviderCommissions(selectedId!);
-        setCommissions(data);
-      } catch (err) {
-        console.error("Erro ao carregar comissões do provider:", err);
-        // se der erro, mantemos lista vazia para não quebrar a tela
-        setCommissions([]);
+        const [commissionsData, payoutsData] = await Promise.all([
+          fetchOwnerProviderCommissions(selectedId),
+          fetchOwnerProviderPayouts(selectedId),
+        ]);
+
+        setCommissions(commissionsData);
+        setPayouts(payoutsData);
+        setPayoutsError(null);
+      } catch (err: any) {
+        console.error("Erro ao carregar comissões/repasses do provider:", err);
+        setPayouts([]);
+        setPayoutsError(
+          err?.message ?? "Erro ao carregar repasses. Tente novamente."
+        );
+      } finally {
+        setPayoutsLoading(false);
       }
     }
 
-    loadCommissions();
+    loadCommissionsAndPayouts();
   }, [selectedId]);
+
+  // ---------------------------------------------------------------------------
+  // Derivados
+  // ---------------------------------------------------------------------------
 
   const selectedProfessional =
     professionals.find((p) => p.id === selectedId) ?? null;
 
-  const selectedIndex = professionals.findIndex((p) => p.id === selectedId);
-
-  // earnings reais para o profissional selecionado (se existir no relatório)
   const selectedEarnings =
     selectedProfessional &&
     providerEarnings.find((e) => e.providerId === selectedProfessional.id);
@@ -154,10 +257,136 @@ export default function OwnerProfessionalsPage() {
             selectedEarnings.houseEarningsCents / 100
           ),
         }
-      : selectedIndex >= 0
-      ? buildMockSummaryFor(selectedProfessional, selectedIndex)
-      : null
+      : {
+          // sem earnings ainda -> tudo zerado
+          id: selectedProfessional.id,
+          totalAppointmentsMonth: 0,
+          totalRevenueMonth: 0,
+          professionalShareMonth: 0,
+          spaceShareMonth: 0,
+        }
     : null;
+  const selectedOccupation = selectedEarnings?.occupationPercentage ?? 0;
+
+  // ---------------------------------------------------------------------------
+  // Comissão
+  // ---------------------------------------------------------------------------
+
+  function handleOpenCommissionEditor() {
+    if (!selectedProfessional) return;
+
+    const defaultCommission = commissions.find((c) => !c.service);
+
+    if (defaultCommission) {
+      setCommissionPercentageInput(String(defaultCommission.percentage));
+    } else {
+      setCommissionPercentageInput("50");
+    }
+
+    setIsCommissionEditorOpen(true);
+  }
+
+  async function handleSaveCommission() {
+    if (!selectedProfessional) return;
+
+    const percentage = Number(commissionPercentageInput);
+
+    if (Number.isNaN(percentage) || percentage < 0 || percentage > 100) {
+      alert("Percentual deve ser um número entre 0 e 100.");
+      return;
+    }
+
+    try {
+      await upsertOwnerProviderCommission(selectedProfessional.id, {
+        serviceId: null, // regra padrão (todos os serviços)
+        percentage,
+        active: true,
+      });
+
+      const data = await fetchOwnerProviderCommissions(selectedProfessional.id);
+      setCommissions(data);
+
+      setIsCommissionEditorOpen(false);
+    } catch (err) {
+      console.error("Erro ao guardar comissão:", err);
+      alert("Erro ao guardar regra de comissão. Tente novamente.");
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Criação de profissional
+  // ---------------------------------------------------------------------------
+
+  function openCreateModal() {
+    setCreateName("");
+    setCreateEmail("");
+    setCreatePhone("");
+    setCreateSpecialty("barber");
+
+    // tenta pré-selecionar a mesma unidade do profissional atual
+    if (selectedProfessional?.locationId) {
+      setCreateLocationId(selectedProfessional.locationId);
+    } else if (locations[0]) {
+      setCreateLocationId(locations[0].id);
+    } else {
+      setCreateLocationId("");
+    }
+
+    setCreateError(null);
+    setIsCreateOpen(true);
+  }
+
+  function closeCreateModal() {
+    setIsCreateOpen(false);
+  }
+
+  async function handleCreateProfessional(e: FormEvent) {
+    e.preventDefault();
+    if (createLoading) return;
+
+    if (!createName.trim()) {
+      setCreateError("Nome do profissional é obrigatório.");
+      return;
+    }
+    if (!createEmail.trim()) {
+      setCreateError("Email é obrigatório (para login e convite).");
+      return;
+    }
+    if (!createPhone.trim()) {
+      setCreateError("Telefone é obrigatório.");
+      return;
+    }
+    if (!createLocationId) {
+      setCreateError("Selecione uma unidade.");
+      return;
+    }
+
+    try {
+      setCreateLoading(true);
+      setCreateError(null);
+
+      const newProfessional = await createOwnerProfessional({
+        name: createName.trim(),
+        email: createEmail.trim(),
+        phone: createPhone.trim(),
+        locationId: createLocationId,
+        specialty: createSpecialty,
+      });
+
+      // recarrega lista e já seleciona o novo
+      await loadAll(newProfessional.id);
+      closeCreateModal();
+    } catch (err: any) {
+      console.error("Erro ao criar profissional:", err);
+      setCreateError(
+        err?.message ?? "Erro ao criar profissional. Tente novamente."
+      );
+    } finally {
+      setCreateLoading(false);
+    }
+  }
+
+  // ---------------------------------------------------------------------------
 
   return (
     <>
@@ -169,12 +398,39 @@ export default function OwnerProfessionalsPage() {
             Gestão da equipa, ocupação, comissões e repasses.
           </p>
         </div>
+        <div className="flex flex-wrap gap-2 text-xs">
+          <div className="inline-flex rounded-lg border border-slate-800 bg-slate-900/80 p-[2px]">
+            {(["day", "week", "month"] as PeriodFilter[]).map((p) => (
+              <button
+                key={p}
+                type="button"
+                onClick={() => setPeriod(p)}
+                className={[
+                  "px-2 py-1 rounded-md text-[11px]",
+                  period === p
+                    ? "bg-slate-800 text-slate-100"
+                    : "text-slate-400 hover:text-slate-100",
+                ].join(" ")}
+              >
+                {p === "day" ? "Dia" : p === "week" ? "Semana" : "Mês"}
+              </button>
+            ))}
+          </div>
+
+          <select className="px-3 py-1 rounded-lg border border-slate-800 bg-slate-900/80 text-slate-200">
+            <option>Unidade atual do tenant</option>
+          </select>
+        </div>
 
         <div className="flex flex-wrap gap-2 text-xs">
           <select className="px-3 py-1 rounded-lg border border-slate-800 bg-slate-900/80 text-slate-200">
             <option>Unidade atual do tenant</option>
           </select>
-          <button className="px-3 py-1 rounded-lg border border-emerald-600 bg-emerald-600/20 text-emerald-200">
+          <button
+            className="px-3 py-1 rounded-lg border border-emerald-600 bg-emerald-600/20 text-emerald-200 hover:bg-emerald-600/30"
+            type="button"
+            onClick={openCreateModal}
+          >
             + Adicionar profissional
           </button>
         </div>
@@ -186,7 +442,11 @@ export default function OwnerProfessionalsPage() {
         <div className="lg:col-span-1 rounded-2xl border border-slate-800 bg-slate-900/60 p-4">
           <div className="flex items-center justify-between mb-3 text-xs">
             <p className="text-slate-400">Lista de profissionais</p>
-            <button className="text-[11px] text-emerald-400 hover:underline">
+            <button
+              type="button"
+              className="text-[11px] text-emerald-400 hover:underline"
+              onClick={() => router.push("/owner/relatorios?view=occupation")}
+            >
               Ver todos os estados
             </button>
           </div>
@@ -213,6 +473,11 @@ export default function OwnerProfessionalsPage() {
               {professionals.map((pro) => {
                 const isSelected = pro.id === selectedId;
 
+                const proEarnings = providerEarnings.find(
+                  (e) => e.providerId === pro.id
+                );
+                const occupation = proEarnings?.occupationPercentage ?? 0;
+
                 return (
                   <button
                     key={pro.id}
@@ -236,9 +501,8 @@ export default function OwnerProfessionalsPage() {
                       </div>
                       <div className="text-right">
                         <p className="text-[11px] text-slate-400">Ocupação</p>
-                        <p className="text-sm font-semibold">
-                          {pro.averageOccupation}%
-                        </p>
+                        <p className="text-sm font-semibold">{occupation}%</p>
+
                         <span
                           className={[
                             "inline-flex mt-1 rounded-full px-2 py-[1px] text-[9px]",
@@ -278,7 +542,7 @@ export default function OwnerProfessionalsPage() {
                   <div className="text-right text-xs">
                     <p className="text-slate-400">Ocupação média</p>
                     <p className="text-lg font-semibold">
-                      {selectedProfessional.averageOccupation}%
+                      {selectedOccupation}%
                     </p>
                   </div>
                 </div>
@@ -327,13 +591,86 @@ export default function OwnerProfessionalsPage() {
 
           {/* Repasses / comissão */}
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            {/* Repasses recentes */}
             <div className="rounded-2xl border border-slate-800 bg-slate-900/60 p-4 text-xs">
               <div className="flex items-center justify-between mb-3">
                 <p className="text-slate-400">Repasses recentes</p>
-                <button className="text-[11px] text-emerald-400 hover:underline">
+                <button
+                  type="button"
+                  className="text-[11px] text-emerald-400 hover:underline"
+                  onClick={() => router.push("/owner/relatorios?view=payouts")}
+                >
                   Ver todos
                 </button>
               </div>
+
+              {!selectedProfessional ? (
+                <p className="text-[11px] text-slate-400">
+                  Selecione um profissional para ver os repasses.
+                </p>
+              ) : payoutsLoading ? (
+                <p className="text-[11px] text-slate-400">
+                  Carregando repasses…
+                </p>
+              ) : payoutsError ? (
+                <p className="text-[11px] text-rose-400">{payoutsError}</p>
+              ) : payouts.length === 0 ? (
+                <p className="text-[11px] text-slate-400">
+                  Ainda não há repasses registados para{" "}
+                  <span className="font-medium text-slate-200">
+                    {selectedProfessional.name}
+                  </span>
+                  .
+                </p>
+              ) : (
+                <div className="space-y-2">
+                  {payouts.map((payout) => (
+                    <div
+                      key={payout.id}
+                      className={[
+                        "rounded-xl border px-3 py-2 flex items-center justify-between",
+                        payout.status === "pending"
+                          ? "border-amber-500/40 bg-amber-500/10"
+                          : "border-slate-800 bg-slate-950/60 opacity-80",
+                      ].join(" ")}
+                    >
+                      <div>
+                        <p className="text-[11px] text-slate-300">
+                          {payout.periodLabel}
+                        </p>
+                        <p className="text-sm font-semibold">
+                          € {payout.amount}
+                        </p>
+                      </div>
+                      <span
+                        className={[
+                          "text-[10px] px-2 py-[1px] rounded-full",
+                          payout.status === "pending"
+                            ? "bg-amber-500/30 text-amber-100"
+                            : "bg-emerald-500/20 text-emerald-100",
+                        ].join(" ")}
+                      >
+                        {payout.status === "pending" ? "Pendente" : "Pago"}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            {/* Regras de comissão */}
+            <div className="rounded-2xl border border-slate-800 bg-slate-900/60 p-4 text-xs">
+              <div className="flex items-center justify-between mb-3">
+                <p className="text-slate-400">Regras de comissão</p>
+                <button
+                  className="text-[11px] text-emerald-400 hover:underline disabled:opacity-40"
+                  onClick={handleOpenCommissionEditor}
+                  disabled={!selectedProfessional}
+                >
+                  Gerir comissão
+                </button>
+              </div>
+
               <div className="space-y-2">
                 {!selectedProfessional ? (
                   <p className="text-[11px] text-slate-400">
@@ -345,7 +682,7 @@ export default function OwnerProfessionalsPage() {
                     <span className="font-medium text-slate-300">
                       {selectedProfessional.name}
                     </span>
-                    .{" "}
+                    .
                     <span className="block mt-1">
                       Use o botão{" "}
                       <span className="font-semibold">“Gerir comissão”</span>{" "}
@@ -372,43 +709,170 @@ export default function OwnerProfessionalsPage() {
                     </div>
                   ))
                 )}
-              </div>
-            </div>
 
-            <div className="rounded-2xl border border-slate-800 bg-slate-900/60 p-4 text-xs">
-              <div className="flex items-center justify-between mb-3">
-                <p className="text-slate-400">Regras de comissão</p>
-                <button className="text-[11px] text-emerald-400 hover:underline">
-                  Gerir comissão
-                </button>
-              </div>
-              <div className="space-y-2">
-                <div className="rounded-xl border border-slate-800 bg-slate-950/60 px-3 py-2">
-                  <p className="text-[11px] text-slate-300">Corte masculino</p>
-                  <p className="text-[11px] text-slate-400">
-                    50% do valor do serviço para o profissional
-                  </p>
-                </div>
-                <div className="rounded-xl border border-slate-800 bg-slate-950/60 px-3 py-2">
-                  <p className="text-[11px] text-slate-300">
-                    Serviços de plano
-                  </p>
-                  <p className="text-[11px] text-slate-400">
-                    Comissão fixa por visita ou percentagem do plano
-                  </p>
-                </div>
-                <div className="rounded-xl border border-dashed border-slate-700/80 bg-slate-950/40 px-3 py-2 text-[11px] text-slate-500">
-                  Depois vamos puxar essas regras de{" "}
-                  <span className="font-mono text-[10px]">
-                    ProviderCommission
-                  </span>{" "}
-                  e permitir edição visual aqui.
-                </div>
+                {isCommissionEditorOpen && selectedProfessional && (
+                  <div className="mt-3 rounded-xl border border-slate-700 bg-slate-950/90 p-3 space-y-2">
+                    <p className="text-[11px] text-slate-300">
+                      Editar comissão padrão de{" "}
+                      <span className="font-semibold">
+                        {selectedProfessional.name}
+                      </span>
+                      .
+                    </p>
+
+                    <div className="flex items-center gap-2 text-[11px] text-slate-400">
+                      <label className="flex items-center gap-2">
+                        <span>Percentual (%)</span>
+                        <input
+                          type="number"
+                          min={0}
+                          max={100}
+                          value={commissionPercentageInput}
+                          onChange={(e) =>
+                            setCommissionPercentageInput(e.target.value)
+                          }
+                          className="w-20 rounded-md border border-slate-700 bg-slate-900 px-2 py-1 text-xs text-slate-100 focus:outline-none focus:ring-1 focus:ring-emerald-500"
+                        />
+                      </label>
+                    </div>
+
+                    <div className="flex justify-end gap-2 text-[11px]">
+                      <button
+                        type="button"
+                        className="px-3 py-1 rounded-lg border border-slate-700 bg-slate-900 text-slate-300 hover:border-slate-500"
+                        onClick={() => setIsCommissionEditorOpen(false)}
+                      >
+                        Cancelar
+                      </button>
+                      <button
+                        type="button"
+                        className="px-3 py-1 rounded-lg border border-emerald-600 bg-emerald-600/20 text-emerald-100 hover:bg-emerald-600/30"
+                        onClick={handleSaveCommission}
+                      >
+                        Guardar
+                      </button>
+                    </div>
+                  </div>
+                )}
               </div>
             </div>
           </div>
         </div>
       </section>
+
+      {/* Modal de criação de profissional */}
+      {isCreateOpen && (
+        <div className="fixed inset-0 z-40 flex items-center justify-center bg-black/60">
+          <div className="w-full max-w-md rounded-2xl border border-slate-800 bg-slate-900 p-5 shadow-xl">
+            <div className="mb-4 flex items-center justify-between">
+              <h2 className="text-sm font-semibold">Adicionar profissional</h2>
+              <button
+                className="text-xs text-slate-400 hover:text-slate-200"
+                type="button"
+                onClick={closeCreateModal}
+              >
+                Fechar
+              </button>
+            </div>
+
+            <form className="space-y-3" onSubmit={handleCreateProfessional}>
+              <div className="space-y-1 text-xs">
+                <label className="block text-slate-300">
+                  Nome do profissional
+                </label>
+                <input
+                  className="w-full rounded-lg border border-slate-800 bg-slate-950/80 px-3 py-2 text-[11px] text-slate-100 focus:outline-none focus:ring-1 focus:ring-emerald-500"
+                  placeholder="Ex.: Rafa Barber"
+                  value={createName}
+                  onChange={(e) => setCreateName(e.target.value)}
+                />
+              </div>
+
+              <div className="space-y-1 text-xs">
+                <label className="block text-slate-300">
+                  Email (login do profissional)
+                </label>
+                <input
+                  type="email"
+                  className="w-full rounded-lg border border-slate-800 bg-slate-950/80 px-3 py-2 text-[11px] text-slate-100 focus:outline-none focus:ring-1 focus:ring-emerald-500"
+                  placeholder="email@exemplo.com"
+                  value={createEmail}
+                  onChange={(e) => setCreateEmail(e.target.value)}
+                />
+                <p className="text-[10px] text-slate-500">
+                  Vamos usar este email para o login e, no futuro, para enviar o
+                  convite de acesso.
+                </p>
+              </div>
+
+              <div className="space-y-1 text-xs">
+                <label className="block text-slate-300">Telefone</label>
+                <input
+                  className="w-full rounded-lg border border-slate-800 bg-slate-950/80 px-3 py-2 text-[11px] text-slate-100 focus:outline-none focus:ring-1 focus:ring-emerald-500"
+                  placeholder="Telemóvel / WhatsApp"
+                  value={createPhone}
+                  onChange={(e) => setCreatePhone(e.target.value)}
+                />
+              </div>
+
+              <div className="space-y-1 text-xs">
+                <label className="block text-slate-300">Unidade</label>
+                <select
+                  className="w-full rounded-lg border border-slate-800 bg-slate-950/80 px-3 py-2 text-[11px] text-slate-100 focus:outline-none focus:ring-1 focus:ring-emerald-500"
+                  value={createLocationId}
+                  onChange={(e) => setCreateLocationId(e.target.value)}
+                >
+                  <option value="">Selecione uma unidade…</option>
+                  {locations.map((loc) => (
+                    <option key={loc.id} value={loc.id}>
+                      {loc.name}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              <div className="space-y-1 text-xs">
+                <label className="block text-slate-300">Especialidade</label>
+                <select
+                  className="w-full rounded-lg border border-slate-800 bg-slate-950/80 px-3 py-2 text-[11px] text-slate-100 focus:outline-none focus:ring-1 focus:ring-emerald-500"
+                  value={createSpecialty}
+                  onChange={(e) =>
+                    setCreateSpecialty(e.target.value as SpecialtyLiteral)
+                  }
+                >
+                  {SPECIALTY_OPTIONS.map((opt) => (
+                    <option key={opt.value} value={opt.value}>
+                      {opt.label}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              {createError && (
+                <p className="text-[11px] text-rose-400">{createError}</p>
+              )}
+
+              <div className="mt-4 flex justify-end gap-2 text-[11px]">
+                <button
+                  type="button"
+                  className="px-3 py-1 rounded-lg border border-slate-700 bg-slate-900 text-slate-300 hover:border-slate-500"
+                  onClick={closeCreateModal}
+                  disabled={createLoading}
+                >
+                  Cancelar
+                </button>
+                <button
+                  type="submit"
+                  className="px-3 py-1 rounded-lg border border-emerald-600 bg-emerald-600/20 text-emerald-100 hover:bg-emerald-600/30 disabled:opacity-60"
+                  disabled={createLoading}
+                >
+                  {createLoading ? "Guardando…" : "Guardar"}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
     </>
   );
 }

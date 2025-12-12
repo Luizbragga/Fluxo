@@ -36,23 +36,86 @@ type ProvidersListResponse = {
   };
 };
 
-// ---------------------- Tipo usado pela tela do owner ----------------------
+// ---------------------- Template padrão de horário ----------------------
+// Seg–Sáb, 08:00–12:00 e 14:00–20:00; Domingo fechado.
+
+const DEFAULT_WEEKDAY_TEMPLATE: Record<string, [string, string][]> = {
+  mon: [
+    ["08:00", "12:00"],
+    ["14:00", "20:00"],
+  ],
+  tue: [
+    ["08:00", "12:00"],
+    ["14:00", "20:00"],
+  ],
+  wed: [
+    ["08:00", "12:00"],
+    ["14:00", "20:00"],
+  ],
+  thu: [
+    ["08:00", "12:00"],
+    ["14:00", "20:00"],
+  ],
+  fri: [
+    ["08:00", "12:00"],
+    ["14:00", "20:00"],
+  ],
+  sat: [
+    ["08:00", "12:00"],
+    ["14:00", "20:00"],
+  ],
+  sun: [], // sem atendimento
+};
+
+// ---------------------- Tipos usados pela tela do owner ----------------------
 
 export type OwnerProfessional = {
   id: string;
   name: string;
   specialty: string;
+  locationId: string;
   locationName: string;
   isActive: boolean;
   // 0–100 – por enquanto ainda não calculamos de verdade
   averageOccupation: number;
 };
 
+export type CreateOwnerProfessionalInput = {
+  name: string;
+  email: string;
+  phone: string;
+  locationId: string;
+  specialty?:
+    | "barber"
+    | "hairdresser"
+    | "nail"
+    | "esthetic"
+    | "makeup"
+    | "tattoo"
+    | "other";
+  weekdayTemplate?: Record<string, [string, string][]>;
+};
+
+// (ainda não estamos usando, mas deixamos preparado)
+export type OwnerAvailableUser = {
+  id: string;
+  name: string | null;
+  email: string;
+  phone: string | null;
+};
+
 // ---------------------- Lista de profissionais ----------------------
 
+export async function fetchOwnerAvailableProviderUsers(): Promise<
+  OwnerAvailableUser[]
+> {
+  const data = await apiClient<OwnerAvailableUser[]>(
+    "/providers/available-users"
+  );
+  return data;
+}
+
 export async function fetchOwnerProfessionals(): Promise<OwnerProfessional[]> {
-  // apiClient é função, sem .get / .post
-  // Paginação simples por query string
   const response = await apiClient<ProvidersListResponse>(
     "/providers?page=1&pageSize=50"
   );
@@ -63,9 +126,9 @@ export async function fetchOwnerProfessionals(): Promise<OwnerProfessional[]> {
     id: provider.id,
     name: provider.name,
     specialty: provider.specialty ?? "Profissional",
+    locationId: provider.location?.id ?? "",
     locationName: provider.location?.name ?? "Unidade do tenant",
     isActive: provider.active,
-    // valor REAL por enquanto: ainda não temos cálculo de ocupação
     averageOccupation: 0,
   }));
 }
@@ -80,6 +143,11 @@ export type OwnerProviderEarningsItem = {
   providerEarningsCents: number;
   houseEarningsCents: number;
   appointmentsCount: number;
+
+  // novos campos vindos do backend
+  workedMinutes: number; // minutos trabalhados (já em slots de 15 min)
+  availableMinutes: number; // minutos disponíveis no período, pelo template
+  occupationPercentage: number; // 0–100
 };
 
 type OwnerProviderEarningsResponse = {
@@ -93,19 +161,29 @@ type OwnerProviderEarningsResponse = {
   providers: OwnerProviderEarningsItem[];
 };
 
-/**
- * Busca earnings por provider para o mês atual (default do backend).
- * Usa /reports/provider-earnings.
- */
-export async function fetchOwnerProviderEarnings(): Promise<
-  OwnerProviderEarningsItem[]
-> {
-  const response = await apiClient<OwnerProviderEarningsResponse>(
-    "/reports/provider-earnings"
-  );
+export async function fetchOwnerProviderEarnings(params?: {
+  from?: string;
+  to?: string;
+}): Promise<OwnerProviderEarningsItem[]> {
+  const query = new URLSearchParams();
+
+  if (params?.from) {
+    query.set("from", params.from);
+  }
+  if (params?.to) {
+    query.set("to", params.to);
+  }
+
+  const path =
+    query.toString().length > 0
+      ? `/reports/provider-earnings?${query.toString()}`
+      : "/reports/provider-earnings";
+
+  const response = await apiClient<OwnerProviderEarningsResponse>(path);
 
   return response.providers ?? [];
 }
+
 // ---------------------- Comissões por provider -----------------------------
 
 export type OwnerProviderCommission = {
@@ -120,10 +198,12 @@ export type OwnerProviderCommission = {
   } | null;
 };
 
-/**
- * Busca regras de comissão de um provider específico.
- * Usa GET /providers/:id/commissions
- */
+export type UpsertProviderCommissionPayload = {
+  serviceId?: string | null;
+  percentage: number;
+  active?: boolean;
+};
+
 export async function fetchOwnerProviderCommissions(
   providerId: string
 ): Promise<OwnerProviderCommission[]> {
@@ -131,6 +211,137 @@ export async function fetchOwnerProviderCommissions(
     `/providers/${providerId}/commissions`
   );
 
-  // o backend já devolve array direto
   return response ?? [];
+}
+
+export async function upsertOwnerProviderCommission(
+  providerId: string,
+  payload: UpsertProviderCommissionPayload
+): Promise<OwnerProviderCommission> {
+  const result = await apiClient<OwnerProviderCommission>(
+    `/providers/${providerId}/commissions`,
+    {
+      method: "POST",
+      body: payload,
+    }
+  );
+
+  return result;
+}
+
+// ---------------------- Repasses recentes por provider ----------------------
+
+type ProviderPayoutsResponse = {
+  from: string;
+  to: string;
+  items: {
+    provider?: { id: string; name: string } | null;
+    providerEarningsCents: number;
+    payoutStatus: "pending" | "paid" | string;
+  }[];
+};
+
+export type OwnerProviderPayout = {
+  id: string;
+  periodLabel: string;
+  amount: number; // em euros
+  status: "pending" | "paid";
+};
+
+function formatShortDate(date: Date) {
+  return date.toLocaleDateString("pt-PT", {
+    day: "2-digit",
+    month: "short",
+  });
+}
+
+export async function fetchOwnerProviderPayouts(
+  providerId: string
+): Promise<OwnerProviderPayout[]> {
+  const query = new URLSearchParams({ providerId }).toString();
+
+  const response = await apiClient<ProviderPayoutsResponse>(
+    `/reports/provider-payouts?${query}`
+  );
+
+  const fromDate = new Date(response.from);
+  const toDate = new Date(response.to);
+
+  let pendingCents = 0;
+  let paidCents = 0;
+
+  for (const item of response.items ?? []) {
+    const status =
+      (item.payoutStatus as string) === "paid" ? "paid" : "pending";
+
+    if (status === "paid") {
+      paidCents += item.providerEarningsCents;
+    } else {
+      pendingCents += item.providerEarningsCents;
+    }
+  }
+
+  const results: OwnerProviderPayout[] = [];
+
+  if (pendingCents > 0) {
+    results.push({
+      id: `${providerId}-pending`,
+      periodLabel: `Período ${formatShortDate(fromDate)} – ${formatShortDate(
+        toDate
+      )} · repasses pendentes`,
+      amount: pendingCents / 100,
+      status: "pending",
+    });
+  }
+
+  if (paidCents > 0) {
+    results.push({
+      id: `${providerId}-paid`,
+      periodLabel: `Período ${formatShortDate(fromDate)} – ${formatShortDate(
+        toDate
+      )} · repasses pagos`,
+      amount: paidCents / 100,
+      status: "paid",
+    });
+  }
+
+  return results;
+}
+
+// --- Criar novo profissional (Provider) --------------------
+
+type ProviderApiResponse = {
+  id: string;
+  name: string;
+  specialty: string;
+  active: boolean;
+  location?: {
+    id: string;
+    name: string;
+  } | null;
+};
+
+export async function createOwnerProfessional(
+  input: CreateOwnerProfessionalInput
+): Promise<OwnerProfessional> {
+  const provider = await apiClient<ProviderApiResponse>("/providers", {
+    method: "POST",
+    body: {
+      ...input,
+      active: true,
+      weekdayTemplate: input.weekdayTemplate ?? DEFAULT_WEEKDAY_TEMPLATE,
+    },
+  });
+
+  const ownerProfessional: OwnerProfessional = {
+    id: provider.id,
+    name: provider.name,
+    specialty: provider.specialty,
+    locationId: provider.location?.id ?? "",
+    locationName: provider.location?.name ?? "Sem unidade",
+    averageOccupation: 0,
+    isActive: provider.active,
+  };
+
+  return ownerProfessional;
 }

@@ -158,4 +158,54 @@ export class ReportsController {
       locationId,
     });
   }
+  @Roles(Role.owner, Role.admin)
+  @Get('cancellations')
+  @ApiQuery({
+    name: 'from',
+    required: false,
+    type: String,
+    example: '2025-11-01T00:00:00.000Z',
+  })
+  @ApiQuery({
+    name: 'to',
+    required: false,
+    type: String,
+    example: '2025-12-01T00:00:00.000Z',
+  })
+  @ApiQuery({
+    name: 'locationId',
+    required: false,
+    type: String,
+    example: 'cmi8loc0000...',
+  })
+  @ApiQuery({
+    name: 'providerId',
+    required: false,
+    type: String,
+    example: 'cmi8prov0000...',
+  })
+  @ApiQuery({
+    name: 'type',
+    required: false,
+    enum: ['cancelled', 'no_show'],
+  })
+  async getCancellationsAndNoShows(
+    @Req() req: any,
+    @Query('from') from?: string,
+    @Query('to') to?: string,
+    @Query('locationId') locationId?: string,
+    @Query('providerId') providerId?: string,
+    @Query('type') type?: 'cancelled' | 'no_show',
+  ) {
+    const { tenantId } = req.user as { tenantId: string };
+
+    return this.reportsService.getCancellationsAndNoShows({
+      tenantId,
+      from,
+      to,
+      locationId,
+      providerId,
+      type,
+    });
+  }
 }
