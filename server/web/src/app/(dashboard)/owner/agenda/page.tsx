@@ -16,6 +16,10 @@ import {
   fetchOwnerServicesForAppointment,
   type OwnerServiceForAppointment,
 } from "../_api/owner-appointments";
+import {
+  fetchOwnerLocations,
+  type OwnerLocation,
+} from "../_api/owner-services";
 
 type PendingAppointmentSlot = {
   time: string;
@@ -51,8 +55,8 @@ const timeSlots = [
   "19:00",
   "19:30",
   "20:00",
-  "20:30",
 ];
+
 // manhã = horários antes das 14:00
 const morningSlots = timeSlots.filter((t) => t < "14:00");
 
@@ -65,11 +69,17 @@ export default function OwnerAgendaPage() {
     requiredRole: "owner",
   });
   const router = useRouter();
+
   const [selectedDate, setSelectedDate] = useState<Date>(new Date());
   const [professionals, setProfessionals] = useState<AgendaProfessional[]>([]);
   const [appointments, setAppointments] = useState<AgendaAppointment[]>([]);
   const [selectedProfessionalId, setSelectedProfessionalId] =
     useState<FilterProfessionalId>("all");
+  const [selectedLocationId, setSelectedLocationId] = useState<string | "all">(
+    "all"
+  );
+  const [locations, setLocations] = useState<OwnerLocation[]>([]);
+  const [viewMode, setViewMode] = useState<"daily" | "weekly">("daily");
   const [loadingAgenda, setLoadingAgenda] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [savingAppointment, setSavingAppointment] = useState(false);
@@ -77,6 +87,43 @@ export default function OwnerAgendaPage() {
   const [restoredPlanVisits, setRestoredPlanVisits] = useState<string[]>([]);
   const [selectedAppointment, setSelectedAppointment] =
     useState<AgendaAppointment | null>(null);
+
+  // Slot clicado para criar agendamento
+  const [pendingSlot, setPendingSlot] = useState<PendingAppointmentSlot | null>(
+    null
+  );
+  const [modalCustomerName, setModalCustomerName] = useState("");
+  const [modalCustomerPhone, setModalCustomerPhone] = useState("");
+
+  const searchParams = useSearchParams();
+  const customerNameFromUrl = searchParams.get("customerName");
+  const customerPhoneFromUrl = searchParams.get("customerPhone");
+  const customerPlanIdFromUrl = searchParams.get("customerPlanId");
+
+  // NOVO: lista de serviços permitidos pelo plano (ids separados por vírgula)
+  const planServiceIdsParam = searchParams.get("planServiceIds");
+  const planServiceIds = useMemo(
+    () =>
+      planServiceIdsParam
+        ? planServiceIdsParam
+            .split(",")
+            .map((id) => id.trim())
+            .filter(Boolean)
+        : null,
+    [planServiceIdsParam]
+  );
+
+  const hasCustomerPrefill = !!customerNameFromUrl || !!customerPhoneFromUrl;
+
+  // Se veio um customerPlanId na URL, por padrão marcamos "usar plano"
+  const [usePlanForAppointment, setUsePlanForAppointment] = useState<boolean>(
+    !!customerPlanIdFromUrl
+  );
+
+  const [services, setServices] = useState<OwnerServiceForAppointment[]>([]);
+  const [servicesLoading, setServicesLoading] = useState(false);
+  const [selectedServiceId, setSelectedServiceId] = useState<string>("");
+  const [modalProviderId, setModalProviderId] = useState<string>("");
 
   // RESUMO DO DIA (contagens simples)
   const agendaStats = useMemo(() => {
@@ -128,42 +175,6 @@ export default function OwnerAgendaPage() {
       cancelled,
     };
   }, [appointments]);
-  // Slot clicado para criar agendamento
-  const [pendingSlot, setPendingSlot] = useState<PendingAppointmentSlot | null>(
-    null
-  );
-  const [modalCustomerName, setModalCustomerName] = useState("");
-  const [modalCustomerPhone, setModalCustomerPhone] = useState("");
-
-  const searchParams = useSearchParams();
-  const customerNameFromUrl = searchParams.get("customerName");
-  const customerPhoneFromUrl = searchParams.get("customerPhone");
-  const customerPlanIdFromUrl = searchParams.get("customerPlanId");
-
-  // NOVO: lista de serviços permitidos pelo plano (ids separados por vírgula)
-  const planServiceIdsParam = searchParams.get("planServiceIds");
-  const planServiceIds = useMemo(
-    () =>
-      planServiceIdsParam
-        ? planServiceIdsParam
-            .split(",")
-            .map((id) => id.trim())
-            .filter(Boolean)
-        : null,
-    [planServiceIdsParam]
-  );
-
-  const hasCustomerPrefill = !!customerNameFromUrl || !!customerPhoneFromUrl;
-
-  // Se veio um customerPlanId na URL, por padrão marcamos "usar plano"
-  const [usePlanForAppointment, setUsePlanForAppointment] = useState<boolean>(
-    !!customerPlanIdFromUrl
-  );
-
-  const [services, setServices] = useState<OwnerServiceForAppointment[]>([]);
-  const [servicesLoading, setServicesLoading] = useState(false);
-  const [selectedServiceId, setSelectedServiceId] = useState<string>("");
-  const [modalProviderId, setModalProviderId] = useState<string>("");
 
   function handleOpenAppointmentDetails(appt: AgendaAppointment) {
     setSelectedAppointment(appt);
@@ -228,6 +239,22 @@ export default function OwnerAgendaPage() {
 
     loadAgenda();
   }, [authLoading, user, selectedDate]);
+  useEffect(() => {
+    async function loadLocations() {
+      if (authLoading) return;
+      if (!user) return;
+
+      try {
+        const data = await fetchOwnerLocations();
+        setLocations(data);
+      } catch (err) {
+        console.error("Erro ao carregar unidades:", err);
+        // não quebra a agenda se der erro
+      }
+    }
+
+    loadLocations();
+  }, [authLoading, user]);
 
   useEffect(() => {
     if (customerNameFromUrl) {
@@ -277,8 +304,7 @@ export default function OwnerAgendaPage() {
     };
   }, [usePlanForAppointment, customerPlanIdFromUrl]);
 
-  // NOVO: serviços que serão exibidos no select,
-  // dependendo se está usando plano ou não
+  // Serviços que serão exibidos no select
   const displayedServices = useMemo(() => {
     // se não estiver usando plano, mostra todos
     if (!usePlanForAppointment) {
@@ -294,8 +320,7 @@ export default function OwnerAgendaPage() {
     return services.filter((service) => planServiceIds.includes(service.id));
   }, [services, usePlanForAppointment, planServiceIds]);
 
-  // NOVO: garante que, ao usar plano, o serviço selecionado
-  // sempre seja um dos permitidos pelo plano
+  // Garante que, ao usar plano, o serviço selecionado seja permitido pelo plano
   useEffect(() => {
     if (!usePlanForAppointment) return;
     if (!planServiceIds || planServiceIds.length === 0) return;
@@ -314,8 +339,6 @@ export default function OwnerAgendaPage() {
   ]);
 
   // Handler: mudança de status
-  // - se NÃO passar forceStatus, segue o fluxo normal (scheduled -> in_service -> done)
-  // - se passar forceStatus (no_show / cancelled), aplica diretamente esse status
   async function handleChangeStatus(
     appointmentId: string,
     currentStatus: AgendaAppointment["status"],
@@ -351,6 +374,7 @@ export default function OwnerAgendaPage() {
       );
     }
   }
+
   // Devolver 1 visita do plano (quando o owner decide perdoar a falta)
   async function handleRestorePlanVisit(appointmentId: string) {
     try {
@@ -409,6 +433,7 @@ export default function OwnerAgendaPage() {
       setCreateError("Serviço selecionado inválido.");
       return;
     }
+
     if (!modalProviderId) {
       setCreateError("Selecione um profissional para criar o agendamento.");
       return;
@@ -427,6 +452,7 @@ export default function OwnerAgendaPage() {
 
       const endDate = new Date(startDate);
       endDate.setMinutes(endDate.getMinutes() + selectedService.durationMin);
+
       const now = new Date();
       if (startDate <= now) {
         setCreateError(
@@ -568,11 +594,25 @@ export default function OwnerAgendaPage() {
     }
   }
 
+  // Profissionais filtrados por unidade
+  const professionalsByLocation =
+    selectedLocationId === "all"
+      ? professionals
+      : professionals.filter(
+          (pro: any) => pro.locationId === selectedLocationId
+        );
+
+  // Profissionais visíveis considerando unidade + filtro específico
   const visibleProfessionals =
     selectedProfessionalId === "all"
-      ? professionals
-      : professionals.filter((pro) => pro.id === selectedProfessionalId);
+      ? professionalsByLocation
+      : professionalsByLocation.filter(
+          (pro) => pro.id === selectedProfessionalId
+        );
+
   const weekdayLabel = getWeekdayLabel(selectedDate);
+
+  const locationOptions = useMemo(() => locations, [locations]);
 
   const today = new Date();
   const todayStr = formatDateYYYYMMDD(today);
@@ -588,9 +628,11 @@ export default function OwnerAgendaPage() {
   const dateLabel = isToday
     ? `Hoje · ${weekdayLabel}`
     : `${selectedDate.toLocaleDateString("pt-PT")} · ${weekdayLabel}`;
+
   async function findNextDayWithFreeSlot(
     baseDate: Date,
-    professionalFilter: FilterProfessionalId
+    professionalFilter: FilterProfessionalId,
+    locationFilter: string | "all"
   ): Promise<Date | null> {
     const today = new Date();
     const todayStr = formatDateYYYYMMDD(today);
@@ -611,10 +653,17 @@ export default function OwnerAgendaPage() {
       const currentStr = formatDateYYYYMMDD(current);
       const data = await fetchOwnerAgendaDay(currentStr);
 
+      const prosByLocation =
+        locationFilter === "all"
+          ? data.professionals
+          : data.professionals.filter(
+              (p: any) => p.locationName === locationFilter
+            );
+
       const prosForSearch =
         professionalFilter === "all"
-          ? data.professionals
-          : data.professionals.filter((p) => p.id === professionalFilter);
+          ? prosByLocation
+          : prosByLocation.filter((p) => p.id === professionalFilter);
 
       if (!prosForSearch.length) {
         current = addDays(current, 1);
@@ -681,12 +730,13 @@ export default function OwnerAgendaPage() {
 
       const nextDate = await findNextDayWithFreeSlot(
         base,
-        selectedProfessionalId
+        selectedProfessionalId,
+        selectedLocationName
       );
 
       if (!nextDate) {
         setError(
-          "Não encontramos nenhum horário livre nos próximos dias para este filtro de profissional."
+          "Não encontramos nenhum horário livre nos próximos dias para este filtro."
         );
         return;
       }
@@ -784,8 +834,7 @@ export default function OwnerAgendaPage() {
         <div>
           <h1 className="text-lg font-semibold">Agenda</h1>
           <p className="text-xs text-slate-400">
-            Visão diária por profissional. Depois vamos ligar filtros reais de
-            unidade e data.
+            Visão diária por profissional, com filtro por unidade.
           </p>
         </div>
 
@@ -824,10 +873,23 @@ export default function OwnerAgendaPage() {
             />
           </div>
 
-          <select className="px-3 py-1 rounded-lg border border-slate-800 bg-slate-900/80 text-slate-200">
-            <option>Unidade atual do tenant</option>
+          {/* Filtro de unidade */}
+          <select
+            className="px-3 py-1 rounded-lg border border-slate-800 bg-slate-900/80 text-slate-200"
+            value={selectedLocationId}
+            onChange={(e) =>
+              setSelectedLocationId((e.target.value || "all") as string | "all")
+            }
+          >
+            <option value="all">Todas as unidades</option>
+            {locationOptions.map((loc) => (
+              <option key={loc.id} value={loc.id}>
+                {loc.name}
+              </option>
+            ))}
           </select>
 
+          {/* Filtro de profissional (respeitando unidade) */}
           <select
             className="px-3 py-1 rounded-lg border border-slate-800 bg-slate-900/80 text-slate-200"
             value={selectedProfessionalId}
@@ -838,18 +900,35 @@ export default function OwnerAgendaPage() {
             }
           >
             <option value="all">Todos os profissionais</option>
-            {professionals.map((pro) => (
+            {professionalsByLocation.map((pro) => (
               <option key={pro.id} value={pro.id}>
                 {pro.name}
               </option>
             ))}
           </select>
 
+          {/* Toggle Diário / Semanal */}
           <div className="flex rounded-lg border border-slate-800 bg-slate-900/80 overflow-hidden">
-            <button className="px-3 py-1 text-slate-50 bg-slate-800 text-[11px]">
+            <button
+              type="button"
+              className={`px-3 py-1 text-[11px] ${
+                viewMode === "daily"
+                  ? "text-slate-50 bg-slate-800"
+                  : "text-slate-400"
+              }`}
+              onClick={() => setViewMode("daily")}
+            >
               Diário
             </button>
-            <button className="px-3 py-1 text-slate-400 text-[11px]">
+            <button
+              type="button"
+              className={`px-3 py-1 text-[11px] ${
+                viewMode === "weekly"
+                  ? "text-slate-50 bg-slate-800"
+                  : "text-slate-400"
+              }`}
+              onClick={() => setViewMode("weekly")}
+            >
               Semanal
             </button>
           </div>
@@ -863,6 +942,7 @@ export default function OwnerAgendaPage() {
           </button>
         </div>
       </header>
+
       {/* Resumo rápido do dia */}
       <section className="mb-4 grid gap-2 text-xs md:grid-cols-4">
         <div className="rounded-2xl border border-slate-800 bg-slate-900/70 px-3 py-2">
@@ -952,104 +1032,120 @@ export default function OwnerAgendaPage() {
         </div>
       )}
 
-      {/* Grid da agenda diária */}
-      {/* Grid da agenda diária: manhã e tarde lado a lado */}
-      <section className="rounded-2xl border border-slate-800 bg-slate-900/60 p-4">
-        <div className="grid gap-6 md:grid-cols-2">
-          {/* COLUNA DA MANHÃ */}
-          <div>
-            <p className="text-[11px] uppercase tracking-wide text-slate-500 mb-2">
-              Período da manhã
-            </p>
+      {/* VISÃO DIÁRIA / SEMANAL */}
+      {viewMode === "daily" ? (
+        <>
+          {/* Grid da agenda diária: manhã e tarde lado a lado */}
+          <section className="rounded-2xl border border-slate-800 bg-slate-900/60 p-4">
+            <div className="grid gap-6 md:grid-cols-2">
+              {/* COLUNA DA MANHÃ */}
+              <div>
+                <p className="text-[11px] uppercase tracking-wide text-slate-500 mb-2">
+                  Período da manhã
+                </p>
 
-            <div
-              className="grid gap-2 text-xs"
-              style={{
-                gridTemplateColumns: `80px repeat(${visibleProfessionals.length}, minmax(0, 1fr))`,
-              }}
-            >
-              {/* coluna de horários à esquerda */}
-              <div />
-
-              {/* cabeçalhos de profissionais */}
-              {visibleProfessionals.map((pro) => (
                 <div
-                  key={pro.id}
-                  className="px-2 py-2 rounded-2xl border border-slate-700/80 bg-slate-950/70 flex flex-col"
+                  className="grid gap-2 text-xs"
+                  style={{
+                    gridTemplateColumns: `80px repeat(${visibleProfessionals.length}, minmax(0, 1fr))`,
+                  }}
                 >
-                  <span className="text-[10px] uppercase tracking-wide text-slate-400">
-                    Profissional
-                  </span>
-                  <span className="text-sm font-semibold text-slate-50">
-                    {pro.name}
-                  </span>
+                  {/* coluna de horários à esquerda */}
+                  <div />
+
+                  {/* cabeçalhos de profissionais */}
+                  {visibleProfessionals.map((pro) => (
+                    <div
+                      key={pro.id}
+                      className="px-2 py-2 rounded-2xl border border-slate-700/80 bg-slate-950/70 flex flex-col"
+                    >
+                      <span className="text-[10px] uppercase tracking-wide text-slate-400">
+                        Profissional
+                      </span>
+                      <span className="text-sm font-semibold text-slate-50">
+                        {pro.name}
+                      </span>
+                    </div>
+                  ))}
+
+                  {morningSlots.map((slot) => (
+                    <RowTimeSlot
+                      key={slot}
+                      slot={slot}
+                      professionals={visibleProfessionals}
+                      appointments={appointments}
+                      onCreateAppointment={handleCreateAppointmentClick}
+                      onOpenDetails={handleOpenAppointmentDetails}
+                      isPastDay={isPastDay}
+                      isToday={isToday}
+                      nowMinutes={nowMinutes}
+                    />
+                  ))}
                 </div>
-              ))}
+              </div>
 
-              {morningSlots.map((slot) => (
-                <RowTimeSlot
-                  key={slot}
-                  slot={slot}
-                  professionals={visibleProfessionals}
-                  appointments={appointments}
-                  onCreateAppointment={handleCreateAppointmentClick}
-                  onOpenDetails={handleOpenAppointmentDetails}
-                  isPastDay={isPastDay}
-                  isToday={isToday}
-                  nowMinutes={nowMinutes}
-                />
-              ))}
-            </div>
-          </div>
+              {/* COLUNA DA TARDE */}
+              <div>
+                <p className="text-[11px] uppercase tracking-wide text-slate-500 mb-2">
+                  Período da tarde
+                </p>
 
-          {/* COLUNA DA TARDE */}
-          <div>
-            <p className="text-[11px] uppercase tracking-wide text-slate-500 mb-2">
-              Período da tarde
-            </p>
-
-            <div
-              className="grid gap-2 text-xs"
-              style={{
-                gridTemplateColumns: `80px repeat(${visibleProfessionals.length}, minmax(0, 1fr))`,
-              }}
-            >
-              {/* coluna de horários à esquerda */}
-              <div />
-
-              {/* cabeçalhos de profissionais */}
-              {visibleProfessionals.map((pro) => (
                 <div
-                  key={pro.id}
-                  className="px-2 py-2 rounded-2xl border border-slate-700/80 bg-slate-950/70 flex flex-col"
+                  className="grid gap-2 text-xs"
+                  style={{
+                    gridTemplateColumns: `80px repeat(${visibleProfessionals.length}, minmax(0, 1fr))`,
+                  }}
                 >
-                  <span className="text-[10px] uppercase tracking-wide text-slate-400">
-                    Profissional
-                  </span>
-                  <span className="text-sm font-semibold text-slate-50">
-                    {pro.name}
-                  </span>
-                </div>
-              ))}
+                  {/* coluna de horários à esquerda */}
+                  <div />
 
-              {/* linhas de horários da tarde */}
-              {afternoonSlots.map((slot) => (
-                <RowTimeSlot
-                  key={slot}
-                  slot={slot}
-                  professionals={visibleProfessionals}
-                  appointments={appointments}
-                  onCreateAppointment={handleCreateAppointmentClick}
-                  onOpenDetails={handleOpenAppointmentDetails}
-                  isPastDay={isPastDay}
-                  isToday={isToday}
-                  nowMinutes={nowMinutes}
-                />
-              ))}
+                  {/* cabeçalhos de profissionais */}
+                  {visibleProfessionals.map((pro) => (
+                    <div
+                      key={pro.id}
+                      className="px-2 py-2 rounded-2xl border border-slate-700/80 bg-slate-950/70 flex flex-col"
+                    >
+                      <span className="text-[10px] uppercase tracking-wide text-slate-400">
+                        Profissional
+                      </span>
+                      <span className="text-sm font-semibold text-slate-50">
+                        {pro.name}
+                      </span>
+                    </div>
+                  ))}
+
+                  {/* linhas de horários da tarde */}
+                  {afternoonSlots.map((slot) => (
+                    <RowTimeSlot
+                      key={slot}
+                      slot={slot}
+                      professionals={visibleProfessionals}
+                      appointments={appointments}
+                      onCreateAppointment={handleCreateAppointmentClick}
+                      onOpenDetails={handleOpenAppointmentDetails}
+                      isPastDay={isPastDay}
+                      isToday={isToday}
+                      nowMinutes={nowMinutes}
+                    />
+                  ))}
+                </div>
+              </div>
             </div>
-          </div>
-        </div>
-      </section>
+          </section>
+        </>
+      ) : (
+        <section className="rounded-2xl border border-slate-800 bg-slate-900/60 p-4 text-xs text-slate-300">
+          <p className="mb-1 font-semibold text-slate-100">
+            Visão semanal em construção
+          </p>
+          <p>
+            Por enquanto, utilize a visão diária para gerir os agendamentos.
+            Quando avançarmos, esta aba vai mostrar o mapa da semana inteira por
+            profissional/unidade.
+          </p>
+        </section>
+      )}
+
       {selectedAppointment &&
         (() => {
           const statusStyles = getStatusClasses(selectedAppointment.status);
@@ -1297,7 +1393,7 @@ export default function OwnerAgendaPage() {
                   value={modalProviderId}
                   onChange={(e) => setModalProviderId(e.target.value)}
                 >
-                  {professionals.map((pro) => (
+                  {visibleProfessionals.map((pro) => (
                     <option key={pro.id} value={pro.id}>
                       {pro.name}
                     </option>
@@ -1556,6 +1652,7 @@ function getWeekdayLabel(date: Date): string {
   const label = formatter.format(date); // ex: "terça-feira"
   return label.charAt(0).toUpperCase() + label.slice(1);
 }
+
 function addDays(date: Date, amount: number): Date {
   const result = new Date(date);
   result.setDate(result.getDate() + amount);

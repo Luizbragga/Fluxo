@@ -4,6 +4,8 @@ import { apiClient } from "@/lib/api-client";
 export type AgendaProfessional = {
   id: string;
   name: string;
+  locationId?: string | null;
+  locationName?: string | null;
 };
 
 export type AgendaAppointmentStatus =
@@ -31,7 +33,7 @@ export type AgendaAppointment = {
   startMinutes: number; // ex.: 14:00 -> 14*60 = 840
   endMinutes: number; // startMinutes + durationMin
 
-  //Se veio de plano ou avulso
+  // Se veio de plano ou avulso
   billingType: "plan" | "avulso";
 };
 
@@ -44,16 +46,13 @@ type BackendAppointment = {
   clientName: string | null;
   serviceName: string | null;
 
-  //Duração já gravada no appointment
+  // Duração já gravada no appointment
   serviceDurationMin?: number | null;
 
-  //Se está ligado a um plano
+  // Se está ligado a um plano
   customerPlanId?: string | null;
 
-  provider?: {
-    id: string;
-    name: string;
-  } | null;
+  provider?: BackendProvider | null;
   service?: {
     id: string;
     name: string;
@@ -64,12 +63,38 @@ type BackendAppointment = {
 type BackendProvider = {
   id: string;
   name: string;
+  locationId?: string | null;
+  locationName?: string | null;
+  location?: {
+    id: string;
+    name: string;
+    slug?: string | null;
+  } | null;
 };
 
 export type OwnerAgendaDay = {
   professionals: AgendaProfessional[];
   appointments: AgendaAppointment[];
 };
+
+function mapProviderToAgendaProfessional(
+  provider: BackendProvider
+): AgendaProfessional {
+  const locationId = provider.locationId ?? provider.location?.id ?? null;
+
+  const locationName =
+    provider.locationName ??
+    provider.location?.name ??
+    provider.location?.slug ??
+    null;
+
+  return {
+    id: provider.id,
+    name: provider.name,
+    locationId,
+    locationName,
+  };
+}
 
 /**
  * Busca a agenda do dia (de TODO o tenant) e agrupa:
@@ -90,13 +115,13 @@ export async function fetchOwnerAgendaDay(
   ]);
 
   // ------------------------------------------------------------------
-  // Normaliza a resposta de /providers para um array de { id, name }
+  // Normaliza a resposta de /providers para um array de { id, name, locationId, locationName }
   // ------------------------------------------------------------------
   let providersArray: BackendProvider[] = [];
 
   if (Array.isArray(providersResponse)) {
     // caso simples: [ { id, name, ... }, ... ]
-    providersArray = providersResponse;
+    providersArray = providersResponse as BackendProvider[];
   } else if (providersResponse && typeof providersResponse === "object") {
     // tenta achar alguma propriedade que seja um array de objetos com id/name
     for (const value of Object.values(providersResponse)) {
@@ -121,10 +146,10 @@ export async function fetchOwnerAgendaDay(
     if (!provider || !provider.id) continue;
 
     if (!professionalsMap.has(provider.id)) {
-      professionalsMap.set(provider.id, {
-        id: provider.id,
-        name: provider.name,
-      });
+      professionalsMap.set(
+        provider.id,
+        mapProviderToAgendaProfessional(provider)
+      );
     }
   }
 
@@ -132,15 +157,19 @@ export async function fetchOwnerAgendaDay(
   // Mapeia appointments -> formato de tela
   // ------------------------------------------------------------------
   const appointments: AgendaAppointment[] = appointmentsData.map((appt) => {
-    const providerId = appt.provider?.id ?? appt.providerId;
-    const providerName = appt.provider?.name ?? "Profissional";
+    const provider = appt.provider as BackendProvider | undefined | null;
+
+    const providerId = provider?.id ?? appt.providerId;
+    const providerName = provider?.name ?? "Profissional";
 
     // garante que o provider do appointment também está no mapa
     if (providerId && !professionalsMap.has(providerId)) {
-      professionalsMap.set(providerId, {
-        id: providerId,
-        name: providerName,
-      });
+      professionalsMap.set(
+        providerId,
+        mapProviderToAgendaProfessional(
+          provider ?? { id: providerId, name: providerName }
+        )
+      );
     }
 
     const start = new Date(appt.startAt);

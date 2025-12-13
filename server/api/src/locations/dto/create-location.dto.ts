@@ -1,5 +1,5 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
-import { IsOptional, IsString } from 'class-validator';
+import { IsOptional, IsString, IsBoolean } from 'class-validator';
 
 export class CreateLocationDto {
   @ApiProperty({
@@ -33,4 +33,19 @@ export class CreateLocationDto {
   @IsOptional()
   // armazenamos como JSON; aqui aceitamos um objeto genérico
   businessHoursTemplate?: Record<string, [string, string][]>;
+  @ApiPropertyOptional({
+    description: 'Se a unidade está ativa. Padrão: true.',
+    example: true,
+  })
+  @IsOptional()
+  @IsBoolean()
+  active?: boolean;
+  @ApiPropertyOptional({
+    description:
+      'ID do profissional responsável pela unidade (Provider.id). Opcional.',
+    example: 'cmjfa3b0000abcd123456789',
+  })
+  @IsOptional()
+  @IsString()
+  managerProviderId?: string;
 }

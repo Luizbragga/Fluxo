@@ -90,6 +90,10 @@ model Location {
   customerPlans CustomerPlan[]
   services      Service[]
 
+  // Profissional responsável pela unidade (opcional)
+  managerProviderId String?
+  managerProvider   Provider? @relation("LocationManager", fields: [managerProviderId], references: [id])
+
   /// Horário padrão de funcionamento da filial, no mesmo formato do weekdayTemplate do provider:
   /// {
   ///   "mon": [["08:00","13:00"], ["14:00","20:00"]],
@@ -188,6 +192,9 @@ model Provider {
   user     User     @relation(fields: [userId], references: [id], onDelete: Cascade)
   location Location @relation(fields: [locationId], references: [id], onDelete: Cascade)
 
+  // Unidades em que ele é responsável
+  managedLocations Location[] @relation("LocationManager")
+  
   createdAt    DateTime             @default(now())
   updatedAt    DateTime             @updatedAt
   blocks       Block[]

@@ -35,7 +35,6 @@ export class LocationsService {
     // Garante slug único dentro do tenant
     let slug = baseSlug;
     let n = 1;
-    // assumindo que há @@unique([tenantId, slug]) ou slug único
     while (
       await this.prisma.location.findFirst({
         where: { tenantId, slug },
@@ -51,6 +50,13 @@ export class LocationsService {
         name: dto.name,
         slug,
         businessHoursTemplate: dto.businessHoursTemplate ?? undefined,
+        active: dto.active ?? true,
+        managerProviderId: dto.managerProviderId ?? undefined,
+      },
+      include: {
+        managerProvider: {
+          select: { id: true, name: true },
+        },
       },
     });
 
@@ -63,7 +69,6 @@ export class LocationsService {
     tenantId: string,
     params?: { page?: number; pageSize?: number },
   ) {
-    // defaults seguros
     const page = params?.page && params.page > 0 ? params.page : 1;
 
     const pageSize =
@@ -74,23 +79,25 @@ export class LocationsService {
     const skip = (page - 1) * pageSize;
     const take = pageSize;
 
+    const whereBase = {
+      tenantId,
+      ...(process.env.IGNORE_LOCATION_ACTIVE ? {} : { active: true as any }),
+    };
+
     const [items, total] = await Promise.all([
       this.prisma.location.findMany({
-        where: {
-          tenantId,
-          active: true,
-        },
+        where: whereBase,
         orderBy: { name: 'asc' },
         skip,
         take,
+        include: {
+          managerProvider: {
+            select: { id: true, name: true },
+          },
+        },
       }),
       this.prisma.location.count({
-        where: {
-          tenantId,
-          ...(process.env.IGNORE_LOCATION_ACTIVE
-            ? {}
-            : { active: true as any }),
-        },
+        where: whereBase,
       }),
     ]);
 
@@ -110,6 +117,11 @@ export class LocationsService {
   async findOne(tenantId: string, id: string) {
     const location = await this.prisma.location.findFirst({
       where: { id, tenantId },
+      include: {
+        managerProvider: {
+          select: { id: true, name: true },
+        },
+      },
     });
     if (!location) {
       throw new NotFoundException('Location não encontrada neste tenant');
@@ -162,6 +174,16 @@ export class LocationsService {
         name: dto.name ?? undefined,
         slug: slug ?? undefined,
         businessHoursTemplate: dto.businessHoursTemplate ?? undefined,
+        active: typeof dto.active === 'boolean' ? dto.active : undefined,
+        managerProviderId:
+          typeof dto.managerProviderId !== 'undefined'
+            ? dto.managerProviderId
+            : undefined,
+      },
+      include: {
+        managerProvider: {
+          select: { id: true, name: true },
+        },
       },
     });
 

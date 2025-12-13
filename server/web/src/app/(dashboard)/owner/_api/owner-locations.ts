@@ -2,7 +2,6 @@ import { apiClient } from "@/lib/api-client";
 
 /**
  * Shape de uma unidade (location) para o painel do owner.
- * Bate com o que estamos usando em /owner/unidades/page.tsx
  */
 export type OwnerLocation = {
   id: string;
@@ -10,6 +9,9 @@ export type OwnerLocation = {
   slug?: string | null;
   active: boolean;
   businessHoursTemplate?: Record<string, [string, string][]> | null;
+
+  managerProviderId?: string | null;
+  managerProviderName?: string | null;
 };
 
 /**
@@ -23,7 +25,7 @@ export type LocationsPaginationMeta = {
 };
 
 /**
- * Como o backend devolve cada location (aprox. Prisma model).
+ * Como o backend devolve cada location.
  */
 type BackendLocation = {
   id: string;
@@ -31,6 +33,10 @@ type BackendLocation = {
   slug?: string | null;
   active?: boolean;
   businessHoursTemplate?: any;
+
+  managerProviderId?: string | null;
+  managerProviderName?: string | null;
+  managerProvider?: { id: string; name: string } | null;
 };
 
 type BackendLocationsResponse =
@@ -40,6 +46,23 @@ type BackendLocationsResponse =
       items?: BackendLocation[];
       meta?: Partial<LocationsPaginationMeta>;
     };
+
+/**
+ * Normaliza uma Location vinda da API para o formato da UI.
+ */
+function normalizeLocation(loc: BackendLocation): OwnerLocation {
+  return {
+    id: loc.id,
+    name: loc.name ?? loc.slug ?? "Unidade sem nome",
+    slug: loc.slug ?? null,
+    active: loc.active ?? true,
+    businessHoursTemplate:
+      (loc.businessHoursTemplate as Record<string, [string, string][]>) ?? null,
+    managerProviderId: loc.managerProviderId ?? loc.managerProvider?.id ?? null,
+    managerProviderName:
+      loc.managerProviderName ?? loc.managerProvider?.name ?? null,
+  };
+}
 
 /**
  * Busca as locations do tenant logado, com paginação.
@@ -61,16 +84,6 @@ export async function fetchOwnerLocations(params?: {
     method: "GET",
   });
 
-  const normalize = (loc: BackendLocation): OwnerLocation => ({
-    id: loc.id,
-    name: loc.name ?? loc.slug ?? "Unidade sem nome",
-    slug: loc.slug ?? null,
-    active: loc.active ?? true,
-    businessHoursTemplate:
-      (loc.businessHoursTemplate as Record<string, [string, string][]>) ?? null,
-  });
-
-  // meta default caso o backend não mande nada
   let meta: LocationsPaginationMeta = {
     page,
     pageSize,
@@ -81,7 +94,6 @@ export async function fetchOwnerLocations(params?: {
   let list: BackendLocation[] = [];
 
   if (Array.isArray(raw)) {
-    // Caso 1: backend devolve array direto
     list = raw;
     meta = {
       ...meta,
@@ -89,7 +101,6 @@ export async function fetchOwnerLocations(params?: {
       totalPages: 1,
     };
   } else if (raw) {
-    // Caso 2: { data: [...] }  (como está hoje)
     if (Array.isArray(raw.data)) {
       list = raw.data;
     } else if (Array.isArray(raw.items)) {
@@ -107,7 +118,77 @@ export async function fetchOwnerLocations(params?: {
   }
 
   return {
-    data: list.map(normalize),
+    data: list.map(normalizeLocation),
     meta,
   };
+}
+
+/**
+ * Cria uma nova unidade (location) para o tenant logado.
+ */
+export async function createOwnerLocation(input: {
+  name: string;
+  slug?: string | null;
+  businessHoursTemplate?: Record<string, [string, string][]> | null;
+}): Promise<OwnerLocation> {
+  const body: any = {
+    name: input.name,
+  };
+
+  if (input.slug) {
+    body.slug = input.slug;
+  }
+  if (input.businessHoursTemplate) {
+    body.businessHoursTemplate = input.businessHoursTemplate;
+  }
+
+  const created = await apiClient<BackendLocation>("/locations", {
+    method: "POST",
+    body,
+  });
+
+  return normalizeLocation(created);
+}
+
+/**
+ * Ativa / desativa uma unidade (toggle de "active").
+ */
+export async function updateOwnerLocationActive(params: {
+  id: string;
+  active: boolean;
+}): Promise<OwnerLocation> {
+  const updated = await apiClient<BackendLocation>(`/locations/${params.id}`, {
+    method: "PATCH",
+    body: {
+      active: params.active,
+    },
+  });
+
+  return normalizeLocation(updated);
+}
+export async function updateOwnerLocationManager(params: {
+  id: string;
+  managerProviderId: string | null;
+}): Promise<OwnerLocation> {
+  const updated = await apiClient<BackendLocation>(`/locations/${params.id}`, {
+    method: "PATCH",
+    body: {
+      managerProviderId: params.managerProviderId,
+    },
+  });
+
+  return normalizeLocation(updated);
+}
+export async function updateOwnerLocationBusinessHours(params: {
+  id: string;
+  businessHoursTemplate: Record<string, [string, string][]>;
+}): Promise<OwnerLocation> {
+  const updated = await apiClient<BackendLocation>(`/locations/${params.id}`, {
+    method: "PATCH",
+    body: {
+      businessHoursTemplate: params.businessHoursTemplate,
+    },
+  });
+
+  return normalizeLocation(updated);
 }
