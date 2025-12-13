@@ -303,9 +303,15 @@ export class ProvidersService {
   }
 
   async update(tenantId: string, id: string, dto: UpdateProviderDto) {
-    // garante pertença ao tenant
+    // garante pertença ao tenant e já carrega user para validar email
     const exists = await this.prisma.provider.findFirst({
       where: { id, tenantId },
+      select: {
+        id: true,
+        userId: true,
+        locationId: true,
+        user: { select: { id: true, email: true } },
+      },
     });
 
     if (!exists) {
@@ -314,6 +320,13 @@ export class ProvidersService {
 
     // se trocar userId, validar vínculo/tenant
     if (dto.userId && dto.userId !== exists.userId) {
+      // segurança: não deixa trocar userId e editar email/phone ao mesmo tempo
+      if (dto.email || dto.phone) {
+        throw new BadRequestException(
+          'Não é permitido editar email/telefone ao trocar userId do provider.',
+        );
+      }
+
       const u = await this.prisma.user.findUnique({
         where: { id: dto.userId },
         select: {
@@ -346,20 +359,63 @@ export class ProvidersService {
       }
     }
 
-    const updated = await this.prisma.provider.update({
-      where: { id },
-      data: {
-        name: dto.name ?? undefined,
-        userId: dto.userId ?? undefined,
-        locationId: dto.locationId ?? undefined,
-        specialty: dto.specialty ?? undefined,
-        weekdayTemplate: dto.weekdayTemplate ?? undefined,
-        active: dto.active ?? undefined,
-      },
-      include: {
-        user: true,
-        location: true,
-      },
+    // ✅ valida email único no tenant (email fica no User)
+    if (dto.email && dto.email !== (exists.user?.email ?? null)) {
+      const emailInUse = await this.prisma.user.findFirst({
+        where: {
+          tenantId,
+          email: dto.email,
+          NOT: { id: exists.userId },
+        },
+        select: { id: true },
+      });
+
+      if (emailInUse) {
+        throw new BadRequestException(
+          'Já existe um utilizador com este email neste tenant',
+        );
+      }
+    }
+
+    const updated = await this.prisma.$transaction(async (tx) => {
+      // 1) atualiza o User vinculado (name/email/phone/locationId) se vierem
+      //    (mantém user e provider sincronizados)
+      if (
+        exists.userId &&
+        (dto.name ||
+          dto.email ||
+          dto.phone ||
+          dto.locationId ||
+          dto.active !== undefined)
+      ) {
+        await tx.user.update({
+          where: { id: exists.userId },
+          data: {
+            name: dto.name ?? undefined,
+            email: dto.email ?? undefined,
+            phone: dto.phone ?? undefined,
+            locationId: dto.locationId ?? undefined,
+            active: dto.active ?? undefined,
+          },
+        });
+      }
+
+      // 2) atualiza o Provider
+      return tx.provider.update({
+        where: { id },
+        data: {
+          name: dto.name ?? undefined,
+          userId: dto.userId ?? undefined,
+          locationId: dto.locationId ?? undefined,
+          specialty: dto.specialty ?? undefined,
+          weekdayTemplate: dto.weekdayTemplate ?? undefined,
+          active: dto.active ?? undefined,
+        },
+        include: {
+          user: true,
+          location: true,
+        },
+      });
     });
 
     return this.toViewModel(updated as ProviderWithUserAndLocation);

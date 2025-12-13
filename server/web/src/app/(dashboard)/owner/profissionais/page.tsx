@@ -8,6 +8,7 @@ import {
   fetchOwnerProviderPayouts,
   upsertOwnerProviderCommission,
   createOwnerProfessional,
+  updateOwnerProfessional,
   type OwnerProfessional,
   type OwnerProviderEarningsItem,
   type OwnerProviderCommission,
@@ -17,7 +18,8 @@ import {
   fetchOwnerLocations,
   type OwnerLocation,
 } from "../_api/owner-services";
-import { useRouter } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
+
 // ---- Tipos auxiliares ------------------------------------------------------
 
 type SpecialtyLiteral =
@@ -50,6 +52,12 @@ type PeriodFilter = "day" | "week" | "month";
 
 export default function OwnerProfessionalsPage() {
   const router = useRouter();
+  const searchParams = useSearchParams();
+  const locationIdFromUrl = searchParams.get("locationId");
+  const openCreateFromUrl = searchParams.get("openCreate") === "1";
+  const returnToFromUrl = searchParams.get("returnTo");
+  const [didAutoOpenCreate, setDidAutoOpenCreate] = useState(false);
+
   const [period, setPeriod] = useState<PeriodFilter>("month");
   // lista + seleção
   const [professionals, setProfessionals] = useState<OwnerProfessional[]>([]);
@@ -88,6 +96,16 @@ export default function OwnerProfessionalsPage() {
   const [createLoading, setCreateLoading] = useState(false);
   const [createError, setCreateError] = useState<string | null>(null);
 
+  // modal de edição de profissional
+  const [isEditOpen, setIsEditOpen] = useState(false);
+  const [editName, setEditName] = useState("");
+  const [editEmail, setEditEmail] = useState("");
+  const [editPhone, setEditPhone] = useState("");
+  const [editLocationId, setEditLocationId] = useState<string>("");
+  const [editSpecialty, setEditSpecialty] =
+    useState<SpecialtyLiteral>("barber");
+  const [editLoading, setEditLoading] = useState(false);
+  const [editError, setEditError] = useState<string | null>(null);
   // ---------------------------------------------------------------------------
   // Carga inicial (profissionais + earnings + locations)
   // ---------------------------------------------------------------------------
@@ -142,29 +160,18 @@ export default function OwnerProfessionalsPage() {
         0
       );
 
-      // 2) calcular a ocupação relativa (0–100) para cada profissional
-      const professionalsWithOccupation =
-        maxAppointments > 0
-          ? professionalsData.map((pro) => {
-              const providerEarning = earningsData.find(
-                (e) => e.providerId === pro.id
-              );
+      // 2) calcular a ocupação REAL (0–100) para cada profissional
+      // (vem do backend: occupationPercentage)
+      const professionalsWithOccupation = professionalsData.map((pro) => {
+        const providerEarning = earningsData.find(
+          (e) => e.providerId === pro.id
+        );
 
-              const occupation = providerEarning
-                ? Math.round(
-                    (providerEarning.appointmentsCount / maxAppointments) * 100
-                  )
-                : 0;
-
-              return {
-                ...pro,
-                averageOccupation: occupation,
-              };
-            })
-          : professionalsData.map((pro) => ({
-              ...pro,
-              averageOccupation: 0,
-            }));
+        return {
+          ...pro,
+          averageOccupation: providerEarning?.occupationPercentage ?? 0,
+        };
+      });
 
       setProfessionals(professionalsWithOccupation);
       setProviderEarnings(earningsData);
@@ -177,7 +184,6 @@ export default function OwnerProfessionalsPage() {
       } else {
         setSelectedId(professionalsWithOccupation[0].id);
       }
-
       setError(null);
     } catch (err: any) {
       console.error("Erro ao carregar profissionais/earnings/locations:", err);
@@ -191,6 +197,15 @@ export default function OwnerProfessionalsPage() {
   useEffect(() => {
     loadAll(undefined, period);
   }, [period]);
+
+  useEffect(() => {
+    if (didAutoOpenCreate) return;
+    if (!openCreateFromUrl) return;
+
+    // se veio locationId, tenta usar ele (mesmo que locations ainda esteja carregando)
+    openCreateModal(locationIdFromUrl ?? undefined);
+    setDidAutoOpenCreate(true);
+  }, [didAutoOpenCreate, openCreateFromUrl, locationIdFromUrl]);
 
   // ---------------------------------------------------------------------------
   // Carrega comissões + repasses quando muda o selecionado
@@ -317,14 +332,15 @@ export default function OwnerProfessionalsPage() {
   // Criação de profissional
   // ---------------------------------------------------------------------------
 
-  function openCreateModal() {
+  function openCreateModal(forcedLocationId?: string) {
     setCreateName("");
     setCreateEmail("");
     setCreatePhone("");
     setCreateSpecialty("barber");
 
-    // tenta pré-selecionar a mesma unidade do profissional atual
-    if (selectedProfessional?.locationId) {
+    if (forcedLocationId) {
+      setCreateLocationId(forcedLocationId);
+    } else if (selectedProfessional?.locationId) {
       setCreateLocationId(selectedProfessional.locationId);
     } else if (locations[0]) {
       setCreateLocationId(locations[0].id);
@@ -376,6 +392,9 @@ export default function OwnerProfessionalsPage() {
       // recarrega lista e já seleciona o novo
       await loadAll(newProfessional.id);
       closeCreateModal();
+      if (returnToFromUrl) {
+        router.push(returnToFromUrl);
+      }
     } catch (err: any) {
       console.error("Erro ao criar profissional:", err);
       setCreateError(
@@ -385,7 +404,70 @@ export default function OwnerProfessionalsPage() {
       setCreateLoading(false);
     }
   }
+  function openEditModal() {
+    if (!selectedProfessional) return;
 
+    setEditName(selectedProfessional.name ?? "");
+    setEditEmail(selectedProfessional.email ?? "");
+    setEditPhone(selectedProfessional.phone ?? "");
+    setEditLocationId(selectedProfessional.locationId ?? "");
+    setEditSpecialty(
+      (selectedProfessional.specialty as SpecialtyLiteral) ?? "barber"
+    );
+
+    setEditError(null);
+    setIsEditOpen(true);
+  }
+
+  function closeEditModal() {
+    setIsEditOpen(false);
+  }
+
+  async function handleSaveEditProfessional(e: FormEvent) {
+    e.preventDefault();
+    if (!selectedProfessional) return;
+    if (editLoading) return;
+
+    if (!editName.trim()) {
+      setEditError("Nome do profissional é obrigatório.");
+      return;
+    }
+    if (!editEmail.trim()) {
+      setEditError("Email é obrigatório.");
+      return;
+    }
+    if (!editPhone.trim()) {
+      setEditError("Telefone é obrigatório.");
+      return;
+    }
+    if (!editLocationId) {
+      setEditError("Selecione uma unidade.");
+      return;
+    }
+
+    try {
+      setEditLoading(true);
+      setEditError(null);
+
+      await updateOwnerProfessional(selectedProfessional.id, {
+        name: editName.trim(),
+        email: editEmail.trim(),
+        phone: editPhone.trim(),
+        locationId: editLocationId,
+        specialty: editSpecialty,
+      });
+
+      await loadAll(selectedProfessional.id);
+      closeEditModal();
+    } catch (err: any) {
+      console.error("Erro ao editar profissional:", err);
+      setEditError(
+        err?.message ?? "Erro ao editar profissional. Tente novamente."
+      );
+    } finally {
+      setEditLoading(false);
+    }
+  }
   // ---------------------------------------------------------------------------
 
   return (
@@ -539,11 +621,21 @@ export default function OwnerProfessionalsPage() {
                       {selectedProfessional.locationName}
                     </p>
                   </div>
-                  <div className="text-right text-xs">
-                    <p className="text-slate-400">Ocupação média</p>
-                    <p className="text-lg font-semibold">
-                      {selectedOccupation}%
-                    </p>
+                  <div className="flex items-start gap-3">
+                    <button
+                      type="button"
+                      className="px-3 py-1 rounded-lg border border-slate-700 bg-slate-900 text-[11px] text-slate-200 hover:border-slate-500"
+                      onClick={openEditModal}
+                    >
+                      Editar profissional
+                    </button>
+
+                    <div className="text-right text-xs">
+                      <p className="text-slate-400">Ocupação média</p>
+                      <p className="text-lg font-semibold">
+                        {selectedOccupation}%
+                      </p>
+                    </div>
                   </div>
                 </div>
 
@@ -867,6 +959,110 @@ export default function OwnerProfessionalsPage() {
                   disabled={createLoading}
                 >
                   {createLoading ? "Guardando…" : "Guardar"}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+      {/* Modal de edição de profissional */}
+      {isEditOpen && selectedProfessional && (
+        <div className="fixed inset-0 z-40 flex items-center justify-center bg-black/60">
+          <div className="w-full max-w-md rounded-2xl border border-slate-800 bg-slate-900 p-5 shadow-xl">
+            <div className="mb-4 flex items-center justify-between">
+              <h2 className="text-sm font-semibold">Editar profissional</h2>
+              <button
+                className="text-xs text-slate-400 hover:text-slate-200"
+                type="button"
+                onClick={closeEditModal}
+              >
+                Fechar
+              </button>
+            </div>
+
+            <form className="space-y-3" onSubmit={handleSaveEditProfessional}>
+              <div className="space-y-1 text-xs">
+                <label className="block text-slate-300">
+                  Nome do profissional
+                </label>
+                <input
+                  className="w-full rounded-lg border border-slate-800 bg-slate-950/80 px-3 py-2 text-[11px] text-slate-100 focus:outline-none focus:ring-1 focus:ring-emerald-500"
+                  value={editName}
+                  onChange={(e) => setEditName(e.target.value)}
+                />
+              </div>
+
+              <div className="space-y-1 text-xs">
+                <label className="block text-slate-300">Email</label>
+                <input
+                  type="email"
+                  className="w-full rounded-lg border border-slate-800 bg-slate-950/80 px-3 py-2 text-[11px] text-slate-100 focus:outline-none focus:ring-1 focus:ring-emerald-500"
+                  value={editEmail}
+                  onChange={(e) => setEditEmail(e.target.value)}
+                />
+              </div>
+
+              <div className="space-y-1 text-xs">
+                <label className="block text-slate-300">Telefone</label>
+                <input
+                  className="w-full rounded-lg border border-slate-800 bg-slate-950/80 px-3 py-2 text-[11px] text-slate-100 focus:outline-none focus:ring-1 focus:ring-emerald-500"
+                  value={editPhone}
+                  onChange={(e) => setEditPhone(e.target.value)}
+                />
+              </div>
+
+              <div className="space-y-1 text-xs">
+                <label className="block text-slate-300">Unidade</label>
+                <select
+                  className="w-full rounded-lg border border-slate-800 bg-slate-950/80 px-3 py-2 text-[11px] text-slate-100 focus:outline-none focus:ring-1 focus:ring-emerald-500"
+                  value={editLocationId}
+                  onChange={(e) => setEditLocationId(e.target.value)}
+                >
+                  <option value="">Selecione uma unidade…</option>
+                  {locations.map((loc) => (
+                    <option key={loc.id} value={loc.id}>
+                      {loc.name}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              <div className="space-y-1 text-xs">
+                <label className="block text-slate-300">Especialidade</label>
+                <select
+                  className="w-full rounded-lg border border-slate-800 bg-slate-950/80 px-3 py-2 text-[11px] text-slate-100 focus:outline-none focus:ring-1 focus:ring-emerald-500"
+                  value={editSpecialty}
+                  onChange={(e) =>
+                    setEditSpecialty(e.target.value as SpecialtyLiteral)
+                  }
+                >
+                  {SPECIALTY_OPTIONS.map((opt) => (
+                    <option key={opt.value} value={opt.value}>
+                      {opt.label}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              {editError && (
+                <p className="text-[11px] text-rose-400">{editError}</p>
+              )}
+
+              <div className="mt-4 flex justify-end gap-2 text-[11px]">
+                <button
+                  type="button"
+                  className="px-3 py-1 rounded-lg border border-slate-700 bg-slate-900 text-slate-300 hover:border-slate-500"
+                  onClick={closeEditModal}
+                  disabled={editLoading}
+                >
+                  Cancelar
+                </button>
+                <button
+                  type="submit"
+                  className="px-3 py-1 rounded-lg border border-emerald-600 bg-emerald-600/20 text-emerald-100 hover:bg-emerald-600/30 disabled:opacity-60"
+                  disabled={editLoading}
+                >
+                  {editLoading ? "Guardando…" : "Guardar alterações"}
                 </button>
               </div>
             </form>

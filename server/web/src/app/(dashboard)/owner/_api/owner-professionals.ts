@@ -1,5 +1,3 @@
-// src/app/(dashboard)/owner/_api/owner-professionals.ts
-
 import { apiClient } from "@/lib/api-client";
 
 // ---------------------- DTOs vindos do backend ----------------------
@@ -64,7 +62,7 @@ const DEFAULT_WEEKDAY_TEMPLATE: Record<string, [string, string][]> = {
     ["08:00", "12:00"],
     ["14:00", "20:00"],
   ],
-  sun: [], // sem atendimento
+  sun: [],
 };
 
 // ---------------------- Tipos usados pela tela do owner ----------------------
@@ -72,11 +70,14 @@ const DEFAULT_WEEKDAY_TEMPLATE: Record<string, [string, string][]> = {
 export type OwnerProfessional = {
   id: string;
   name: string;
+  email: string;
+  phone: string;
   specialty: string;
   locationId: string;
   locationName: string;
   isActive: boolean;
-  // 0–100 – por enquanto ainda não calculamos de verdade
+
+  // 0–100 (a ocupação REAL vem do relatório /reports/provider-earnings)
   averageOccupation: number;
 };
 
@@ -94,6 +95,23 @@ export type CreateOwnerProfessionalInput = {
     | "tattoo"
     | "other";
   weekdayTemplate?: Record<string, [string, string][]>;
+};
+
+export type UpdateOwnerProfessionalInput = {
+  name: string;
+  email: string;
+  phone: string;
+  locationId: string;
+  specialty?:
+    | "barber"
+    | "hairdresser"
+    | "nail"
+    | "esthetic"
+    | "makeup"
+    | "tattoo"
+    | "other";
+  weekdayTemplate?: Record<string, [string, string][]>;
+  active?: boolean;
 };
 
 // (ainda não estamos usando, mas deixamos preparado)
@@ -125,6 +143,8 @@ export async function fetchOwnerProfessionals(): Promise<OwnerProfessional[]> {
   return rows.map((provider) => ({
     id: provider.id,
     name: provider.name,
+    email: provider.user?.email ?? "",
+    phone: provider.user?.phone ?? "",
     specialty: provider.specialty ?? "Profissional",
     locationId: provider.location?.id ?? "",
     locationName: provider.location?.name ?? "Unidade do tenant",
@@ -144,10 +164,10 @@ export type OwnerProviderEarningsItem = {
   houseEarningsCents: number;
   appointmentsCount: number;
 
-  // novos campos vindos do backend
-  workedMinutes: number; // minutos trabalhados (já em slots de 15 min)
-  availableMinutes: number; // minutos disponíveis no período, pelo template
-  occupationPercentage: number; // 0–100
+  // campos vindos do backend
+  workedMinutes: number;
+  availableMinutes: number;
+  occupationPercentage: number;
 };
 
 type OwnerProviderEarningsResponse = {
@@ -167,12 +187,8 @@ export async function fetchOwnerProviderEarnings(params?: {
 }): Promise<OwnerProviderEarningsItem[]> {
   const query = new URLSearchParams();
 
-  if (params?.from) {
-    query.set("from", params.from);
-  }
-  if (params?.to) {
-    query.set("to", params.to);
-  }
+  if (params?.from) query.set("from", params.from);
+  if (params?.to) query.set("to", params.to);
 
   const path =
     query.toString().length > 0
@@ -244,7 +260,7 @@ type ProviderPayoutsResponse = {
 export type OwnerProviderPayout = {
   id: string;
   periodLabel: string;
-  amount: number; // em euros
+  amount: number;
   status: "pending" | "paid";
 };
 
@@ -274,11 +290,8 @@ export async function fetchOwnerProviderPayouts(
     const status =
       (item.payoutStatus as string) === "paid" ? "paid" : "pending";
 
-    if (status === "paid") {
-      paidCents += item.providerEarningsCents;
-    } else {
-      pendingCents += item.providerEarningsCents;
-    }
+    if (status === "paid") paidCents += item.providerEarningsCents;
+    else pendingCents += item.providerEarningsCents;
   }
 
   const results: OwnerProviderPayout[] = [];
@@ -308,17 +321,15 @@ export async function fetchOwnerProviderPayouts(
   return results;
 }
 
-// --- Criar novo profissional (Provider) --------------------
+// ---------------------- Criar profissional ----------------------
 
 type ProviderApiResponse = {
   id: string;
   name: string;
   specialty: string;
   active: boolean;
-  location?: {
-    id: string;
-    name: string;
-  } | null;
+  location?: { id: string; name: string } | null;
+  user?: { id: string; email: string; phone: string | null } | null;
 };
 
 export async function createOwnerProfessional(
@@ -333,15 +344,47 @@ export async function createOwnerProfessional(
     },
   });
 
-  const ownerProfessional: OwnerProfessional = {
+  return {
     id: provider.id,
     name: provider.name,
+    email: provider.user?.email ?? input.email,
+    phone: provider.user?.phone ?? input.phone,
     specialty: provider.specialty,
-    locationId: provider.location?.id ?? "",
+    locationId: provider.location?.id ?? input.locationId,
     locationName: provider.location?.name ?? "Sem unidade",
     averageOccupation: 0,
     isActive: provider.active,
   };
+}
 
-  return ownerProfessional;
+// ---------------------- Editar profissional ----------------------
+
+export async function updateOwnerProfessional(
+  providerId: string,
+  input: UpdateOwnerProfessionalInput
+): Promise<OwnerProfessional> {
+  const provider = await apiClient<ProviderDto>(`/providers/${providerId}`, {
+    method: "PATCH",
+    body: {
+      name: input.name,
+      email: input.email,
+      phone: input.phone,
+      locationId: input.locationId,
+      specialty: input.specialty,
+      weekdayTemplate: input.weekdayTemplate,
+      active: input.active,
+    },
+  });
+
+  return {
+    id: provider.id,
+    name: provider.name,
+    email: provider.user?.email ?? "",
+    phone: provider.user?.phone ?? "",
+    specialty: provider.specialty ?? "Profissional",
+    locationId: provider.location?.id ?? "",
+    locationName: provider.location?.name ?? "Unidade do tenant",
+    isActive: provider.active,
+    averageOccupation: 0,
+  };
 }

@@ -173,7 +173,10 @@ export class LocationsService {
       data: {
         name: dto.name ?? undefined,
         slug: slug ?? undefined,
-        businessHoursTemplate: dto.businessHoursTemplate ?? undefined,
+        businessHoursTemplate:
+          typeof dto.businessHoursTemplate !== 'undefined'
+            ? dto.businessHoursTemplate
+            : undefined,
         active: typeof dto.active === 'boolean' ? dto.active : undefined,
         managerProviderId:
           typeof dto.managerProviderId !== 'undefined'

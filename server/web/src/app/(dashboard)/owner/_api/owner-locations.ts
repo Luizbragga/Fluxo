@@ -138,7 +138,7 @@ export async function createOwnerLocation(input: {
   if (input.slug) {
     body.slug = input.slug;
   }
-  if (input.businessHoursTemplate) {
+  if (typeof input.businessHoursTemplate !== "undefined") {
     body.businessHoursTemplate = input.businessHoursTemplate;
   }
 

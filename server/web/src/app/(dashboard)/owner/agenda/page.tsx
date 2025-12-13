@@ -19,7 +19,7 @@ import {
 import {
   fetchOwnerLocations,
   type OwnerLocation,
-} from "../_api/owner-services";
+} from "../_api/owner-locations";
 
 type PendingAppointmentSlot = {
   time: string;
@@ -124,7 +124,7 @@ export default function OwnerAgendaPage() {
   const [servicesLoading, setServicesLoading] = useState(false);
   const [selectedServiceId, setSelectedServiceId] = useState<string>("");
   const [modalProviderId, setModalProviderId] = useState<string>("");
-
+  const [didApplyLocationFromUrl, setDidApplyLocationFromUrl] = useState(false);
   // RESUMO DO DIA (contagens simples)
   const agendaStats = useMemo(() => {
     const total = appointments.length;
@@ -239,14 +239,15 @@ export default function OwnerAgendaPage() {
 
     loadAgenda();
   }, [authLoading, user, selectedDate]);
+
   useEffect(() => {
     async function loadLocations() {
       if (authLoading) return;
       if (!user) return;
 
       try {
-        const data = await fetchOwnerLocations();
-        setLocations(data);
+        const result = await fetchOwnerLocations({ page: 1, pageSize: 100 });
+        setLocations(result.data);
       } catch (err) {
         console.error("Erro ao carregar unidades:", err);
         // não quebra a agenda se der erro
@@ -255,6 +256,20 @@ export default function OwnerAgendaPage() {
 
     loadLocations();
   }, [authLoading, user]);
+  useEffect(() => {
+    if (didApplyLocationFromUrl) return;
+
+    const locationIdFromUrl = searchParams.get("locationId");
+    if (!locationIdFromUrl) return;
+
+    // só aplica se existir na lista (evita select ficar com value inválido)
+    const exists = locations.some((l) => l.id === locationIdFromUrl);
+    if (!exists) return;
+
+    setSelectedLocationId(locationIdFromUrl);
+    setSelectedProfessionalId("all"); // garante que não fica preso num profissional de outra unidade
+    setDidApplyLocationFromUrl(true);
+  }, [didApplyLocationFromUrl, searchParams, locations]);
 
   useEffect(() => {
     if (customerNameFromUrl) {
@@ -601,6 +616,9 @@ export default function OwnerAgendaPage() {
       : professionals.filter(
           (pro: any) => pro.locationId === selectedLocationId
         );
+  const isSpecificLocationSelected = selectedLocationId !== "all";
+  const locationHasNoProfessionals =
+    isSpecificLocationSelected && professionalsByLocation.length === 0;
 
   // Profissionais visíveis considerando unidade + filtro específico
   const visibleProfessionals =
@@ -657,7 +675,7 @@ export default function OwnerAgendaPage() {
         locationFilter === "all"
           ? data.professionals
           : data.professionals.filter(
-              (p: any) => p.locationName === locationFilter
+              (p: any) => p.locationId === locationFilter
             );
 
       const prosForSearch =
@@ -731,7 +749,7 @@ export default function OwnerAgendaPage() {
       const nextDate = await findNextDayWithFreeSlot(
         base,
         selectedProfessionalId,
-        selectedLocationName
+        selectedLocationId
       );
 
       if (!nextDate) {
@@ -1028,6 +1046,33 @@ export default function OwnerAgendaPage() {
             }}
           >
             Limpar
+          </button>
+        </div>
+      )}
+      {locationHasNoProfessionals && (
+        <div className="mb-4 rounded-2xl border border-amber-500/40 bg-amber-500/10 px-4 py-3 text-xs flex items-center justify-between gap-3">
+          <div className="min-w-0">
+            <p className="text-[11px] uppercase tracking-wide text-amber-200/80">
+              Unidade sem profissionais
+            </p>
+            <p className="text-[12px] text-amber-100">
+              Essa unidade ainda não tem nenhum profissional vinculado.
+            </p>
+          </div>
+
+          <button
+            type="button"
+            className="shrink-0 px-3 py-1 rounded-lg border border-amber-400 bg-amber-500/10 text-[11px] text-amber-100 hover:bg-amber-500/20"
+            onClick={() => {
+              const returnTo = encodeURIComponent(
+                `/owner/agenda?locationId=${selectedLocationId}`
+              );
+              router.push(
+                `/owner/profissionais?locationId=${selectedLocationId}&openCreate=1&returnTo=${returnTo}`
+              );
+            }}
+          >
+            Vincular agora
           </button>
         </div>
       )}
