@@ -8,6 +8,8 @@ import {
   type ReportsRangePreset,
   fetchOwnerCancellations,
   type CancellationItem,
+  fetchOwnerProviderEarningsDetailed,
+  type ProviderEarningRow,
 } from "../_api/owner-reports";
 
 import {
@@ -18,36 +20,6 @@ import {
   RevenueLineChart,
   type RevenueChartPoint,
 } from "../_components/revenue-line-chart";
-
-// ----------------- Tipos locais (mock de ocupação por enquanto) -----------------
-
-type OccupancyRow = {
-  professionalName: string;
-  averageOccupationPercent: number;
-  peakWeekday: string;
-  peakHourRange: string;
-};
-
-const occupancyData: OccupancyRow[] = [
-  {
-    professionalName: "Rafa Barber",
-    averageOccupationPercent: 82,
-    peakWeekday: "Sábado",
-    peakHourRange: "10h–14h",
-  },
-  {
-    professionalName: "João Fade",
-    averageOccupationPercent: 68,
-    peakWeekday: "Sexta-feira",
-    peakHourRange: "16h–20h",
-  },
-  {
-    professionalName: "Ana Nails",
-    averageOccupationPercent: 54,
-    peakWeekday: "Quinta-feira",
-    peakHourRange: "14h–18h",
-  },
-];
 
 // ----------------- Helpers -----------------
 
@@ -107,6 +79,17 @@ export default function OwnerRelatoriosPage() {
 
   const [loadingFinancial, setLoadingFinancial] = useState(true);
   const [errorFinancial, setErrorFinancial] = useState<string | null>(null);
+  // relatório por profissional (dados reais)
+  const [providersReport, setProvidersReport] = useState<ProviderEarningRow[]>(
+    []
+  );
+  const [providersTotals, setProvidersTotals] = useState<{
+    totalRevenue: number;
+    totalProviderEarnings: number;
+    totalHouseEarnings: number;
+  } | null>(null);
+  const [loadingProviders, setLoadingProviders] = useState(true);
+  const [errorProviders, setErrorProviders] = useState<string | null>(null);
 
   const [cancellationsFilter, setCancellationsFilter] = useState<
     "all" | "cancelled" | "no_show"
@@ -142,6 +125,27 @@ export default function OwnerRelatoriosPage() {
     }
 
     loadFinancial();
+  }, [rangePreset]);
+  // Carrega relatório detalhado por profissional
+  useEffect(() => {
+    async function loadProviders() {
+      try {
+        setLoadingProviders(true);
+        setErrorProviders(null);
+
+        const result = await fetchOwnerProviderEarningsDetailed(rangePreset);
+
+        setProvidersReport(result.items);
+        setProvidersTotals(result.totals);
+      } catch (err) {
+        console.error("Erro ao carregar relatório por profissional:", err);
+        setErrorProviders("Erro ao carregar dados de profissionais.");
+      } finally {
+        setLoadingProviders(false);
+      }
+    }
+
+    loadProviders();
   }, [rangePreset]);
 
   // Carrega cancelamentos / no-shows com base no preset + filtro
@@ -234,7 +238,7 @@ export default function OwnerRelatoriosPage() {
 
       {/* Linha 1: Ocupação + Gráfico de faturamento */}
       <section className="grid grid-cols-1 lg:grid-cols-2 gap-4 mb-4">
-        {/* Ocupação por profissional (mock por enquanto) */}
+        {/* Ocupação e faturamento por profissional (dados reais) */}
         <div className="rounded-2xl border border-slate-800 bg-slate-900/60 p-4 text-xs">
           <div className="flex items-center justify-between mb-3">
             <p className="text-slate-400">Ocupação por profissional</p>
@@ -243,35 +247,75 @@ export default function OwnerRelatoriosPage() {
             </button>
           </div>
 
-          <div className="space-y-2">
-            {occupancyData.map((row) => (
-              <div
-                key={row.professionalName}
-                className="rounded-xl border border-slate-800 bg-slate-950/60 px-3 py-2 flex items-center justify-between gap-3"
-              >
-                <div className="flex-1">
-                  <p className="text-[11px] font-medium">
-                    {row.professionalName}
-                  </p>
-                  <p className="text-[10px] text-slate-400">
-                    Pico: {row.peakWeekday} · {row.peakHourRange}
-                  </p>
-                  <div className="mt-2 h-2 rounded-full bg-slate-800 overflow-hidden">
+          {loadingProviders && (
+            <p className="text-[11px] text-slate-400">
+              Carregando dados dos profissionais...
+            </p>
+          )}
+
+          {errorProviders && (
+            <p className="text-[11px] text-rose-400">{errorProviders}</p>
+          )}
+
+          {!loadingProviders && !errorProviders && (
+            <>
+              {providersReport.length === 0 ? (
+                <p className="text-[11px] text-slate-500">
+                  Nenhum atendimento concluído no período selecionado.
+                </p>
+              ) : (
+                <div className="space-y-2">
+                  {providersReport.map((row) => (
                     <div
-                      className="h-full rounded-full bg-emerald-500/70"
-                      style={{ width: `${row.averageOccupationPercent}%` }}
-                    />
-                  </div>
+                      key={row.providerId}
+                      className="rounded-xl border border-slate-800 bg-slate-950/60 px-3 py-2 flex items-center justify-between gap-3"
+                    >
+                      <div className="flex-1">
+                        <p className="text-[11px] font-medium">
+                          {row.providerName}
+                        </p>
+                        <p className="text-[10px] text-slate-400">
+                          {row.locationName ?? "Sem unidade vinculada"} ·{" "}
+                          {row.appointmentsCount} atendimentos
+                        </p>
+                        <p className="mt-1 text-[10px] text-slate-400">
+                          Ticket médio: € {row.averageTicket.toFixed(2)}
+                        </p>
+
+                        <div className="mt-2 h-2 rounded-full bg-slate-800 overflow-hidden">
+                          <div
+                            className="h-full rounded-full bg-emerald-500/70"
+                            style={{
+                              width: `${row.occupationPercentage}%`,
+                            }}
+                          />
+                        </div>
+                      </div>
+
+                      <div className="w-20 text-right">
+                        <p className="text-[10px] text-slate-400">Ocupação</p>
+                        <p className="text-sm font-semibold">
+                          {row.occupationPercentage}%
+                        </p>
+                        <p className="mt-1 text-[10px] text-slate-400">
+                          Profissional: € {row.providerEarnings.toFixed(2)}
+                        </p>
+                      </div>
+                    </div>
+                  ))}
                 </div>
-                <div className="w-16 text-right">
-                  <p className="text-[10px] text-slate-400">Ocupação</p>
-                  <p className="text-sm font-semibold">
-                    {row.averageOccupationPercent}%
-                  </p>
-                </div>
-              </div>
-            ))}
-          </div>
+              )}
+
+              {providersTotals && providersReport.length > 0 && (
+                <p className="mt-2 text-[10px] text-slate-500">
+                  Total no período — Faturamento: €{" "}
+                  {providersTotals.totalRevenue.toFixed(2)} · Profissionais: €{" "}
+                  {providersTotals.totalProviderEarnings.toFixed(2)} · Espaço: €{" "}
+                  {providersTotals.totalHouseEarnings.toFixed(2)}
+                </p>
+              )}
+            </>
+          )}
         </div>
 
         {/* Faturamento no período + gráfico */}
@@ -324,222 +368,132 @@ export default function OwnerRelatoriosPage() {
         </div>
       </section>
 
-      {/* Linha 2: Relatório mensal + Cancelamentos/no-shows */}
-      <section className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-        {/* Relatório financeiro mensal (dados reais) */}
-        <div className="rounded-2xl border border-slate-800 bg-slate-900/60 p-4 text-xs">
-          <div className="flex items-center justify-between mb-3">
-            <p className="text-slate-400">Relatório financeiro mensal</p>
-            <button className="text-[11px] text-emerald-400 hover:underline">
-              Abrir em financeiro
-            </button>
+      {/* Linha 3: Detalhamento por profissional (tabela) */}
+      <section className="mt-4 rounded-2xl border border-slate-800 bg-slate-900/60 p-4 text-xs">
+        <div className="flex items-center justify-between mb-3">
+          <div>
+            <p className="text-slate-400">Detalhamento por profissional</p>
+            <p className="text-[10px] text-slate-500">
+              Faturamento, comissões e ocupação considerando apenas atendimentos
+              concluídos no período selecionado.
+            </p>
           </div>
 
-          {loadingFinancial && (
-            <p className="text-[11px] text-slate-400">
-              Carregando dados financeiros...
-            </p>
-          )}
+          {/* Futuro: filtros por unidade/profissional */}
+          <span className="text-[10px] text-slate-500">
+            Período:{" "}
+            {rangePreset === "last_30_days"
+              ? "últimos 30 dias"
+              : rangePreset === "last_90_days"
+              ? "últimos 90 dias"
+              : "últimos 12 meses"}
+          </span>
+        </div>
 
-          {errorFinancial && (
-            <p className="text-[11px] text-rose-400">{errorFinancial}</p>
-          )}
+        {loadingProviders && (
+          <p className="text-[11px] text-slate-400">
+            Carregando dados dos profissionais...
+          </p>
+        )}
 
-          {!loadingFinancial && !errorFinancial && (
-            <>
+        {errorProviders && (
+          <p className="text-[11px] text-rose-400">{errorProviders}</p>
+        )}
+
+        {!loadingProviders && !errorProviders && (
+          <>
+            {providersReport.length === 0 ? (
+              <p className="text-[11px] text-slate-500">
+                Nenhum atendimento concluído no período selecionado.
+              </p>
+            ) : (
               <div className="overflow-auto">
-                <table className="w-full border-collapse text-[11px]">
+                <table className="w-full border-collapse text-[11px] min-w-[720px]">
                   <thead>
                     <tr className="text-slate-400">
                       <th className="text-left py-2 pr-3 border-b border-slate-800">
-                        Mês
+                        Profissional
+                      </th>
+                      <th className="text-left py-2 pr-3 border-b border-slate-800">
+                        Unidade
+                      </th>
+                      <th className="text-right py-2 px-3 border-b border-slate-800">
+                        Atendimentos
+                      </th>
+                      <th className="text-right py-2 px-3 border-b border-slate-800">
+                        Min. trabalhados
+                      </th>
+                      <th className="text-right py-2 px-3 border-b border-slate-800">
+                        Min. disponíveis
+                      </th>
+                      <th className="text-right py-2 px-3 border-b border-slate-800">
+                        Ocupação
                       </th>
                       <th className="text-right py-2 px-3 border-b border-slate-800">
                         Faturamento
                       </th>
                       <th className="text-right py-2 px-3 border-b border-slate-800">
-                        Espaço
-                      </th>
-                      <th className="text-right py-2 px-3 border-b border-slate-800">
-                        Profissionais
+                        Profissional
                       </th>
                       <th className="text-right py-2 pl-3 border-b border-slate-800">
-                        Perda c/ no-shows
+                        Espaço
                       </th>
                     </tr>
                   </thead>
                   <tbody>
-                    {monthlyFinancialRows.map((row) => (
+                    {providersReport.map((row) => (
                       <tr
-                        key={row.monthLabel}
+                        key={row.providerId}
                         className="hover:bg-slate-950/50"
                       >
                         <td className="py-2 pr-3 text-slate-200">
-                          {row.monthLabel}
+                          {row.providerName}
+                        </td>
+                        <td className="py-2 pr-3 text-slate-200">
+                          {row.locationName ?? "—"}
+                        </td>
+                        <td className="py-2 px-3 text-right text-slate-200">
+                          {row.appointmentsCount}
+                        </td>
+                        <td className="py-2 px-3 text-right text-slate-200">
+                          {row.workedMinutes}
+                        </td>
+                        <td className="py-2 px-3 text-right text-slate-200">
+                          {row.availableMinutes}
+                        </td>
+                        <td className="py-2 px-3 text-right text-slate-200">
+                          {row.occupationPercentage}%
                         </td>
                         <td className="py-2 px-3 text-right text-slate-200">
                           € {row.totalRevenue.toFixed(2)}
                         </td>
                         <td className="py-2 px-3 text-right text-slate-200">
-                          € {row.spaceShare.toFixed(2)}
+                          € {row.providerEarnings.toFixed(2)}
                         </td>
-                        <td className="py-2 px-3 text-right text-slate-200">
-                          € {row.professionalsShare.toFixed(2)}
-                        </td>
-                        <td className="py-2 pl-3 text-right text-amber-300">
-                          € {row.estimatedLossNoShow.toFixed(2)}
+                        <td className="py-2 pl-3 text-right text-slate-200">
+                          € {row.houseEarnings.toFixed(2)}
                         </td>
                       </tr>
                     ))}
-
-                    {monthlyFinancialRows.length === 0 && (
-                      <tr>
-                        <td
-                          colSpan={5}
-                          className="py-3 text-center text-slate-500"
-                        >
-                          Nenhum dado financeiro no período selecionado.
-                        </td>
-                      </tr>
-                    )}
                   </tbody>
                 </table>
               </div>
+            )}
 
+            {providersTotals && providersReport.length > 0 && (
               <p className="mt-2 text-[10px] text-slate-500">
-                Valores baseados em relatórios agregados de faturamento e
-                comissões. A coluna de perdas com no-show será ligada ao backend
-                quando tivermos essa métrica registrada.
+                Totais gerais — Faturamento: €{" "}
+                {providersTotals.totalRevenue.toFixed(2)} · Profissionais: €{" "}
+                {providersTotals.totalProviderEarnings.toFixed(2)} · Espaço: €{" "}
+                {providersTotals.totalHouseEarnings.toFixed(2)}
               </p>
-            </>
-          )}
-        </div>
-
-        {/* Cancelamentos e no-shows (dados reais) */}
-        <div className="rounded-2xl border border-slate-800 bg-slate-900/60 p-4 text-xs">
-          <div className="flex items-center justify-between mb-3">
-            <p className="text-slate-400">Cancelamentos e no-shows</p>
-            <div className="flex gap-2">
-              {(["all", "no_show", "cancelled"] as const).map((filterKey) => {
-                const label =
-                  filterKey === "all"
-                    ? "Todos"
-                    : filterKey === "no_show"
-                    ? "No-show"
-                    : "Cancelado";
-
-                const isActive = cancellationsFilter === filterKey;
-
-                return (
-                  <button
-                    key={filterKey}
-                    onClick={() => setCancellationsFilter(filterKey)}
-                    className={[
-                      "px-3 py-1 rounded-lg border text-xs transition-colors",
-                      isActive
-                        ? "border-emerald-500 bg-emerald-500/10 text-emerald-200"
-                        : "border-slate-800 bg-slate-950/80 text-slate-200",
-                    ].join(" ")}
-                  >
-                    {label}
-                  </button>
-                );
-              })}
-            </div>
-          </div>
-
-          {loadingCancellations && (
-            <p className="text-[11px] text-slate-400">
-              Carregando cancelamentos...
-            </p>
-          )}
-
-          {errorCancellations && (
-            <p className="text-[11px] text-rose-400">{errorCancellations}</p>
-          )}
-
-          {!loadingCancellations && !errorCancellations && (
-            <div className="overflow-auto max-h-80 pr-1">
-              <table className="w-full border-collapse text-[11px]">
-                <thead>
-                  <tr className="text-slate-400">
-                    <th className="text-left py-2 pr-3 border-b border-slate-800">
-                      Data
-                    </th>
-                    <th className="text-left py-2 pr-3 border-b border-slate-800">
-                      Cliente
-                    </th>
-                    <th className="text-left py-2 pr-3 border-b border-slate-800">
-                      Profissional
-                    </th>
-                    <th className="text-left py-2 pr-3 border-b border-slate-800">
-                      Serviço
-                    </th>
-                    <th className="text-left py-2 pr-3 border-b border-slate-800">
-                      Tipo
-                    </th>
-                    <th className="text-left py-2 pl-3 border-b border-slate-800">
-                      Motivo
-                    </th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {cancellations.length === 0 ? (
-                    <tr>
-                      <td
-                        colSpan={6}
-                        className="py-3 text-center text-slate-500"
-                      >
-                        Nenhum cancelamento ou no-show no período.
-                      </td>
-                    </tr>
-                  ) : (
-                    cancellations.map((row) => {
-                      const d = new Date(row.date);
-                      const dateLabel = d.toLocaleDateString("pt-PT", {
-                        day: "2-digit",
-                        month: "short",
-                        year: "numeric",
-                      });
-                      const timeLabel = d.toLocaleTimeString("pt-PT", {
-                        hour: "2-digit",
-                        minute: "2-digit",
-                      });
-
-                      return (
-                        <tr key={row.id} className="hover:bg-slate-950/50">
-                          <td className="py-2 pr-3 text-slate-200">
-                            {dateLabel} · {timeLabel}
-                          </td>
-                          <td className="py-2 pr-3 text-slate-200">
-                            {row.customerName ?? "—"}
-                          </td>
-                          <td className="py-2 pr-3 text-slate-200">
-                            {row.professionalName ?? "—"}
-                          </td>
-                          <td className="py-2 pr-3 text-slate-200">
-                            {row.serviceName ?? "—"}
-                          </td>
-                          <td className="py-2 pr-3">
-                            <CancellationTypeBadge status={row.status} />
-                          </td>
-                          <td className="py-2 pl-3 text-slate-400">
-                            {row.reason ?? "—"}
-                          </td>
-                        </tr>
-                      );
-                    })
-                  )}
-                </tbody>
-              </table>
-            </div>
-          )}
-        </div>
+            )}
+          </>
+        )}
       </section>
     </>
   );
 }
-
 function CancellationTypeBadge({
   status,
 }: {

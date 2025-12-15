@@ -26,6 +26,34 @@ type PendingAppointmentSlot = {
   professionalId: string;
   professionalName: string;
 };
+type WeekDayStats = {
+  total: number;
+  planCount: number;
+  avulsoCount: number;
+  scheduled: number;
+  done: number;
+  noShow: number;
+  cancelled: number;
+};
+
+type WeekDayItem = {
+  id: string;
+  time: string;
+  serviceName: string;
+  customerName: string;
+  status: AgendaAppointment["status"];
+  billingType?: "plan" | "single";
+};
+
+type WeekDayData = {
+  date: Date;
+  dateStr: string;
+  weekdayShort: string;
+  dayLabel: string;
+  isToday: boolean;
+  stats: WeekDayStats;
+  items: WeekDayItem[]; // lista completa do dia
+};
 
 type FilterProfessionalId = string | "all";
 
@@ -80,6 +108,9 @@ export default function OwnerAgendaPage() {
   );
   const [locations, setLocations] = useState<OwnerLocation[]>([]);
   const [viewMode, setViewMode] = useState<"daily" | "weekly">("daily");
+  const [weekDays, setWeekDays] = useState<WeekDayData[]>([]);
+  const [loadingWeek, setLoadingWeek] = useState(false);
+  const [weekError, setWeekError] = useState<string | null>(null);
   const [loadingAgenda, setLoadingAgenda] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [savingAppointment, setSavingAppointment] = useState(false);
@@ -207,11 +238,13 @@ export default function OwnerAgendaPage() {
   }
 
   function handlePrevDay() {
-    setSelectedDate((prev) => addDays(prev, -1));
+    const step = viewMode === "weekly" ? -7 : -1;
+    setSelectedDate((prev) => addDays(prev, step));
   }
 
   function handleNextDay() {
-    setSelectedDate((prev) => addDays(prev, 1));
+    const step = viewMode === "weekly" ? 7 : 1;
+    setSelectedDate((prev) => addDays(prev, step));
   }
 
   useEffect(() => {
@@ -627,6 +660,141 @@ export default function OwnerAgendaPage() {
       : professionalsByLocation.filter(
           (pro) => pro.id === selectedProfessionalId
         );
+  const visibleProIdsKey = useMemo(() => {
+    return visibleProfessionals
+      .map((p) => p.id)
+      .sort()
+      .join("|");
+  }, [visibleProfessionals]);
+
+  useEffect(() => {
+    let alive = true;
+
+    async function loadWeek() {
+      if (viewMode !== "weekly") return;
+      if (authLoading) return;
+      if (!user) return;
+
+      try {
+        setWeekError(null);
+        setLoadingWeek(true);
+
+        const today = new Date();
+        const todayStr = formatDateYYYYMMDD(today);
+
+        const start = startOfWeekMonday(selectedDate);
+        const days = Array.from({ length: 7 }, (_, i) => addDays(start, i));
+
+        const proIdSet = new Set(visibleProfessionals.map((p) => p.id));
+
+        const results = await Promise.all(
+          days.map(async (d) => {
+            const dateStr = formatDateYYYYMMDD(d);
+            const data = await fetchOwnerAgendaDay(dateStr);
+
+            const filtered = data.appointments.filter((a) =>
+              proIdSet.has(a.professionalId)
+            );
+
+            let planCount = 0;
+            let avulsoCount = 0;
+            let scheduled = 0;
+            let done = 0;
+            let noShow = 0;
+            let cancelled = 0;
+
+            for (const appt of filtered) {
+              if ((appt as any).billingType === "plan") planCount++;
+              else avulsoCount++;
+
+              switch (appt.status) {
+                case "scheduled":
+                  scheduled++;
+                  break;
+                case "done":
+                  done++;
+                  break;
+                case "no_show":
+                  noShow++;
+                  break;
+                case "cancelled":
+                  cancelled++;
+                  break;
+              }
+            }
+
+            // ✅ lista completa do dia (ordenada)
+            const items = filtered
+              .slice()
+              .sort(
+                (a, b) => timeStrToMinutes(a.time) - timeStrToMinutes(b.time)
+              )
+              .map((a) => ({
+                id: a.id,
+                time: a.time,
+                serviceName: a.serviceName,
+                customerName: a.customerName,
+                status: a.status,
+                billingType: (a as any).billingType,
+              }));
+
+            const weekdayShort = new Intl.DateTimeFormat("pt-PT", {
+              weekday: "short",
+            })
+              .format(d)
+              .replace(".", "");
+
+            const dayLabel = `${weekdayShort
+              .charAt(0)
+              .toUpperCase()}${weekdayShort.slice(1)} · ${d.toLocaleDateString(
+              "pt-PT",
+              {
+                day: "2-digit",
+                month: "2-digit",
+              }
+            )}`;
+
+            const isToday = formatDateYYYYMMDD(d) === todayStr;
+
+            const dayData: WeekDayData = {
+              date: d,
+              dateStr,
+              weekdayShort,
+              dayLabel,
+              isToday,
+              stats: {
+                total: filtered.length,
+                planCount,
+                avulsoCount,
+                scheduled,
+                done,
+                noShow,
+                cancelled,
+              },
+              items,
+            };
+
+            return dayData;
+          })
+        );
+
+        if (!alive) return;
+        setWeekDays(results);
+      } catch (err) {
+        console.error("Erro ao carregar visão semanal:", err);
+        if (!alive) return;
+        setWeekError("Erro ao carregar a visão semanal.");
+      } finally {
+        if (alive) setLoadingWeek(false);
+      }
+    }
+
+    loadWeek();
+
+    return () => {
+      alive = false;
+    };
+  }, [viewMode, selectedDate, visibleProIdsKey, authLoading, user]);
 
   const weekdayLabel = getWeekdayLabel(selectedDate);
 
@@ -1179,15 +1347,62 @@ export default function OwnerAgendaPage() {
           </section>
         </>
       ) : (
-        <section className="rounded-2xl border border-slate-800 bg-slate-900/60 p-4 text-xs text-slate-300">
-          <p className="mb-1 font-semibold text-slate-100">
-            Visão semanal em construção
-          </p>
-          <p>
-            Por enquanto, utilize a visão diária para gerir os agendamentos.
-            Quando avançarmos, esta aba vai mostrar o mapa da semana inteira por
-            profissional/unidade.
-          </p>
+        <section className="rounded-2xl border border-slate-800 bg-slate-900/60 p-4">
+          <div className="mb-3 flex items-center justify-between gap-3">
+            <div>
+              <p className="text-[11px] uppercase tracking-wide text-slate-500">
+                Visão semanal
+              </p>
+              <p className="text-xs text-slate-300">
+                {getWeekRangeLabel(selectedDate)}
+              </p>
+              <p className="text-[11px] text-slate-500">
+                Mostrando apenas os profissionais do filtro atual.
+              </p>
+            </div>
+
+            <button
+              type="button"
+              className="px-3 py-1 rounded-lg border border-slate-800 bg-slate-900/80 text-[11px] text-slate-200 hover:bg-slate-900"
+              onClick={() => setViewMode("daily")}
+            >
+              Voltar ao diário
+            </button>
+          </div>
+
+          {weekError ? (
+            <div className="text-xs text-rose-400">{weekError}</div>
+          ) : loadingWeek ? (
+            <WeeklySkeleton />
+          ) : (
+            <div className="overflow-x-auto">
+              <div
+                className="grid gap-2 min-w-[980px]"
+                style={{ gridTemplateColumns: "repeat(7, minmax(0, 1fr))" }}
+              >
+                {weekDays.map((d) => (
+                  <WeekDayCard
+                    key={d.dateStr}
+                    data={d}
+                    onOpenDay={() => {
+                      setSelectedDate(
+                        new Date(
+                          d.date.getFullYear(),
+                          d.date.getMonth(),
+                          d.date.getDate(),
+                          0,
+                          0,
+                          0,
+                          0
+                        )
+                      );
+                      setViewMode("daily");
+                    }}
+                  />
+                ))}
+              </div>
+            </div>
+          )}
         </section>
       )}
 
@@ -1627,6 +1842,203 @@ function RowTimeSlot({
       })}
     </>
   );
+}
+function WeeklySkeleton() {
+  return (
+    <div className="overflow-x-auto">
+      <div
+        className="grid gap-2 min-w-[980px]"
+        style={{ gridTemplateColumns: "repeat(7, minmax(0, 1fr))" }}
+      >
+        {Array.from({ length: 7 }).map((_, i) => (
+          <div
+            key={i}
+            className="h-[170px] rounded-2xl border border-slate-800 bg-slate-950/40 animate-pulse"
+          />
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function WeekDayCard({
+  data,
+  onOpenDay,
+}: {
+  data: WeekDayData;
+  onOpenDay: () => void;
+}) {
+  const s = data.stats;
+
+  return (
+    <div
+      className={`rounded-2xl border bg-slate-950/30 p-3 ${
+        data.isToday
+          ? "border-emerald-500/50 bg-emerald-500/5"
+          : "border-slate-800"
+      }`}
+    >
+      <div className="flex items-start justify-between gap-2 mb-2">
+        <div className="min-w-0">
+          <p className="text-[11px] uppercase tracking-wide text-slate-400">
+            {data.dayLabel}
+          </p>
+          <p className="text-lg font-semibold text-slate-50 leading-tight">
+            {s.total}
+            <span className="ml-1 text-[11px] font-normal text-slate-400">
+              agend.
+            </span>
+          </p>
+        </div>
+
+        <button
+          type="button"
+          className="shrink-0 px-2 py-1 rounded-lg border border-slate-800 bg-slate-900/70 text-[11px] text-slate-200 hover:bg-slate-900"
+          onClick={onOpenDay}
+        >
+          Abrir
+        </button>
+      </div>
+
+      <div className="grid grid-cols-2 gap-2 text-[11px] mb-2">
+        <div className="rounded-xl border border-slate-800 bg-slate-900/40 p-2">
+          <p className="text-slate-500">Plano</p>
+          <p className="text-emerald-300 font-semibold">{s.planCount}</p>
+        </div>
+        <div className="rounded-xl border border-slate-800 bg-slate-900/40 p-2">
+          <p className="text-slate-500">Avulso</p>
+          <p className="text-slate-100 font-semibold">{s.avulsoCount}</p>
+        </div>
+      </div>
+
+      <div className="flex flex-wrap gap-1 text-[10px] mb-2">
+        <span className="px-2 py-0.5 rounded border border-sky-500/30 bg-sky-500/10 text-sky-100">
+          Agendamentos: {s.scheduled}
+        </span>
+        <span className="px-2 py-0.5 rounded border border-slate-600/30 bg-slate-700/20 text-slate-100">
+          Concluídos: {s.done}
+        </span>
+        <span className="px-2 py-0.5 rounded border border-amber-500/30 bg-amber-500/10 text-amber-100">
+          Faltas: {s.noShow}
+        </span>
+        <span className="px-2 py-0.5 rounded border border-rose-500/30 bg-rose-500/10 text-rose-100">
+          Cancelados: {s.cancelled}
+        </span>
+      </div>
+
+      <div className="mt-2">
+        <p className="text-[11px] text-slate-500 mb-1">Agendamentos</p>
+
+        {data.items.length === 0 ? (
+          <div className="text-[11px] text-slate-500">
+            Nenhum agendamento neste dia.
+          </div>
+        ) : (
+          <div className="space-y-1 max-h-44 overflow-y-auto pr-1">
+            {data.items.map((t) => {
+              const status = getWeeklyStatusBadge(t.status);
+
+              return (
+                <div
+                  key={t.id}
+                  className="rounded-xl border border-slate-800 bg-slate-900/30 px-2 py-1"
+                >
+                  <div className="flex items-center justify-between gap-2">
+                    <p className="text-[11px] text-slate-200 truncate">
+                      <span className="text-slate-400">{t.time}</span> ·{" "}
+                      {t.serviceName}
+                    </p>
+
+                    <span
+                      className={`shrink-0 text-[9px] px-1.5 py-0.5 rounded border ${status.className}`}
+                    >
+                      {status.label}
+                    </span>
+                  </div>
+
+                  <p className="text-[10px] text-slate-400 truncate">
+                    {t.customerName} ·{" "}
+                    {t.billingType === "plan" ? "Plano" : "Avulso"}
+                  </p>
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function startOfWeekMonday(date: Date): Date {
+  const d = new Date(
+    date.getFullYear(),
+    date.getMonth(),
+    date.getDate(),
+    0,
+    0,
+    0,
+    0
+  );
+
+  const day = d.getDay(); // 0=Dom, 1=Seg...
+  const diff = day === 0 ? -6 : 1 - day; // volta até segunda
+  return addDays(d, diff);
+}
+
+function getWeekRangeLabel(anchor: Date): string {
+  const start = startOfWeekMonday(anchor);
+  const end = addDays(start, 6);
+
+  const sameMonth = start.getMonth() === end.getMonth();
+  const sameYear = start.getFullYear() === end.getFullYear();
+
+  const startLabel = start.toLocaleDateString("pt-PT", {
+    day: "2-digit",
+    month: "short",
+  });
+
+  const endLabel = end.toLocaleDateString("pt-PT", {
+    day: "2-digit",
+    month: "short",
+    ...(sameYear ? {} : { year: "numeric" }),
+  });
+
+  if (sameMonth) {
+    return `Semana · ${start.getDate()}–${endLabel}`;
+  }
+
+  return `Semana · ${startLabel} – ${endLabel}`;
+}
+function getWeeklyStatusBadge(status: AgendaAppointment["status"]) {
+  switch (status) {
+    case "done":
+      return {
+        label: "Concluído",
+        className: "border-slate-600/40 bg-slate-700/20 text-slate-100",
+      };
+    case "no_show":
+      return {
+        label: "Falta",
+        className: "border-amber-500/30 bg-amber-500/10 text-amber-100",
+      };
+    case "cancelled":
+      return {
+        label: "Cancelado",
+        className: "border-rose-500/30 bg-rose-500/10 text-rose-100",
+      };
+    case "in_service":
+      // pode acontecer em dia atual, mas não damos destaque no semanal
+      return {
+        label: "Em atendimento",
+        className: "border-emerald-500/30 bg-emerald-500/10 text-emerald-100",
+      };
+    default:
+      return {
+        label: "Agendado",
+        className: "border-sky-500/30 bg-sky-500/10 text-sky-100",
+      };
+  }
 }
 
 function timeStrToMinutes(time: string): number {

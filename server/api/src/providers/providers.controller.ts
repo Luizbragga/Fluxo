@@ -190,9 +190,9 @@ export class ProvidersController {
     @Query('from') from?: string,
     @Query('to') to?: string,
   ) {
-    const { tenantId, userId } = req.user as {
+    const { tenantId, id: userId } = req.user as {
       tenantId: string;
-      userId: string;
+      id: string;
     };
 
     return this.providersService.getMyEarnings({

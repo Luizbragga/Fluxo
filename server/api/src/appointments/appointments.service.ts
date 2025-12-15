@@ -508,7 +508,8 @@ export class AppointmentsService {
       },
     });
 
-    const commissionPercentage = commissionRule?.percentage ?? 0;
+    const commissionPercentage =
+      commissionRule?.percentage ?? DEFAULT_COMMISSION_PERCENTAGE;
 
     const providerEarningsCents = Math.round(
       (appointment.servicePriceCents * commissionPercentage) / 100,

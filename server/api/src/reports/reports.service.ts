@@ -224,7 +224,7 @@ export class ReportsService {
       where: {
         appointment: {
           tenantId,
-          status: 'done',
+          status: AppointmentState.done,
           startAt: {
             gte: fromDate,
             lt: toDate,
@@ -270,6 +270,8 @@ export class ReportsService {
       appointmentsCount: number;
       workedMinutes: number;
       availableMinutes: number;
+      totalSlots: number;
+      usedSlots: number;
       occupationPercentage: number;
     };
 
@@ -301,6 +303,8 @@ export class ReportsService {
           appointmentsCount: 0,
           workedMinutes: 0,
           availableMinutes: 0,
+          totalSlots: 0,
+          usedSlots: 0,
           occupationPercentage: 0,
         };
         byProvider.set(key, bucket);
@@ -403,7 +407,6 @@ export class ReportsService {
     );
 
     // 4) Para cada provider, calcula minutos "disponíveis" no período,
-    //    baseado no weekdayTemplate - blocks (não subtraímos os appointments aqui).
     for (const meta of providersMeta) {
       const bucket = byProvider.get(meta.id);
       if (!bucket) continue;
@@ -429,7 +432,6 @@ export class ReportsService {
           continue;
         }
 
-        // intervalos do template em minutos [0..1440]
         const dayIntervals = rawIntervals
           .map(([start, end]) => {
             const s = toMin(start);
@@ -446,7 +448,6 @@ export class ReportsService {
           continue;
         }
 
-        // blocks que tocam este dia -> convertemos pra minutos no dia
         const dayBlockRanges = providerBlocks
           .filter((b) => b.startAt < dayEnd && b.endAt > dayStart)
           .map((b) => {
@@ -472,11 +473,21 @@ export class ReportsService {
         cursor = new Date(dayStart.getTime() + 24 * 60 * 60 * 1000);
       }
 
+      // ---- AQUI entra a lógica de SLOTS ----
+      const totalSlots = Math.floor(availableMinutes / OCCUPATION_SLOT_MIN);
+      const usedSlots = Math.floor(bucket.workedMinutes / OCCUPATION_SLOT_MIN);
+
+      let occupationPercentage = 0;
+      if (totalSlots > 0) {
+        const raw = (usedSlots / totalSlots) * 100;
+        // 1 casa decimal (ex: 1.2%)
+        occupationPercentage = Math.round(raw * 10) / 10;
+      }
+
       bucket.availableMinutes = availableMinutes;
-      bucket.occupationPercentage =
-        availableMinutes > 0
-          ? Math.round((bucket.workedMinutes / availableMinutes) * 100)
-          : 0;
+      bucket.totalSlots = totalSlots;
+      bucket.usedSlots = usedSlots;
+      bucket.occupationPercentage = occupationPercentage;
     }
 
     return {
@@ -497,7 +508,7 @@ export class ReportsService {
         ...(status ? { payoutStatus: status as PayoutStatus } : {}),
         appointment: {
           tenantId,
-          status: 'done', // ✅ só atendimentos concluídos entram no cálculo
+          status: AppointmentState.done,
           startAt: {
             gte: fromDate,
             lt: toDate,
@@ -593,7 +604,7 @@ export class ReportsService {
         appointment: {
           tenantId,
           providerId,
-          status: 'done',
+          status: AppointmentState.done,
         },
       },
       data: {
@@ -699,7 +710,7 @@ export class ReportsService {
       where: {
         appointment: {
           tenantId,
-          status: 'done',
+          status: AppointmentState.done,
           startAt: {
             gte: fromDate,
             lt: toDate,

@@ -16,6 +16,20 @@ export type MonthlyFinancialRow = {
 };
 
 // Tipos mínimos das respostas de /reports
+
+type ProviderEarningsProviderItem = {
+  providerId: string;
+  providerName: string;
+  location: { id: string; name: string } | null;
+  servicePriceCents: number;
+  providerEarningsCents: number;
+  houseEarningsCents: number;
+  appointmentsCount: number;
+  workedMinutes: number;
+  availableMinutes: number;
+  occupationPercentage: number;
+};
+
 type ProviderEarningsResponse = {
   from: string;
   to: string;
@@ -24,6 +38,7 @@ type ProviderEarningsResponse = {
     providerEarningsCents: number;
     houseEarningsCents: number;
   };
+  providers: ProviderEarningsProviderItem[];
 };
 
 type DailyRevenueResponse = {
@@ -161,6 +176,73 @@ export async function fetchOwnerMonthlyFinancial(
 
   return rows;
 }
+// ----------------- Detalhamento por profissional -----------------
+
+export type ProviderEarningRow = {
+  providerId: string;
+  providerName: string;
+  locationName: string | null;
+  totalRevenue: number; // € serviços
+  providerEarnings: number; // € comissão profissional
+  houseEarnings: number; // € casa
+  appointmentsCount: number;
+  occupationPercentage: number; // 0–100
+  averageTicket: number; // € por atendimento
+};
+
+export type ProviderEarningsDetailedResult = {
+  totals: {
+    totalRevenue: number;
+    totalProviderEarnings: number;
+    totalHouseEarnings: number;
+  };
+  items: ProviderEarningRow[];
+};
+
+/**
+ * Busca /reports/provider-earnings e já converte
+ * tudo de cents -> euros + métricas derivadas por profissional.
+ */
+export async function fetchOwnerProviderEarningsDetailed(
+  preset: ReportsRangePreset
+): Promise<ProviderEarningsDetailedResult> {
+  const { from, to } = getRangeDates(preset);
+  const query = new URLSearchParams({ from, to }).toString();
+
+  const data = await apiClient<ProviderEarningsResponse>(
+    `/reports/provider-earnings?${query}`,
+    { method: "GET" }
+  );
+
+  const totals = {
+    totalRevenue: data.totals.servicePriceCents / 100,
+    totalProviderEarnings: data.totals.providerEarningsCents / 100,
+    totalHouseEarnings: data.totals.houseEarningsCents / 100,
+  };
+
+  const items: ProviderEarningRow[] = (data.providers ?? []).map((p) => {
+    const totalRevenue = p.servicePriceCents / 100;
+    const providerEarnings = p.providerEarningsCents / 100;
+    const houseEarnings = p.houseEarningsCents / 100;
+    const averageTicket =
+      p.appointmentsCount > 0 ? totalRevenue / p.appointmentsCount : 0;
+
+    return {
+      providerId: p.providerId,
+      providerName: p.providerName,
+      locationName: p.location?.name ?? null,
+      totalRevenue,
+      providerEarnings,
+      houseEarnings,
+      appointmentsCount: p.appointmentsCount,
+      occupationPercentage: p.occupationPercentage,
+      averageTicket,
+    };
+  });
+
+  return { totals, items };
+}
+
 // ----------------- Cancelamentos / no-shows -----------------
 
 export type CancellationItem = {

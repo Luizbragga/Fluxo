@@ -44,11 +44,20 @@ const SPECIALTY_OPTIONS: { value: SpecialtyLiteral; label: string }[] = [
 type ProfessionalSummary = {
   id: string;
   totalAppointmentsMonth: number;
-  totalRevenueMonth: number;
-  professionalShareMonth: number;
-  spaceShareMonth: number;
+  totalRevenueCents: number;
+  professionalShareCents: number;
+  spaceShareCents: number;
 };
+
 type PeriodFilter = "day" | "week" | "month";
+const eurNumber = new Intl.NumberFormat("pt-PT", {
+  minimumFractionDigits: 2,
+  maximumFractionDigits: 2,
+});
+
+function formatEURFromCents(cents: number) {
+  return `€ ${eurNumber.format(cents / 100)}`;
+}
 
 export default function OwnerProfessionalsPage() {
   const router = useRouter();
@@ -262,25 +271,20 @@ export default function OwnerProfessionalsPage() {
       ? {
           id: selectedProfessional.id,
           totalAppointmentsMonth: selectedEarnings.appointmentsCount,
-          totalRevenueMonth: Math.round(
-            selectedEarnings.servicePriceCents / 100
-          ),
-          professionalShareMonth: Math.round(
-            selectedEarnings.providerEarningsCents / 100
-          ),
-          spaceShareMonth: Math.round(
-            selectedEarnings.houseEarningsCents / 100
-          ),
+          totalRevenueCents: selectedEarnings.servicePriceCents,
+          professionalShareCents: selectedEarnings.providerEarningsCents,
+          spaceShareCents: selectedEarnings.houseEarningsCents,
         }
       : {
           // sem earnings ainda -> tudo zerado
           id: selectedProfessional.id,
           totalAppointmentsMonth: 0,
-          totalRevenueMonth: 0,
-          professionalShareMonth: 0,
-          spaceShareMonth: 0,
+          totalRevenueCents: 0,
+          professionalShareCents: 0,
+          spaceShareCents: 0,
         }
     : null;
+
   const selectedOccupation = selectedEarnings?.occupationPercentage ?? 0;
 
   // ---------------------------------------------------------------------------
@@ -653,7 +657,7 @@ export default function OwnerProfessionalsPage() {
                       Receita total (mês)
                     </p>
                     <p className="mt-1 text-lg font-semibold">
-                      € {selectedSummary.totalRevenueMonth}
+                      {formatEURFromCents(selectedSummary.totalRevenueCents)}
                     </p>
                   </div>
                   <div className="rounded-xl border border-slate-800 bg-slate-950/60 p-3">
@@ -661,7 +665,9 @@ export default function OwnerProfessionalsPage() {
                       Parte do profissional
                     </p>
                     <p className="mt-1 text-lg font-semibold text-emerald-300">
-                      € {selectedSummary.professionalShareMonth}
+                      {formatEURFromCents(
+                        selectedSummary.professionalShareCents
+                      )}
                     </p>
                   </div>
                   <div className="rounded-xl border border-slate-800 bg-slate-950/60 p-3">
@@ -669,7 +675,7 @@ export default function OwnerProfessionalsPage() {
                       Parte do espaço
                     </p>
                     <p className="mt-1 text-lg font-semibold">
-                      € {selectedSummary.spaceShareMonth}
+                      {formatEURFromCents(selectedSummary.spaceShareCents)}
                     </p>
                   </div>
                 </div>

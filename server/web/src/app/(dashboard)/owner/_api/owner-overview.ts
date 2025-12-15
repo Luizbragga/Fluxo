@@ -125,8 +125,8 @@ function pad2(n: number): string {
 }
 
 function formatEuro(amount: number): string {
-  if (!Number.isFinite(amount)) return "€ 0";
-  return `€ ${amount.toFixed(0)}`;
+  if (!Number.isFinite(amount)) return "€ 0.00";
+  return `€ ${amount.toFixed(2)}`;
 }
 
 /**

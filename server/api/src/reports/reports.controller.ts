@@ -81,7 +81,7 @@ export class ReportsController {
       providerId,
     });
   }
-
+  @Roles(Role.owner, Role.admin)
   @Get('plan-payments')
   @ApiQuery({
     name: 'from',
