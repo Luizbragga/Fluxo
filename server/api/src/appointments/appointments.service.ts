@@ -532,7 +532,12 @@ export class AppointmentsService {
   }
 
   // LISTA DO DIA ---------------------------------------------------------------
-  async findByDay(tenantId: string, dateYYYYMMDD: string, providerId?: string) {
+  async findByDay(
+    tenantId: string,
+    dateYYYYMMDD: string,
+    providerId?: string,
+    locationId?: string,
+  ) {
     const [yStr, mStr, dStr] = dateYYYYMMDD.split('-');
     const y = parseInt(yStr, 10);
     const m = parseInt(mStr, 10);
@@ -547,6 +552,7 @@ export class AppointmentsService {
         startAt: { gte: start },
         endAt: { lte: end },
         ...(providerId ? { providerId } : {}),
+        ...(locationId ? { locationId } : {}),
       },
       orderBy: { startAt: 'asc' },
       include: {

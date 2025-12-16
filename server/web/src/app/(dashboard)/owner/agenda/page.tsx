@@ -57,7 +57,11 @@ type WeekDayData = {
 
 type FilterProfessionalId = string | "all";
 
-const timeSlots = [
+// -----------------------
+// Slots (dinâmico por unidade)
+// -----------------------
+
+const DEFAULT_TIME_SLOTS = [
   "08:00",
   "08:30",
   "09:00",
@@ -85,11 +89,104 @@ const timeSlots = [
   "20:00",
 ];
 
-// manhã = horários antes das 14:00
-const morningSlots = timeSlots.filter((t) => t < "14:00");
+type DayInterval = { start: string; end: string };
 
-// tarde = horários a partir das 14:00
-const afternoonSlots = timeSlots.filter((t) => t >= "14:00");
+// tolerante: aceita keys em EN (mon) ou PT (seg), e template como string JSON ou objeto
+function getWeekdayCandidateKeys(date: Date): string[] {
+  // 0=dom, 1=seg...
+  const map: string[][] = [
+    ["sun", "dom", "domingo"],
+    ["mon", "seg", "segunda"],
+    ["tue", "ter", "terça", "terca"],
+    ["wed", "qua", "quarta"],
+    ["thu", "qui", "quinta"],
+    ["fri", "sex", "sexta"],
+    ["sat", "sab", "sábado", "sabado"],
+  ];
+  return map[date.getDay()] ?? [];
+}
+
+function tryParseTemplate(raw: any): any {
+  if (!raw) return null;
+  if (typeof raw === "string") {
+    try {
+      return JSON.parse(raw);
+    } catch {
+      return null;
+    }
+  }
+  if (typeof raw === "object") return raw;
+  return null;
+}
+
+function normalizeIntervals(raw: any): DayInterval[] {
+  // esperado: [["08:00","12:00"],["14:00","20:00"]] (ou variações)
+  if (!Array.isArray(raw)) return [];
+
+  return raw
+    .map((pair: any) => {
+      if (!Array.isArray(pair) || pair.length < 2) return null;
+      const start = String(pair[0] ?? "").trim();
+      const end = String(pair[1] ?? "").trim();
+      if (!start || !end) return null;
+      return { start, end } as DayInterval;
+    })
+    .filter(Boolean) as DayInterval[];
+}
+
+function buildSlotsFromIntervals(
+  intervals: DayInterval[],
+  stepMin = 30
+): string[] {
+  const out: string[] = [];
+
+  for (const itv of intervals) {
+    const startMin = timeStrToMinutes(itv.start);
+    const endMin = timeStrToMinutes(itv.end);
+
+    if (!Number.isFinite(startMin) || !Number.isFinite(endMin)) continue;
+    if (endMin <= startMin) continue;
+
+    for (let m = startMin; m <= endMin; m += stepMin) {
+      const hh = String(Math.floor(m / 60)).padStart(2, "0");
+      const mm = String(m % 60).padStart(2, "0");
+      const label = `${hh}:${mm}`;
+
+      // garante que não passa do fim (ex.: se end=12:00, inclui 12:00, mas não 12:30)
+      if (m > endMin) break;
+
+      out.push(label);
+    }
+  }
+
+  // remove duplicados e ordena
+  return Array.from(new Set(out)).sort();
+}
+
+function getLocationDayIntervals(location: any, date: Date): DayInterval[] {
+  // tenta encontrar onde tá salvo o template na location
+  // (ajusta aqui se teu backend usar outro nome)
+  const templateRaw =
+    location?.businessHoursTemplate ??
+    location?.weekdayTemplate ??
+    location?.hoursTemplate ??
+    location?.scheduleTemplate ??
+    location?.workingHoursTemplate ??
+    null;
+
+  const template = tryParseTemplate(templateRaw);
+  if (!template) return [];
+
+  const keys = getWeekdayCandidateKeys(date);
+
+  for (const k of keys) {
+    if (template && Object.prototype.hasOwnProperty.call(template, k)) {
+      return normalizeIntervals(template[k]);
+    }
+  }
+
+  return [];
+}
 
 export default function OwnerAgendaPage() {
   // Protege a rota: só owner logado entra
@@ -118,6 +215,34 @@ export default function OwnerAgendaPage() {
   const [restoredPlanVisits, setRestoredPlanVisits] = useState<string[]>([]);
   const [selectedAppointment, setSelectedAppointment] =
     useState<AgendaAppointment | null>(null);
+  const selectedLocation = useMemo(() => {
+    if (selectedLocationId === "all") return null;
+    return locations.find((l) => l.id === selectedLocationId) ?? null;
+  }, [locations, selectedLocationId]);
+
+  const dayIntervals = useMemo(() => {
+    if (!selectedLocation) return null;
+    return getLocationDayIntervals(selectedLocation as any, selectedDate);
+  }, [selectedLocation, selectedDate]);
+
+  const dayTimeSlots = useMemo(() => {
+    // se estiver em "todas", mantém o comportamento atual (por enquanto)
+    if (!dayIntervals) return DEFAULT_TIME_SLOTS;
+    return buildSlotsFromIntervals(dayIntervals, 30);
+  }, [dayIntervals]);
+
+  // para manter tua UI de “manhã/tarde”, usamos até 2 intervalos quando existir
+  const morningSlots = useMemo(() => {
+    if (!dayIntervals) return DEFAULT_TIME_SLOTS.filter((t) => t < "14:00");
+    const first = dayIntervals[0] ? [dayIntervals[0]] : [];
+    return buildSlotsFromIntervals(first, 30);
+  }, [dayIntervals]);
+
+  const afternoonSlots = useMemo(() => {
+    if (!dayIntervals) return DEFAULT_TIME_SLOTS.filter((t) => t >= "14:00");
+    const second = dayIntervals[1] ? [dayIntervals[1]] : [];
+    return buildSlotsFromIntervals(second, 30);
+  }, [dayIntervals]);
 
   // Slot clicado para criar agendamento
   const [pendingSlot, setPendingSlot] = useState<PendingAppointmentSlot | null>(
@@ -288,7 +413,8 @@ export default function OwnerAgendaPage() {
     }
 
     loadLocations();
-  }, [authLoading, user]);
+  }, [authLoading, user, selectedLocationId]);
+
   useEffect(() => {
     if (didApplyLocationFromUrl) return;
 
@@ -445,16 +571,39 @@ export default function OwnerAgendaPage() {
       setError("Não foi possível devolver a visita do plano.");
     }
   }
+  function resetCreateAppointmentForm() {
+    setCreateError(null);
+
+    // Se veio da tela de clientes (via URL), mantém prefill.
+    // Se não veio, zera.
+    setModalCustomerName(customerNameFromUrl ?? "");
+    setModalCustomerPhone(customerPhoneFromUrl ?? "");
+
+    // Regra atual: se tiver customerPlanId na URL, começa marcado como plano
+    setUsePlanForAppointment(!!customerPlanIdFromUrl);
+  }
 
   function handleCreateAppointmentClick(slot: PendingAppointmentSlot) {
+    resetCreateAppointmentForm();
+
     setCreateError(null);
     setPendingSlot(slot);
-    setModalProviderId(slot.professionalId); // pré-seleciona o profissional da coluna clicada
+
+    // profissional do slot clicado
+    setModalProviderId(slot.professionalId);
   }
 
   function handleCloseCreateModal() {
-    setCreateError(null);
+    resetCreateAppointmentForm();
+
     setPendingSlot(null);
+    setModalProviderId("");
+
+    setCreateError(null);
+    setModalCustomerName(customerNameFromUrl ?? "");
+    setModalCustomerPhone(customerPhoneFromUrl ?? "");
+    setUsePlanForAppointment(!!customerPlanIdFromUrl);
+    setSelectedServiceId((services?.[0]?.id as string) ?? "");
     setModalProviderId("");
   }
 
@@ -532,8 +681,10 @@ export default function OwnerAgendaPage() {
       setProfessionals(data.professionals);
       setAppointments(data.appointments);
 
-      // Fecha o modal
+      // Fecha o modal e reseta o form
+      resetCreateAppointmentForm();
       setPendingSlot(null);
+      setModalProviderId("");
     } catch (err: any) {
       console.error("Erro ao criar agendamento:", err);
 
@@ -861,7 +1012,21 @@ export default function OwnerAgendaPage() {
 
       let hasFreeSlot = false;
 
-      outer: for (const slot of timeSlots) {
+      const slotsForDay =
+        locationFilter === "all"
+          ? DEFAULT_TIME_SLOTS
+          : (() => {
+              const loc = locations.find((l) => l.id === locationFilter);
+              if (!loc) return DEFAULT_TIME_SLOTS;
+
+              const intervals = getLocationDayIntervals(loc as any, current);
+              const computed = buildSlotsFromIntervals(intervals, 30);
+
+              // se unidade fechada, nenhum slot
+              return computed;
+            })();
+
+      outer: for (const slot of slotsForDay) {
         const slotStartMinutes = timeStrToMinutes(slot);
         const slotEndMinutes = slotStartMinutes + 30;
 

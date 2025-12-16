@@ -136,10 +136,20 @@ export default function OwnerProfessionalsPage() {
     }
 
     if (period === "week") {
-      // aqui vou assumir "últimos 7 dias" (hoje incluído)
-      const toDate = new Date(Date.UTC(year, month, day + 1, 0, 0, 0)); // amanhã 00:00
-      const fromDate = new Date(toDate.getTime() - 7 * 24 * 60 * 60 * 1000);
-      return { from: fromDate.toISOString(), to: toDate.toISOString() };
+      // considerar semana corrente, começando na segunda-feira
+      const today = new Date();
+
+      const dayOfWeek = today.getUTCDay(); // 0=domingo ... 6=sábado
+      const diffFromMonday = (dayOfWeek + 6) % 7; // 0 se segunda, 1 se terça, ..., 6 se domingo
+
+      const monday = new Date(
+        Date.UTC(year, month, day - diffFromMonday, 0, 0, 0)
+      );
+      const nextMonday = new Date(
+        Date.UTC(year, month, day - diffFromMonday + 7, 0, 0, 0)
+      );
+
+      return { from: monday.toISOString(), to: nextMonday.toISOString() };
     }
 
     // "month" -> mês atual

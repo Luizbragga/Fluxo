@@ -113,6 +113,7 @@ type DailyRevenueResponse = {
 type RangeParams = {
   from?: string;
   to?: string;
+  locationId?: string;
 };
 
 function formatShortDate(date: Date) {
@@ -123,11 +124,14 @@ function formatShortDate(date: Date) {
 }
 
 function buildRangeQuery(params?: RangeParams): string {
-  if (!params?.from && !params?.to) return "";
   const qs = new URLSearchParams();
-  if (params.from) qs.set("from", params.from);
-  if (params.to) qs.set("to", params.to);
-  return `?${qs.toString()}`;
+
+  if (params?.from) qs.set("from", params.from);
+  if (params?.to) qs.set("to", params.to);
+  if (params?.locationId) qs.set("locationId", params.locationId);
+
+  const str = qs.toString();
+  return str ? `?${str}` : "";
 }
 
 // NOVA função: aceita intervalo opcional

@@ -35,6 +35,7 @@ export type AgendaAppointment = {
 
   // Se veio de plano ou avulso
   billingType: "plan" | "avulso";
+  servicePriceCents: number;
 };
 
 // Shape aproximado do que o Nest devolve em /appointments
@@ -57,6 +58,8 @@ type BackendAppointment = {
     id: string;
     name: string;
     durationMin: number;
+    priceCents?: number | null;
+    servicePriceCents?: number | null;
   } | null;
 };
 
@@ -101,17 +104,28 @@ function mapProviderToAgendaProfessional(
  * - lista de profissionais
  * - lista de appointments já no formato da tela
  */
+type OwnerAgendaDayParams = {
+  locationId?: string;
+};
+
 export async function fetchOwnerAgendaDay(
-  dateYYYYMMDD: string
+  dateYYYYMMDD: string,
+  params?: OwnerAgendaDayParams
 ): Promise<OwnerAgendaDay> {
+  const qs = new URLSearchParams();
+  qs.set("date", dateYYYYMMDD);
+  if (params?.locationId) qs.set("locationId", params.locationId);
+
   const [appointmentsData, providersResponse] = await Promise.all([
-    apiClient<BackendAppointment[]>(
-      `/appointments?date=${encodeURIComponent(dateYYYYMMDD)}`,
-      { method: "GET" }
-    ),
-    apiClient<any>("/providers", {
+    apiClient<BackendAppointment[]>(`/appointments?${qs.toString()}`, {
       method: "GET",
     }),
+    apiClient<any>(
+      params?.locationId
+        ? `/providers?locationId=${encodeURIComponent(params.locationId)}`
+        : "/providers",
+      { method: "GET" }
+    ),
   ]);
 
   // ------------------------------------------------------------------
@@ -187,6 +201,8 @@ export async function fetchOwnerAgendaDay(
     // duração do serviço (usa valor do appointment se existir)
     const durationMin =
       appt.serviceDurationMin ?? appt.service?.durationMin ?? 30;
+    const servicePriceCents =
+      appt.servicePriceCents ?? appt.service?.priceCents ?? 0;
 
     // fim em minutos desde meia-noite
     const endMinutes = startMinutes + durationMin;
@@ -207,6 +223,7 @@ export async function fetchOwnerAgendaDay(
       startMinutes,
       endMinutes,
       billingType,
+      servicePriceCents,
     };
   });
 

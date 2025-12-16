@@ -7,8 +7,8 @@ import {
   PayoutStatus,
 } from '@prisma/client';
 
-// Tamanho de slot para cálculo de ocupação (15 min)
-const OCCUPATION_SLOT_MIN = 15;
+// Tamanho de slot para cálculo de ocupação (30 min)
+const OCCUPATION_SLOT_MIN = 30;
 
 /** Converte 'HH:mm' para minutos desde 00:00 */
 function toMin(hhmm: string): number {
@@ -315,7 +315,7 @@ export class ReportsService {
       bucket.houseEarningsCents += e.houseEarningsCents;
       bucket.appointmentsCount += 1;
 
-      // duração do atendimento em minutos
+      // duração do atendimento em minutos (apenas STATUS done)
       const start = e.appointment.startAt;
       const end = e.appointment.endAt;
 
@@ -323,11 +323,9 @@ export class ReportsService {
         const diffMs = end.getTime() - start.getTime();
         const rawMinutes = Math.max(0, diffMs / 60000);
 
-        // converte para slots de 15min, sempre arredondando para cima
-        const slots = Math.ceil(rawMinutes / OCCUPATION_SLOT_MIN);
-        const workedMinutes = slots * OCCUPATION_SLOT_MIN;
-
-        bucket.workedMinutes += workedMinutes;
+        // SOMAMOS os minutos reais trabalhados.
+        // A conversão para slots fica só na etapa final de cálculo.
+        bucket.workedMinutes += rawMinutes;
       }
     }
 
@@ -353,8 +351,15 @@ export class ReportsService {
         select: {
           id: true,
           weekdayTemplate: true,
+          location: {
+            select: {
+              id: true,
+              businessHoursTemplate: true,
+            },
+          },
         },
       }),
+
       this.prisma.block.findMany({
         where: {
           tenantId,
@@ -412,6 +417,10 @@ export class ReportsService {
       if (!bucket) continue;
 
       const template =
+        (meta.location?.businessHoursTemplate as Record<
+          string,
+          [string, string][]
+        > | null) ??
         (meta.weekdayTemplate as Record<string, [string, string][]> | null) ??
         {};
 
@@ -473,15 +482,27 @@ export class ReportsService {
         cursor = new Date(dayStart.getTime() + 24 * 60 * 60 * 1000);
       }
 
-      // ---- AQUI entra a lógica de SLOTS ----
-      const totalSlots = Math.floor(availableMinutes / OCCUPATION_SLOT_MIN);
-      const usedSlots = Math.floor(bucket.workedMinutes / OCCUPATION_SLOT_MIN);
+      // ---- Ocupação baseada em MINUTOS (mais fiel e sem distorção) ----
+      // workedMinutes já é a soma real de (endAt - startAt) em minutos.
+      // availableMinutes é a soma real de minutos livres no intervalo (considerando weekdayTemplate e blocks).
 
+      const totalSlots = Math.floor(availableMinutes / OCCUPATION_SLOT_MIN);
+
+      // Slots usados: arredonda pra cima por atendimento (mais próximo do “consumo de slots”)
+      // Aqui é um fallback simples baseado no total de minutos, mas sem floor:
+      const usedSlots =
+        totalSlots > 0
+          ? Math.min(
+              Math.ceil(bucket.workedMinutes / OCCUPATION_SLOT_MIN),
+              totalSlots,
+            )
+          : 0;
+
+      // % real: minutos trabalhados / minutos disponíveis
       let occupationPercentage = 0;
-      if (totalSlots > 0) {
-        const raw = (usedSlots / totalSlots) * 100;
-        // 1 casa decimal (ex: 1.2%)
-        occupationPercentage = Math.round(raw * 10) / 10;
+      if (availableMinutes > 0) {
+        const raw = (bucket.workedMinutes / availableMinutes) * 100;
+        occupationPercentage = Math.min(100, Math.round(raw * 10) / 10);
       }
 
       bucket.availableMinutes = availableMinutes;
@@ -495,6 +516,10 @@ export class ReportsService {
       to: toDate.toISOString(),
       totals,
       providers: Array.from(byProvider.values()),
+      _debug: {
+        version: 'provider-earnings-v3',
+        OCCUPATION_SLOT_MIN,
+      },
     };
   }
 

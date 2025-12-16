@@ -22,4 +22,14 @@ export class ListAppointmentsDayQueryDto {
   @IsString()
   @Matches(CUID_REGEX, { message: 'providerId deve ser um cuid válido' })
   providerId?: string;
+
+  @ApiProperty({
+    required: false,
+    example: 'cmj45juec0003uyfg5qlypwm3',
+    description: 'Filtrar por unidade (location); opcional',
+  })
+  @IsOptional()
+  @IsString()
+  @Matches(CUID_REGEX, { message: 'locationId deve ser um cuid válido' })
+  locationId?: string;
 }

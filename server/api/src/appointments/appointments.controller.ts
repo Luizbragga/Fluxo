@@ -64,12 +64,20 @@ export class AppointmentsController {
     example: 'cxxxxxxxxxxxxxxxxxxxxxxxxxxx',
     description: 'Opcional: filtra por provider',
   })
+  @ApiQuery({
+    name: 'locationId',
+    required: false,
+    type: String,
+    example: 'cxxxxxxxxxxxxxxxxxxxxxxxxxxx',
+    description: 'Opcional: filtra por unidade (location)',
+  })
   listDayQuery(@Req() req: any, @Query() query: ListAppointmentsDayQueryDto) {
     const tenantId = req.user?.tenantId as string;
     return this.appointmentsService.findByDay(
       tenantId,
       query.date,
       query.providerId,
+      query.locationId,
     );
   }
 
@@ -86,8 +94,6 @@ export class AppointmentsController {
       ],
     },
   })
-  @Patch(':id')
-  @Patch(':id')
   updateFlexible(
     @CurrentUser() user: AuthUser,
     @Param('id') id: string,

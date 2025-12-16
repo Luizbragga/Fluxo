@@ -1,5 +1,3 @@
-// src/app/(dashboard)/owner/_api/owner-overview.ts
-
 import type { OverviewKpi } from "../_components/overview-kpi-card";
 import type { NextAppointment } from "../_components/next-appointment-card";
 import type { ProfessionalPayout } from "../_components/professional-payout-row";
@@ -26,9 +24,14 @@ export type OwnerOverviewData = {
   nextAppointments: NextAppointment[];
   quickFinancialCards: QuickFinancialCard[];
   professionalPayouts: ProfessionalPayout[];
+
+  // ✅ devolve também pro dashboard não ter que fazer chamadas duplicadas
+  agendaDay: OwnerAgendaDay;
+  financeiroToday: OwnerFinanceiroData;
+  financeiroMonth: OwnerFinanceiroData;
 };
 
-// ---------------------- MOCK (continua disponível) --------
+// ---------------------- MOCK ----------------------
 
 export const ownerOverviewMock: OwnerOverviewData = {
   overviewKpis: [
@@ -116,9 +119,25 @@ export const ownerOverviewMock: OwnerOverviewData = {
       status: "paid",
     },
   ],
+  agendaDay: {
+    dateYmd: "2025-01-01",
+    professionals: [],
+    appointments: [],
+    timeSlots: [],
+  },
+  financeiroToday: {
+    dailyRevenue: [],
+    planPayments: [],
+    payoutItems: [],
+  } as any,
+  financeiroMonth: {
+    dailyRevenue: [],
+    planPayments: [],
+    payoutItems: [],
+  } as any,
 };
 
-// ---------------------- Helpers internos ------------------
+// ---------------------- Helpers ----------------------
 
 function pad2(n: number): string {
   return String(n).padStart(2, "0");
@@ -222,7 +241,6 @@ function buildNextAppointments(agenda: OwnerAgendaDay): NextAppointment[] {
     detail: `${a.customerName} · ${
       a.billingType === "plan" ? "Plano" : "Avulso"
     }`,
-    // usamos "plan" para planos, "walk_in" para o resto (ícone genérico)
     source: a.billingType === "plan" ? "plan" : "walk_in",
   }));
 }
@@ -257,31 +275,34 @@ function buildQuickFinancialCards(
   ];
 }
 
-// ---------------------- Função principal ------------------
+// ---------------------- Função principal ----------------------
 
-export async function fetchOwnerOverview(): Promise<OwnerOverviewData> {
+export async function fetchOwnerOverview(params?: {
+  locationId?: string;
+}): Promise<OwnerOverviewData> {
+  const locationId = params?.locationId;
   const useMock = process.env.NEXT_PUBLIC_USE_MOCK_OVERVIEW === "1";
 
-  // modo demo / offline
   if (useMock) {
     return ownerOverviewMock;
   }
 
   const { ymd: todayYmd, fromISO, toISO } = getTodayRangeUTC();
 
-  // mês atual (padrão dos relatórios) + hoje isolado
   const [agendaDay, plansData, financeiroMonth, financeiroToday] =
     await Promise.all([
-      fetchOwnerAgendaDay(todayYmd),
-      fetchOwnerPlans({}),
-      fetchOwnerFinanceiroWithRange(), // mês atual
-      fetchOwnerFinanceiroWithRange({ from: fromISO, to: toISO }), // hoje
+      fetchOwnerAgendaDay(todayYmd, locationId ? { locationId } : undefined),
+      fetchOwnerPlans(locationId ? { locationId } : {}),
+      fetchOwnerFinanceiroWithRange(locationId ? { locationId } : undefined), // mês atual
+      fetchOwnerFinanceiroWithRange({
+        from: fromISO,
+        to: toISO,
+        locationId: locationId || undefined,
+      }), // hoje
     ]);
 
-  // --- KPI 1: agendamentos de hoje ---
   const appointmentsToday = agendaDay.appointments.length;
 
-  // --- KPI 2: receita prevista hoje (serviços + planos do dia) ---
   const revenueServicesToday = financeiroToday.dailyRevenue.reduce(
     (sum, d) => sum + d.totalRevenue,
     0
@@ -293,7 +314,6 @@ export async function fetchOwnerOverview(): Promise<OwnerOverviewData> {
 
   const expectedRevenueToday = revenueServicesToday + revenuePlansToday;
 
-  // --- KPI 3: planos ativos + MRR ---
   const totalActivePlans = plansData.planStats.reduce(
     (sum, s) => sum + s.activeCustomers,
     0
@@ -304,7 +324,6 @@ export async function fetchOwnerOverview(): Promise<OwnerOverviewData> {
     0
   );
 
-  // --- KPI 4: a pagar aos profissionais (pendente no mês) ---
   const toPayProfessionals = financeiroMonth.payoutItems
     .filter((p) => p.status === "pending")
     .reduce((sum, p) => sum + p.amount, 0);
@@ -318,10 +337,8 @@ export async function fetchOwnerOverview(): Promise<OwnerOverviewData> {
   });
 
   const nextAppointments = buildNextAppointments(agendaDay);
-
   const quickFinancialCards = buildQuickFinancialCards(financeiroMonth);
 
-  // payoutItems tem exatamente o mesmo shape de ProfessionalPayout
   const professionalPayouts =
     financeiroMonth.payoutItems as ProfessionalPayout[];
 
@@ -330,5 +347,8 @@ export async function fetchOwnerOverview(): Promise<OwnerOverviewData> {
     nextAppointments,
     quickFinancialCards,
     professionalPayouts,
+    agendaDay,
+    financeiroToday,
+    financeiroMonth,
   };
 }
