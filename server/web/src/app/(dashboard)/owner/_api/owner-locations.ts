@@ -7,6 +7,7 @@ export type OwnerLocation = {
   id: string;
   name: string;
   slug?: string | null;
+  address?: string | null;
   active: boolean;
   businessHoursTemplate?: Record<string, [string, string][]> | null;
 
@@ -31,6 +32,7 @@ type BackendLocation = {
   id: string;
   name: string;
   slug?: string | null;
+  address?: string | null;
   active?: boolean;
   businessHoursTemplate?: any;
 
@@ -55,6 +57,7 @@ function normalizeLocation(loc: BackendLocation): OwnerLocation {
     id: loc.id,
     name: loc.name ?? loc.slug ?? "Unidade sem nome",
     slug: loc.slug ?? null,
+    address: loc.address ?? null,
     active: loc.active ?? true,
     businessHoursTemplate:
       (loc.businessHoursTemplate as Record<string, [string, string][]>) ?? null,
@@ -125,10 +128,13 @@ export async function fetchOwnerLocations(params?: {
 
 /**
  * Cria uma nova unidade (location) para o tenant logado.
+ * Obs: slug continua opcional só pra não quebrar chamadas antigas,
+ * mas a ideia agora é NÃO expor isso pro usuário.
  */
 export async function createOwnerLocation(input: {
   name: string;
   slug?: string | null;
+  address?: string | null;
   businessHoursTemplate?: Record<string, [string, string][]> | null;
 }): Promise<OwnerLocation> {
   const body: any = {
@@ -137,6 +143,9 @@ export async function createOwnerLocation(input: {
 
   if (input.slug) {
     body.slug = input.slug;
+  }
+  if (typeof input.address !== "undefined") {
+    body.address = input.address;
   }
   if (typeof input.businessHoursTemplate !== "undefined") {
     body.businessHoursTemplate = input.businessHoursTemplate;
@@ -148,6 +157,26 @@ export async function createOwnerLocation(input: {
   });
 
   return normalizeLocation(created);
+}
+
+/**
+ * Atualiza nome e/ou endereço da unidade.
+ */
+export async function updateOwnerLocationDetails(params: {
+  id: string;
+  name?: string;
+  address?: string | null;
+}): Promise<OwnerLocation> {
+  const body: any = {};
+  if (typeof params.name !== "undefined") body.name = params.name;
+  if (typeof params.address !== "undefined") body.address = params.address;
+
+  const updated = await apiClient<BackendLocation>(`/locations/${params.id}`, {
+    method: "PATCH",
+    body,
+  });
+
+  return normalizeLocation(updated);
 }
 
 /**
@@ -166,6 +195,7 @@ export async function updateOwnerLocationActive(params: {
 
   return normalizeLocation(updated);
 }
+
 export async function updateOwnerLocationManager(params: {
   id: string;
   managerProviderId: string | null;
@@ -179,6 +209,7 @@ export async function updateOwnerLocationManager(params: {
 
   return normalizeLocation(updated);
 }
+
 export async function updateOwnerLocationBusinessHours(params: {
   id: string;
   businessHoursTemplate: Record<string, [string, string][]>;
@@ -191,4 +222,16 @@ export async function updateOwnerLocationBusinessHours(params: {
   });
 
   return normalizeLocation(updated);
+}
+/**
+ * Busca uma unidade (location) específica por ID.
+ */
+export async function fetchOwnerLocationById(
+  id: string
+): Promise<OwnerLocation> {
+  const raw = await apiClient<BackendLocation>(`/locations/${id}`, {
+    method: "GET",
+  });
+
+  return normalizeLocation(raw);
 }

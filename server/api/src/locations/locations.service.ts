@@ -25,7 +25,7 @@ export class LocationsService {
       throw new BadRequestException('TenantId inválido');
     }
 
-    const baseSlug = dto.slug ? makeSlug(dto.slug) : makeSlug(dto.name);
+    const baseSlug = makeSlug(dto.name);
     if (!baseSlug) {
       throw new BadRequestException(
         'Não foi possível gerar slug para a filial',
@@ -48,6 +48,7 @@ export class LocationsService {
       data: {
         tenantId,
         name: dto.name,
+        address: dto.address ?? undefined,
         slug,
         businessHoursTemplate: dto.businessHoursTemplate ?? undefined,
         active: dto.active ?? true,
@@ -137,42 +138,12 @@ export class LocationsService {
       throw new NotFoundException('Location não encontrada neste tenant');
     }
 
-    let slug: string | undefined = undefined;
-
-    if (dto.slug || dto.name) {
-      const baseSlug = dto.slug
-        ? makeSlug(dto.slug)
-        : dto.name
-          ? makeSlug(dto.name)
-          : current.slug;
-
-      slug = baseSlug;
-      if (!baseSlug) {
-        throw new BadRequestException(
-          'Não foi possível gerar slug para a filial',
-        );
-      }
-
-      let n = 1;
-      while (
-        await this.prisma.location.findFirst({
-          where: {
-            tenantId,
-            slug,
-            id: { not: id },
-          },
-          select: { id: true },
-        })
-      ) {
-        slug = `${baseSlug}-${n++}`;
-      }
-    }
-
+    // slug é imutável: NÃO recalcula e NÃO permite alteração via update
     const updated = await this.prisma.location.update({
       where: { id },
       data: {
         name: dto.name ?? undefined,
-        slug: slug ?? undefined,
+        address: typeof dto.address !== 'undefined' ? dto.address : undefined,
         businessHoursTemplate:
           typeof dto.businessHoursTemplate !== 'undefined'
             ? dto.businessHoursTemplate

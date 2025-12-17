@@ -1,50 +1,29 @@
-import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
-import { IsOptional, IsString, IsBoolean } from 'class-validator';
+import { ApiPropertyOptional } from '@nestjs/swagger';
+import { IsBoolean, IsOptional, IsString, MinLength } from 'class-validator';
 
 export class CreateLocationDto {
-  @ApiProperty({
-    example: 'Demo Barber - Centro',
-    description: 'Nome da filial / unidade',
-  })
   @IsString()
-  name!: string;
+  @MinLength(2)
+  name: string;
 
-  @ApiPropertyOptional({
-    example: 'demo-centro',
-    description:
-      'Slug opcional. Se não for enviado, será gerado automaticamente a partir do nome.',
-  })
+  @ApiPropertyOptional({ description: 'Endereço da unidade (opcional)' })
   @IsOptional()
   @IsString()
-  slug?: string;
+  address?: string;
 
   @ApiPropertyOptional({
     description:
-      'Template padrão de horário de funcionamento desta unidade. ' +
-      'Ex.: {"mon":[["08:00","13:00"],["14:00","20:00"]],"tue":[["09:00","18:00"]]}',
-    example: {
-      mon: [
-        ['08:00', '13:00'],
-        ['14:00', '20:00'],
-      ],
-      tue: [['09:00', '18:00']],
-    },
+      'Horário padrão de funcionamento (Json no formato businessHoursTemplate)',
   })
   @IsOptional()
-  // armazenamos como JSON; aqui aceitamos um objeto genérico
-  businessHoursTemplate?: Record<string, [string, string][]>;
-  @ApiPropertyOptional({
-    description: 'Se a unidade está ativa. Padrão: true.',
-    example: true,
-  })
+  businessHoursTemplate?: any;
+
+  @ApiPropertyOptional({ description: 'Ativa (padrão true)' })
   @IsOptional()
   @IsBoolean()
   active?: boolean;
-  @ApiPropertyOptional({
-    description:
-      'ID do profissional responsável pela unidade (Provider.id). Opcional.',
-    example: 'cmjfa3b0000abcd123456789',
-  })
+
+  @ApiPropertyOptional({ description: 'Profissional responsável (opcional)' })
   @IsOptional()
   @IsString()
   managerProviderId?: string;

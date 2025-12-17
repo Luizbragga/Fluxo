@@ -252,6 +252,12 @@ export default function OwnerAgendaPage() {
   const [modalCustomerPhone, setModalCustomerPhone] = useState("");
 
   const searchParams = useSearchParams();
+  useEffect(() => {
+    const view = searchParams.get("view");
+    if (view === "weekly") setViewMode("weekly");
+    if (view === "daily") setViewMode("daily");
+  }, [searchParams]);
+
   const customerNameFromUrl = searchParams.get("customerName");
   const customerPhoneFromUrl = searchParams.get("customerPhone");
   const customerPlanIdFromUrl = searchParams.get("customerPlanId");

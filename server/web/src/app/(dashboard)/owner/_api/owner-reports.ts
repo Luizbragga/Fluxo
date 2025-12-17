@@ -1,5 +1,3 @@
-// src/app/(dashboard)/owner/_api/owner-reports.ts
-
 import { apiClient } from "@/lib/api-client";
 
 export type ReportsRangePreset =
@@ -15,7 +13,7 @@ export type MonthlyFinancialRow = {
   estimatedLossNoShow: number;
 };
 
-// Tipos mínimos das respostas de /reports
+// ----------------- Tipos mínimos das respostas de /reports -----------------
 
 type ProviderEarningsProviderItem = {
   providerId: string;
@@ -45,7 +43,7 @@ type DailyRevenueResponse = {
   from: string;
   to: string;
   items: {
-    date: string; // ISO
+    date: string;
     totalServicePriceCents: number;
   }[];
 };
@@ -56,7 +54,7 @@ function getRangeDates(preset: ReportsRangePreset): {
 } {
   const now = new Date();
 
-  // fim = amanhã 00:00 UTC (porque o backend usa gte from, lt to)
+  // fim = amanhã 00:00 UTC (porque backend usa gte from, lt to)
   const end = new Date(
     Date.UTC(
       now.getUTCFullYear(),
@@ -70,42 +68,34 @@ function getRangeDates(preset: ReportsRangePreset): {
 
   let start = new Date(end);
 
-  if (preset === "last_30_days") {
+  if (preset === "last_30_days")
     start = new Date(end.getTime() - 30 * 24 * 60 * 60 * 1000);
-  } else if (preset === "last_90_days") {
+  else if (preset === "last_90_days")
     start = new Date(end.getTime() - 90 * 24 * 60 * 60 * 1000);
-  } else {
-    // last_12_months ~ 365 dias
-    start = new Date(end.getTime() - 365 * 24 * 60 * 60 * 1000);
-  }
+  else start = new Date(end.getTime() - 365 * 24 * 60 * 60 * 1000);
 
-  return {
-    from: start.toISOString(),
-    to: end.toISOString(),
-  };
+  return { from: start.toISOString(), to: end.toISOString() };
 }
 
 function buildMonthKey(date: Date): string {
   const year = date.getUTCFullYear();
-  const month = date.getUTCMonth(); // 0-11
+  const month = date.getUTCMonth();
   return `${year}-${String(month + 1).padStart(2, "0")}`;
 }
 
 function formatMonthLabel(date: Date): string {
-  return date.toLocaleDateString("pt-PT", {
-    month: "short",
-    year: "numeric",
-  });
+  return date.toLocaleDateString("pt-PT", { month: "short", year: "numeric" });
 }
 
 /**
  * Busca dados financeiros brutos nos endpoints de /reports
- * e devolve linhas agregadas por mês para a tabela "Relatório financeiro mensal".
+ * e devolve linhas agregadas por mês para a tabela.
  */
 export async function fetchOwnerMonthlyFinancial(
   preset: ReportsRangePreset
 ): Promise<MonthlyFinancialRow[]> {
   const { from, to } = getRangeDates(preset);
+
   const query = new URLSearchParams({ from, to }).toString();
 
   const [earnings, dailyRevenue] = await Promise.all([
@@ -117,7 +107,6 @@ export async function fetchOwnerMonthlyFinancial(
     }),
   ]);
 
-  // 1) Agrupar faturamento diário por mês (YYYY-MM)
   type MonthBucket = {
     monthLabel: string;
     monthStartDate: Date;
@@ -149,8 +138,6 @@ export async function fetchOwnerMonthlyFinancial(
   const totalProviderEarningsCents = earnings.totals.providerEarningsCents;
   const totalHouseEarningsCents = earnings.totals.houseEarningsCents;
 
-  // 2) Converter buckets em linhas da tabela,
-  // distribuindo parte do espaço / profissionais proporcionalmente
   const rows: MonthlyFinancialRow[] = Array.from(byMonth.values())
     .sort((a, b) => b.monthStartDate.getTime() - a.monthStartDate.getTime())
     .map((bucket) => {
@@ -169,25 +156,27 @@ export async function fetchOwnerMonthlyFinancial(
         totalRevenue: bucket.totalServicePriceCents / 100,
         spaceShare: spaceShareCents / 100,
         professionalsShare: professionalsShareCents / 100,
-        // ainda não temos cálculo real de perda com no-show no backend
         estimatedLossNoShow: 0,
       };
     });
 
   return rows;
 }
+
 // ----------------- Detalhamento por profissional -----------------
 
 export type ProviderEarningRow = {
   providerId: string;
   providerName: string;
   locationName: string | null;
-  totalRevenue: number; // € serviços
-  providerEarnings: number; // € comissão profissional
-  houseEarnings: number; // € casa
+  totalRevenue: number;
+  providerEarnings: number;
+  houseEarnings: number;
   appointmentsCount: number;
-  occupationPercentage: number; // 0–100
-  averageTicket: number; // € por atendimento
+  occupationPercentage: number;
+  averageTicket: number;
+  workedMinutes: number;
+  availableMinutes: number;
 };
 
 export type ProviderEarningsDetailedResult = {
@@ -199,18 +188,17 @@ export type ProviderEarningsDetailedResult = {
   items: ProviderEarningRow[];
 };
 
-/**
- * Busca /reports/provider-earnings e já converte
- * tudo de cents -> euros + métricas derivadas por profissional.
- */
 export async function fetchOwnerProviderEarningsDetailed(
-  preset: ReportsRangePreset
+  preset: ReportsRangePreset,
+  opts?: { locationId?: string }
 ): Promise<ProviderEarningsDetailedResult> {
   const { from, to } = getRangeDates(preset);
-  const query = new URLSearchParams({ from, to }).toString();
+
+  const params = new URLSearchParams({ from, to });
+  if (opts?.locationId) params.set("locationId", opts.locationId);
 
   const data = await apiClient<ProviderEarningsResponse>(
-    `/reports/provider-earnings?${query}`,
+    `/reports/provider-earnings?${params.toString()}`,
     { method: "GET" }
   );
 
@@ -237,6 +225,8 @@ export async function fetchOwnerProviderEarningsDetailed(
       appointmentsCount: p.appointmentsCount,
       occupationPercentage: p.occupationPercentage,
       averageTicket,
+      workedMinutes: p.workedMinutes,
+      availableMinutes: p.availableMinutes,
     };
   });
 
@@ -261,10 +251,6 @@ type CancellationsApiResponse = {
   items: CancellationItem[];
 };
 
-/**
- * Usa o mesmo conceito de presets de período da tela (30d, 90d, 12 meses)
- * e converte para from/to em ISO pra mandar pro backend.
- */
 function buildReportsRangeParams(
   preset: ReportsRangePreset
 ): Record<string, string> {
@@ -272,50 +258,109 @@ function buildReportsRangeParams(
   let fromDate: Date;
 
   switch (preset) {
-    case "last_30_days": {
+    case "last_30_days":
       fromDate = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
       break;
-    }
-    case "last_90_days": {
+    case "last_90_days":
       fromDate = new Date(now.getTime() - 90 * 24 * 60 * 60 * 1000);
       break;
-    }
     case "last_12_months":
-    default: {
+    default:
       fromDate = new Date(now.getTime() - 365 * 24 * 60 * 60 * 1000);
       break;
-    }
   }
 
-  return {
-    from: fromDate.toISOString(),
-    to: now.toISOString(),
-  };
+  return { from: fromDate.toISOString(), to: now.toISOString() };
 }
 
-/**
- * Busca cancelamentos e no-shows do período.
- * filter:
- *  - "all"        -> não manda 'type' na query (vem tudo)
- *  - "cancelled"  -> type=cancelled
- *  - "no_show"    -> type=no_show
- */
 export async function fetchOwnerCancellations(
   preset: ReportsRangePreset,
-  filter: "all" | "cancelled" | "no_show" = "all"
+  filter: "all" | "cancelled" | "no_show" = "all",
+  opts?: { locationId?: string; providerId?: string }
 ): Promise<CancellationItem[]> {
   const params = buildReportsRangeParams(preset);
 
-  if (filter === "cancelled" || filter === "no_show") {
-    params.type = filter;
-  }
+  if (filter === "cancelled" || filter === "no_show") params.type = filter;
+  if (opts?.locationId) params.locationId = opts.locationId;
+  if (opts?.providerId) params.providerId = opts.providerId;
 
   const query = new URLSearchParams(params).toString();
 
   const data = await apiClient<CancellationsApiResponse>(
     `/reports/cancellations?${query}`,
-    { method: "GET" }
+    {
+      method: "GET",
+    }
   );
 
   return data.items ?? [];
+}
+
+// ----------------- ✅ Payouts (detalhado por atendimento) -----------------
+
+export type ProviderPayoutsStatusFilter = "pending" | "paid" | "all";
+
+export type ProviderPayoutItem = {
+  earningId: string;
+  appointmentId: string;
+  date: string;
+
+  customerName: string | null;
+
+  serviceName: string;
+  servicePriceCents: number;
+  commissionPercentage: number;
+  providerEarningsCents: number;
+  houseEarningsCents: number;
+
+  provider: { id: string; name: string } | null;
+  location: { id: string; name: string } | null;
+
+  payoutStatus: "pending" | "paid" | string;
+  payoutAt?: string | null;
+  payoutMethod?: string | null;
+  payoutNote?: string | null;
+};
+
+export type ProviderPayoutsResponse = {
+  from: string;
+  to: string;
+  filters: {
+    locationId: string | null;
+    providerId: string | null;
+    status: string | null;
+  };
+  totals: {
+    servicePriceCents: number;
+    providerEarningsCents: number;
+    houseEarningsCents: number;
+    count: number;
+  };
+  items: ProviderPayoutItem[];
+};
+
+export async function fetchOwnerProviderPayoutsDetailed(params: {
+  from: string;
+  to: string;
+  status?: ProviderPayoutsStatusFilter;
+  locationId?: string;
+  providerId?: string;
+}): Promise<ProviderPayoutsResponse> {
+  const qs = new URLSearchParams({
+    from: params.from,
+    to: params.to,
+  });
+
+  // ✅ não envia status se for "all"
+  if (params.status && params.status !== "all") qs.set("status", params.status);
+
+  if (params.locationId) qs.set("locationId", params.locationId);
+  if (params.providerId) qs.set("providerId", params.providerId);
+
+  return apiClient<ProviderPayoutsResponse>(
+    `/reports/provider-payouts?${qs.toString()}`,
+    {
+      method: "GET",
+    }
+  );
 }

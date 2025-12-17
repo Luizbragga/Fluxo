@@ -528,9 +528,14 @@ export class ReportsService {
 
     const { fromDate, toDate } = this.resolveDateRange(from, to);
 
+    const payoutStatusFilter =
+      status && status !== 'all'
+        ? { payoutStatus: status as PayoutStatus }
+        : {};
+
     const earnings = await this.prisma.appointmentEarning.findMany({
       where: {
-        ...(status ? { payoutStatus: status as PayoutStatus } : {}),
+        ...payoutStatusFilter,
         appointment: {
           tenantId,
           status: AppointmentState.done,
@@ -544,20 +549,23 @@ export class ReportsService {
       },
       include: {
         appointment: {
-          include: {
-            provider: {
+          select: {
+            id: true,
+            startAt: true,
+            endAt: true,
+            clientName: true,
+            clientPhone: true,
+            serviceName: true,
+            customer: {
               select: { id: true, name: true },
             },
-            location: {
-              select: { id: true, name: true },
-            },
+            provider: { select: { id: true, name: true } },
+            location: { select: { id: true, name: true } },
           },
         },
       },
       orderBy: {
-        appointment: {
-          startAt: 'asc',
-        },
+        appointment: { startAt: 'asc' },
       },
     });
 
@@ -570,27 +578,32 @@ export class ReportsService {
       totalProviderEarningsCents += e.providerEarningsCents;
       totalHouseEarningsCents += e.houseEarningsCents;
 
+      const appointment = e.appointment;
+
+      const resolvedCustomerName =
+        appointment.customer?.name ?? appointment.clientName ?? null;
+
       return {
         earningId: e.id,
         appointmentId: e.appointmentId,
-        date: e.appointment.startAt,
-        serviceName: e.appointment.serviceName,
+        date: appointment.startAt,
+        customerName: resolvedCustomerName,
+
+        startAt: appointment.startAt,
+        endAt: appointment.endAt,
+
+        serviceName: appointment.serviceName,
         servicePriceCents: e.servicePriceCents,
         commissionPercentage: e.commissionPercentage,
         providerEarningsCents: e.providerEarningsCents,
         houseEarningsCents: e.houseEarningsCents,
 
-        provider: e.appointment.provider
-          ? {
-              id: e.appointment.provider.id,
-              name: e.appointment.provider.name,
-            }
+        provider: appointment.provider
+          ? { id: appointment.provider.id, name: appointment.provider.name }
           : null,
-        location: e.appointment.location
-          ? {
-              id: e.appointment.location.id,
-              name: e.appointment.location.name,
-            }
+
+        location: appointment.location
+          ? { id: appointment.location.id, name: appointment.location.name }
           : null,
 
         payoutStatus: e.payoutStatus,
@@ -617,6 +630,7 @@ export class ReportsService {
       items,
     };
   }
+
   async markProviderPayoutsAsPaid(params: {
     tenantId: string;
     providerId: string;

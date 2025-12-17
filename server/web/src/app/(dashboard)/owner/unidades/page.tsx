@@ -9,8 +9,9 @@ import {
   updateOwnerLocationManager,
   createOwnerLocation,
   updateOwnerLocationBusinessHours,
+  updateOwnerLocationDetails,
 } from "../_api/owner-locations";
-
+import Link from "next/link";
 import {
   fetchOwnerProfessionals,
   type OwnerProfessional,
@@ -24,7 +25,7 @@ export default function OwnerUnidadesPage() {
 
   const [isCreating, setIsCreating] = useState(false);
   const [newName, setNewName] = useState("");
-  const [newSlug, setNewSlug] = useState("");
+  const [newAddress, setNewAddress] = useState("");
   const [creating, setCreating] = useState(false);
 
   const [savingId, setSavingId] = useState<string | null>(null);
@@ -37,6 +38,7 @@ export default function OwnerUnidadesPage() {
   const [editingManagerLocationId, setEditingManagerLocationId] = useState<
     string | null
   >(null);
+
   const [selectedManagerId, setSelectedManagerId] = useState<string | "none">(
     "none"
   );
@@ -165,6 +167,59 @@ export default function OwnerUnidadesPage() {
 
     return result;
   }
+  // --- editar unidade (nome + endereço) ---
+  const [editingDetailsLocationId, setEditingDetailsLocationId] = useState<
+    string | null
+  >(null);
+
+  const [editName, setEditName] = useState("");
+  const [editAddress, setEditAddress] = useState("");
+
+  function handleStartEditDetails(location: OwnerLocation) {
+    setEditingDetailsLocationId(location.id);
+    setEditName(location.name ?? "");
+    setEditAddress(location.address ?? "");
+  }
+
+  function handleCancelEditDetails() {
+    setEditingDetailsLocationId(null);
+    setEditName("");
+    setEditAddress("");
+  }
+
+  async function handleSaveDetails(location: OwnerLocation) {
+    try {
+      setSavingId(location.id);
+      setError(null);
+
+      const name = editName.trim();
+      const address = editAddress.trim();
+
+      if (!name) {
+        setError("Informe um nome para a unidade.");
+        return;
+      }
+
+      const updated = await updateOwnerLocationDetails({
+        id: location.id,
+        name,
+        address: address ? address : null,
+      });
+
+      setLocations((prev) =>
+        prev.map((loc) => (loc.id === updated.id ? updated : loc))
+      );
+
+      setEditingDetailsLocationId(null);
+      setEditName("");
+      setEditAddress("");
+    } catch (err) {
+      console.error(err);
+      setError("Não foi possível editar a unidade.");
+    } finally {
+      setSavingId(null);
+    }
+  }
 
   useEffect(() => {
     let cancelled = false;
@@ -226,7 +281,7 @@ export default function OwnerUnidadesPage() {
     setError(null);
 
     const name = newName.trim();
-    const slug = newSlug.trim();
+    const address = newAddress.trim();
 
     if (!name) {
       setError("Informe um nome para a unidade.");
@@ -238,7 +293,7 @@ export default function OwnerUnidadesPage() {
 
       const created = await createOwnerLocation({
         name,
-        slug: slug || undefined,
+        address: address || undefined,
       });
 
       setLocations((prev) => [created, ...prev]);
@@ -252,7 +307,7 @@ export default function OwnerUnidadesPage() {
       );
 
       setNewName("");
-      setNewSlug("");
+      setNewAddress("");
       setIsCreating(false);
     } catch (err) {
       console.error(err);
@@ -434,18 +489,18 @@ export default function OwnerUnidadesPage() {
               />
             </div>
 
-            <div className="w-full sm:w-64">
+            <div className="w-full sm:w-96">
               <label className="block text-xs font-medium text-slate-300 mb-1">
-                Slug (opcional)
+                Endereço (opcional)
               </label>
               <input
                 className="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-50 outline-none focus:border-emerald-500"
-                value={newSlug}
-                onChange={(e) => setNewSlug(e.target.value)}
-                placeholder="demo-centro"
+                value={newAddress}
+                onChange={(e) => setNewAddress(e.target.value)}
+                placeholder="Ex.: Rua Central, 123 — Barcelos"
               />
               <p className="mt-1 text-[11px] text-slate-500">
-                Se não preencher, geramos automaticamente a partir do nome.
+                Ajuda em relatórios, unidade correta e organização interna.
               </p>
             </div>
 
@@ -503,7 +558,7 @@ export default function OwnerUnidadesPage() {
             <thead className="bg-slate-950/60 border-b border-slate-800 text-slate-400 text-xs uppercase tracking-wide">
               <tr>
                 <th className="px-4 py-3 text-left">Nome</th>
-                <th className="px-4 py-3 text-left">Slug</th>
+                <th className="px-4 py-3 text-left">Endereço</th>
                 <th className="px-4 py-3 text-left">Horário padrão</th>
                 <th className="px-4 py-3 text-left">Responsável</th>
                 <th className="px-4 py-3 text-left">Status</th>
@@ -517,6 +572,8 @@ export default function OwnerUnidadesPage() {
                   Object.keys(location.businessHoursTemplate).length > 0;
 
                 const isSaving = savingId === location.id;
+                const isEditingDetails =
+                  editingDetailsLocationId === location.id;
                 const isEditingManager =
                   editingManagerLocationId === location.id;
 
@@ -530,9 +587,8 @@ export default function OwnerUnidadesPage() {
                       <div className="font-medium">{location.name}</div>
                     </td>
 
-                    {/* Slug */}
                     <td className="px-4 py-3 align-top text-slate-300 text-xs">
-                      {location.slug}
+                      {location.address ?? "—"}
                     </td>
 
                     {/* Horário padrão */}
@@ -581,6 +637,62 @@ export default function OwnerUnidadesPage() {
                     {/* Ações */}
                     <td className="px-4 py-3 align-top text-xs">
                       <div className="flex flex-col gap-2">
+                        <Link
+                          href={`/owner/relatorios?tab=unidade&locationId=${location.id}`}
+                          className="inline-flex items-center justify-center rounded-full border border-slate-700 px-3 py-1 text-[11px] text-slate-200 hover:border-emerald-400 hover:text-emerald-200"
+                        >
+                          Ver relatórios da unidade
+                        </Link>
+
+                        {isEditingDetails ? (
+                          <>
+                            <div className="flex flex-col gap-2">
+                              <input
+                                className="w-full rounded-full border border-slate-700 bg-slate-950 px-3 py-1 text-[11px] text-slate-100 outline-none focus:border-emerald-400"
+                                value={editName}
+                                onChange={(e) => setEditName(e.target.value)}
+                                placeholder="Nome da unidade"
+                                disabled={isSaving}
+                              />
+
+                              <input
+                                className="w-full rounded-full border border-slate-700 bg-slate-950 px-3 py-1 text-[11px] text-slate-100 outline-none focus:border-emerald-400"
+                                value={editAddress}
+                                onChange={(e) => setEditAddress(e.target.value)}
+                                placeholder="Endereço (opcional)"
+                                disabled={isSaving}
+                              />
+                            </div>
+
+                            <div className="flex gap-2">
+                              <button
+                                type="button"
+                                disabled={isSaving}
+                                onClick={() => handleSaveDetails(location)}
+                                className="inline-flex items-center justify-center rounded-full bg-emerald-500 px-3 py-1 text-[11px] font-medium text-slate-950 hover:bg-emerald-400 disabled:opacity-60 disabled:cursor-not-allowed"
+                              >
+                                {isSaving ? "Salvando..." : "Salvar"}
+                              </button>
+
+                              <button
+                                type="button"
+                                onClick={handleCancelEditDetails}
+                                className="inline-flex items-center justify-center rounded-full border border-slate-700 px-3 py-1 text-[11px] text-slate-200 hover:border-slate-500"
+                              >
+                                Cancelar
+                              </button>
+                            </div>
+                          </>
+                        ) : (
+                          <button
+                            type="button"
+                            disabled={isSaving}
+                            onClick={() => handleStartEditDetails(location)}
+                            className="inline-flex items-center justify-center rounded-full border border-slate-700 px-3 py-1 text-[11px] text-slate-200 hover:border-emerald-400 hover:text-emerald-200 disabled:opacity-60 disabled:cursor-not-allowed"
+                          >
+                            Editar unidade
+                          </button>
+                        )}
                         {isEditingManager ? (
                           <>
                             <div className="flex flex-col gap-2">

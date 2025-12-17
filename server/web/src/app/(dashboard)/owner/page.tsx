@@ -1,3 +1,4 @@
+// web/src/app/(dashboard)/owner/page.tsx
 "use client";
 
 import { useRouter, useSearchParams } from "next/navigation";
@@ -23,7 +24,6 @@ import {
   type OverviewKpi,
 } from "./_components/overview-kpi-card";
 
-import { NextAppointmentCard } from "./_components/next-appointment-card";
 import { ProfessionalPayoutRow } from "./_components/professional-payout-row";
 
 // ----------------- Tipos -----------------
@@ -46,8 +46,6 @@ type Slot = {
   appts: SlotAppt[];
 };
 
-type DayRange = { startMin: number; endMin: number };
-
 // ----------------- Consts -----------------
 
 const weekdayNames = [
@@ -60,353 +58,128 @@ const weekdayNames = [
   "sábado",
 ];
 
-// ----------------- Helpers de hora -----------------
+// ----------------- Slots (MESMO PADRÃO DA TELA AGENDA) -----------------
 
-function timeToMinutes(value?: string | null): number | null {
-  if (!value) return null;
-  const clean = String(value).trim();
-  const m = clean.match(/^(\d{1,2}):(\d{2})/);
-  if (!m) return null;
-  const hh = Number(m[1]);
-  const mm = Number(m[2]);
-  if (Number.isNaN(hh) || Number.isNaN(mm)) return null;
-  return hh * 60 + mm;
+const DEFAULT_TIME_SLOTS = [
+  "08:00",
+  "08:30",
+  "09:00",
+  "09:30",
+  "10:00",
+  "10:30",
+  "11:00",
+  "11:30",
+  "12:00",
+  "12:30",
+  "13:00",
+  "13:30",
+  "14:00",
+  "14:30",
+  "15:00",
+  "15:30",
+  "16:00",
+  "16:30",
+  "17:00",
+  "17:30",
+  "18:00",
+  "18:30",
+  "19:00",
+  "19:30",
+  "20:00",
+];
+
+type DayInterval = { start: string; end: string };
+
+function timeStrToMinutes(time: string): number {
+  const [hStr, mStr] = String(time ?? "").split(":");
+  const h = Number(hStr) || 0;
+  const m = Number(mStr) || 0;
+  return h * 60 + m;
 }
 
-function minutesToTimeLabel(min: number): string {
-  const hh = Math.floor(min / 60);
-  const mm = min % 60;
-  return `${String(hh).padStart(2, "0")}:${String(mm).padStart(2, "0")}`;
+// tolerante: aceita keys em EN (mon) ou PT (seg), e template como string JSON ou objeto
+function getWeekdayCandidateKeys(date: Date): string[] {
+  // 0=dom, 1=seg...
+  const map: string[][] = [
+    ["sun", "dom", "domingo"],
+    ["mon", "seg", "segunda"],
+    ["tue", "ter", "terça", "terca"],
+    ["wed", "qua", "quarta"],
+    ["thu", "qui", "quinta"],
+    ["fri", "sex", "sexta"],
+    ["sat", "sab", "sábado", "sabado"],
+  ];
+  return map[date.getDay()] ?? [];
 }
 
-function safeParseJson(value: any): any {
-  if (value == null) return null;
-  if (typeof value === "string") {
+function tryParseTemplate(raw: any): any {
+  if (!raw) return null;
+  if (typeof raw === "string") {
     try {
-      return JSON.parse(value);
+      return JSON.parse(raw);
     } catch {
-      return value;
+      return null;
     }
   }
-  return value;
+  if (typeof raw === "object") return raw;
+  return null;
 }
 
-// ----------------- Leitura de horário por unidade -----------------
+function normalizeIntervals(raw: any): DayInterval[] {
+  if (!Array.isArray(raw)) return [];
 
-function getBusinessTemplateFromLocation(loc: any): any {
-  if (!loc) return null;
+  return raw
+    .map((pair: any) => {
+      if (!Array.isArray(pair) || pair.length < 2) return null;
+      const start = String(pair[0] ?? "").trim();
+      const end = String(pair[1] ?? "").trim();
+      if (!start || !end) return null;
+      return { start, end } as DayInterval;
+    })
+    .filter(Boolean) as DayInterval[];
+}
 
-  const raw =
-    loc.businessHoursTemplate ??
-    loc.businessHours ??
-    loc.workingHours ??
-    loc.openingHours ??
-    loc.hoursTemplate ??
-    loc.hours ??
+function buildSlotsFromIntervals(
+  intervals: DayInterval[],
+  stepMin = 30
+): string[] {
+  const out: string[] = [];
+
+  for (const itv of intervals) {
+    const startMin = timeStrToMinutes(itv.start);
+    const endMin = timeStrToMinutes(itv.end);
+
+    if (!Number.isFinite(startMin) || !Number.isFinite(endMin)) continue;
+    if (endMin <= startMin) continue;
+
+    for (let m = startMin; m <= endMin; m += stepMin) {
+      const hh = String(Math.floor(m / 60)).padStart(2, "0");
+      const mm = String(m % 60).padStart(2, "0");
+      out.push(`${hh}:${mm}`);
+    }
+  }
+
+  return Array.from(new Set(out)).sort();
+}
+
+function getLocationDayIntervals(location: any, date: Date): DayInterval[] {
+  const templateRaw =
+    location?.businessHoursTemplate ??
+    location?.weekdayTemplate ??
+    location?.hoursTemplate ??
+    location?.scheduleTemplate ??
+    location?.workingHoursTemplate ??
     null;
 
-  return safeParseJson(raw);
-}
+  const template = tryParseTemplate(templateRaw);
+  if (!template) return [];
 
-function keysForDayIndex(dayIndex: number): string[] {
-  const map: Record<number, string[]> = {
-    0: ["sunday", "domingo", "dom", "sun"],
-    1: ["monday", "segunda", "seg", "mon"],
-    2: ["tuesday", "terca", "terça", "ter", "tue"],
-    3: ["wednesday", "quarta", "qua", "wed"],
-    4: ["thursday", "quinta", "qui", "thu"],
-    5: ["friday", "sexta", "sex", "fri"],
-    6: ["saturday", "sabado", "sábado", "sab", "sat"],
-  };
-  return map[dayIndex] ?? [];
-}
+  const keys = getWeekdayCandidateKeys(date);
 
-function pickDayEntry(template: any, dayIndex: number): any | null {
-  if (!template) return null;
-
-  const t = safeParseJson(template);
-
-  // Caso 1: template como array
-  if (Array.isArray(t)) {
-    const candidates = [
-      dayIndex, // 0..6 (domingo..sábado)
-      dayIndex === 0 ? 7 : dayIndex, // 1..7
-      dayIndex === 0 ? 6 : dayIndex - 1, // 0..6 (segunda..domingo)
-    ];
-
-    for (const item of t) {
-      const di =
-        item?.dayIndex ??
-        item?.day ??
-        item?.weekdayIndex ??
-        item?.dayOfWeek ??
-        item?.weekday ??
-        null;
-
-      if (typeof di === "number" && candidates.includes(di)) return item;
-
-      const s = typeof di === "string" ? di.toLowerCase() : null;
-      if (s) {
-        const keys = keysForDayIndex(dayIndex);
-        if (keys.includes(s)) return item;
-      }
+  for (const k of keys) {
+    if (Object.prototype.hasOwnProperty.call(template, k)) {
+      return normalizeIntervals(template[k]);
     }
-
-    return null;
-  }
-
-  // Caso 2: objeto com chaves
-  const keys = keysForDayIndex(dayIndex);
-  const containers = [t, t?.days, t?.weeklySchedule].filter(Boolean);
-
-  for (const obj of containers) {
-    if (obj && obj[String(dayIndex)] != null) return obj[String(dayIndex)];
-    if (obj && obj[String(dayIndex === 0 ? 7 : dayIndex)] != null)
-      return obj[String(dayIndex === 0 ? 7 : dayIndex)];
-
-    for (const k of keys) {
-      if (obj && obj[k] != null) return obj[k];
-    }
-  }
-
-  return null;
-}
-
-function isClosedDay(dayEntry: any): boolean {
-  if (!dayEntry) return false;
-  if (dayEntry.closed === true) return true;
-  if (dayEntry.isOpen === false) return true;
-  if (dayEntry.open === false) return true;
-  if (dayEntry.enabled === false) return true;
-  if (String(dayEntry.status ?? "").toLowerCase() === "closed") return true;
-  if (String(dayEntry.status ?? "").toLowerCase() === "fechado") return true;
-  return false;
-}
-
-/**
- * Normaliza o dia para ranges.
- * Suporta:
- * - periods/ranges: [{start,end}]
- * - manhã/tarde
- * - start/end + breakStart/breakEnd
- */
-function normalizeRangesFromDayEntry(dayEntry: any): DayRange[] {
-  if (!dayEntry) return [];
-  const d = safeParseJson(dayEntry);
-
-  if (isClosedDay(d)) return [];
-
-  const out: DayRange[] = [];
-
-  // 1) periods/ranges array
-  const periods = d.periods ?? d.ranges ?? d.hours ?? d.slots ?? null;
-
-  if (Array.isArray(periods)) {
-    for (const p of periods) {
-      const startRaw = p.start ?? p.from ?? p.begin ?? p.open ?? p.startTime;
-      const endRaw = p.end ?? p.to ?? p.finish ?? p.close ?? p.endTime;
-
-      const s = timeToMinutes(startRaw);
-      const e = timeToMinutes(endRaw);
-
-      if (s != null && e != null && e > s) out.push({ startMin: s, endMin: e });
-    }
-  }
-
-  // 2) manhã/tarde
-  const morning = d.morning ?? d.manha ?? d.am ?? null;
-  const afternoon = d.afternoon ?? d.tarde ?? d.pm ?? null;
-
-  const mStart = timeToMinutes(
-    morning?.from ??
-      morning?.start ??
-      d.morningFrom ??
-      d.morningStart ??
-      d.manhaDe
-  );
-  const mEnd = timeToMinutes(
-    morning?.to ?? morning?.end ?? d.morningTo ?? d.morningEnd ?? d.manhaAte
-  );
-
-  if (mStart != null && mEnd != null && mEnd > mStart)
-    out.push({ startMin: mStart, endMin: mEnd });
-
-  const aStart = timeToMinutes(
-    afternoon?.from ??
-      afternoon?.start ??
-      d.afternoonFrom ??
-      d.afternoonStart ??
-      d.tardeDe
-  );
-  const aEnd = timeToMinutes(
-    afternoon?.to ??
-      afternoon?.end ??
-      d.afternoonTo ??
-      d.afternoonEnd ??
-      d.tardeAte
-  );
-
-  if (aStart != null && aEnd != null && aEnd > aStart)
-    out.push({ startMin: aStart, endMin: aEnd });
-
-  // 3) start/end + break
-  if (out.length === 0) {
-    const startMin = timeToMinutes(
-      d.start ?? d.open ?? d.openingTime ?? d.openTime
-    );
-    const endMin = timeToMinutes(
-      d.end ?? d.close ?? d.closingTime ?? d.closeTime
-    );
-
-    const breakStartMin = timeToMinutes(d.breakStart ?? d.lunchStart);
-    const breakEndMin = timeToMinutes(d.breakEnd ?? d.lunchEnd);
-
-    if (startMin != null && endMin != null && endMin > startMin) {
-      if (
-        breakStartMin != null &&
-        breakEndMin != null &&
-        breakEndMin > breakStartMin
-      ) {
-        if (breakStartMin > startMin)
-          out.push({ startMin, endMin: breakStartMin });
-        if (endMin > breakEndMin) out.push({ startMin: breakEndMin, endMin });
-      } else {
-        out.push({ startMin, endMin });
-      }
-    }
-  }
-
-  return out
-    .filter(
-      (r) =>
-        Number.isFinite(r.startMin) &&
-        Number.isFinite(r.endMin) &&
-        r.endMin > r.startMin
-    )
-    .sort((a, b) => a.startMin - b.startMin);
-}
-
-// ----------------- EXTRAÇÃO ROBUSTA de slots do payload da agenda -----------------
-
-function uniqSorted(labels: string[]): string[] {
-  const clean = labels
-    .map((x) => String(x ?? "").trim())
-    .filter(Boolean)
-    .map((x) => x.slice(0, 5)); // "HH:mm"
-  return Array.from(new Set(clean)).sort((a, b) => a.localeCompare(b));
-}
-
-function extractSlotLabelsFromAgendaDay(agendaDay: any): string[] | null {
-  if (!agendaDay) return null;
-
-  const candidates = [
-    agendaDay.timeSlots,
-    agendaDay.slotTimes,
-    agendaDay.times,
-    agendaDay.grid,
-    agendaDay.scheduleSlots,
-    // MUITO comum: "slots" como array (de string/obj) OU map
-    agendaDay.slots,
-    agendaDay.daySlots,
-    agendaDay.availableSlots,
-  ];
-
-  for (const c of candidates) {
-    const value = safeParseJson(c);
-
-    // 1) array de strings
-    if (
-      Array.isArray(value) &&
-      value.length > 0 &&
-      typeof value[0] === "string"
-    ) {
-      return uniqSorted(value);
-    }
-
-    // 2) array de números (minutos)
-    if (
-      Array.isArray(value) &&
-      value.length > 0 &&
-      typeof value[0] === "number"
-    ) {
-      return uniqSorted(value.map((m: number) => minutesToTimeLabel(m)));
-    }
-
-    // 3) array de objetos (muito provável)
-    if (
-      Array.isArray(value) &&
-      value.length > 0 &&
-      typeof value[0] === "object"
-    ) {
-      const labels: string[] = [];
-
-      for (const item of value) {
-        const raw =
-          item?.timeLabel ??
-          item?.time ??
-          item?.label ??
-          item?.startTime ??
-          item?.start ??
-          item?.from ??
-          null;
-
-        // pode vir "startMinutes"
-        const startMinutes =
-          typeof item?.startMinutes === "number" ? item.startMinutes : null;
-
-        const t =
-          typeof raw === "string"
-            ? raw
-            : startMinutes != null
-            ? minutesToTimeLabel(startMinutes)
-            : null;
-
-        if (t) labels.push(String(t).slice(0, 5));
-      }
-
-      const out = uniqSorted(labels);
-      if (out.length > 0) return out;
-    }
-
-    // 4) map/object: { "08:00": ..., "08:30": ... }
-    if (value && typeof value === "object" && !Array.isArray(value)) {
-      const keys = Object.keys(value).filter((k) => /^\d{1,2}:\d{2}/.test(k));
-      const out = uniqSorted(keys);
-      if (out.length > 0) return out;
-    }
-  }
-
-  return null;
-}
-
-function extractRangesFromAgendaDay(agendaDay: any): DayRange[] {
-  if (!agendaDay) return [];
-
-  const candidates = [
-    agendaDay.daySchedule,
-    agendaDay.schedule,
-    agendaDay.businessHours,
-    agendaDay.locationHours,
-    agendaDay.locationSchedule,
-    agendaDay.workingHours,
-    agendaDay.openingHours,
-    agendaDay.businessHoursTemplate,
-    agendaDay.weekdayTemplate,
-  ].filter(Boolean);
-
-  const dayIndex = new Date().getDay();
-
-  for (const c of candidates) {
-    const template = safeParseJson(c);
-    const dayEntry = pickDayEntry(template, dayIndex);
-    const ranges = normalizeRangesFromDayEntry(dayEntry);
-    if (ranges.length > 0) return ranges;
-  }
-
-  const direct = agendaDay.ranges ?? agendaDay.periods ?? null;
-  if (Array.isArray(direct) && direct.length > 0) {
-    const ranges = normalizeRangesFromDayEntry({ periods: direct });
-    if (ranges.length > 0) return ranges;
   }
 
   return [];
@@ -415,74 +188,36 @@ function extractRangesFromAgendaDay(agendaDay: any): DayRange[] {
 function buildSlotsForToday(params: {
   selectedLocationId: string;
   locations: any[];
-  agendaDay: any;
   appointmentsByTime: Map<string, SlotAppt[]>;
 }): { slots: Slot[]; scheduleOk: boolean } {
-  const { selectedLocationId, locations, agendaDay, appointmentsByTime } =
-    params;
+  const { selectedLocationId, locations, appointmentsByTime } = params;
+  const today = new Date();
 
-  // sem filtro: grid padrão 08:00-20:00
+  // sem unidade => DEFAULT_TIME_SLOTS
   if (!selectedLocationId) {
-    const start = 8 * 60;
-    const end = 20 * 60;
-    const slots: Slot[] = [];
-    for (let min = start; min < end; min += 30) {
-      const timeLabel = minutesToTimeLabel(min);
-      slots.push({ timeLabel, appts: appointmentsByTime.get(timeLabel) ?? [] });
-    }
-    return { slots, scheduleOk: true };
-  }
-
-  // ✅ 1) PRIORIDADE: slots do endpoint da agenda (robusto agora)
-  const labels = extractSlotLabelsFromAgendaDay(agendaDay);
-  if (labels && labels.length > 0) {
-    const slots: Slot[] = labels.map((timeLabel) => ({
+    const slots: Slot[] = DEFAULT_TIME_SLOTS.map((timeLabel) => ({
       timeLabel,
       appts: appointmentsByTime.get(timeLabel) ?? [],
     }));
     return { slots, scheduleOk: true };
   }
 
-  // ✅ 2) ranges vindos do endpoint da agenda
-  const rangesFromAgenda = extractRangesFromAgendaDay(agendaDay);
-  if (rangesFromAgenda.length > 0) {
-    const result: Slot[] = [];
-    for (const r of rangesFromAgenda) {
-      for (let min = r.startMin; min < r.endMin; min += 30) {
-        const timeLabel = minutesToTimeLabel(min);
-        result.push({
-          timeLabel,
-          appts: appointmentsByTime.get(timeLabel) ?? [],
-        });
-      }
-    }
-    return { slots: result, scheduleOk: true };
-  }
+  const loc =
+    locations.find((l) => String(l.id) === String(selectedLocationId)) ?? null;
+  if (!loc) return { slots: [], scheduleOk: false };
 
-  // ✅ 3) fallback: tentar ler do locations (se vier completo)
-  const loc = locations.find((l) => l.id === selectedLocationId) ?? null;
-  const template = getBusinessTemplateFromLocation(loc);
+  const intervals = getLocationDayIntervals(loc, today);
+  if (!intervals.length) return { slots: [], scheduleOk: false };
 
-  const dayIndex = new Date().getDay();
-  const dayEntry = pickDayEntry(template, dayIndex);
-  const ranges = normalizeRangesFromDayEntry(dayEntry);
+  const labels = buildSlotsFromIntervals(intervals, 30);
 
-  if (ranges.length === 0) {
-    return { slots: [], scheduleOk: false };
-  }
-
-  const result: Slot[] = [];
-  for (const r of ranges) {
-    for (let min = r.startMin; min < r.endMin; min += 30) {
-      const timeLabel = minutesToTimeLabel(min);
-      result.push({
-        timeLabel,
-        appts: appointmentsByTime.get(timeLabel) ?? [],
-      });
-    }
-  }
-
-  return { slots: result, scheduleOk: true };
+  return {
+    slots: labels.map((timeLabel) => ({
+      timeLabel,
+      appts: appointmentsByTime.get(timeLabel) ?? [],
+    })),
+    scheduleOk: true,
+  };
 }
 
 // ----- helper para sobrescrever o KPI de receita prevista/faturada -----
@@ -540,42 +275,53 @@ export default function FluxoOwnerDashboard() {
     requiredRole: "owner",
   });
 
+  const router = useRouter();
+  const searchParams = useSearchParams();
+
   const [data, setData] = useState<OwnerOverview | null>(null);
   const [agendaDay, setAgendaDay] = useState<OwnerAgendaDay | null>(null);
   const [loadingOverview, setLoadingOverview] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
-  const router = useRouter();
-  const searchParams = useSearchParams();
-
   const [locations, setLocations] = useState<OwnerLocation[]>([]);
+  const [refreshTick, setRefreshTick] = useState(0);
+
   const selectedLocationId = searchParams.get("locationId") ?? "";
   const [selectedProfessionalId, setSelectedProfessionalId] =
     useState<string>("all");
+
+  const [expandedSlot, setExpandedSlot] = useState<{
+    time: string;
+    appts: SlotAppt[];
+  } | null>(null);
+
+  function openSlotDetails(time: string, appts: SlotAppt[]) {
+    if (!appts || appts.length === 0) return;
+    setExpandedSlot({ time, appts });
+  }
+
+  function closeSlotDetails() {
+    setExpandedSlot(null);
+  }
+
+  function goToAgenda(mode: "daily" | "weekly") {
+    const params = new URLSearchParams();
+    if (selectedLocationId) params.set("locationId", selectedLocationId);
+    params.set("view", mode);
+    router.push(`/owner/agenda?${params.toString()}`);
+  }
 
   // carrega unidades
   useEffect(() => {
     async function loadLocations() {
       try {
-        const res: any = await fetchOwnerLocations();
-
-        const list = Array.isArray(res)
-          ? res
-          : Array.isArray(res?.locations)
-          ? res.locations
-          : Array.isArray(res?.data)
-          ? res.data
-          : Array.isArray(res?.items)
-          ? res.items
-          : [];
-
-        setLocations(list);
+        const res = await fetchOwnerLocations({ page: 1, pageSize: 100 });
+        setLocations(res.data ?? []);
       } catch (e) {
         console.error("Erro ao carregar unidades:", e);
         setLocations([]);
       }
     }
-
     loadLocations();
   }, []);
 
@@ -583,6 +329,12 @@ export default function FluxoOwnerDashboard() {
   useEffect(() => {
     setSelectedProfessionalId("all");
   }, [selectedLocationId]);
+
+  // auto refresh (30s)
+  useEffect(() => {
+    const id = setInterval(() => setRefreshTick((t) => t + 1), 30000);
+    return () => clearInterval(id);
+  }, []);
 
   // carrega overview + agenda do dia + financeiro do dia
   useEffect(() => {
@@ -629,11 +381,7 @@ export default function FluxoOwnerDashboard() {
           agendaResult
         );
 
-        setData({
-          ...overviewResult,
-          overviewKpis: updatedKpis,
-        });
-
+        setData({ ...overviewResult, overviewKpis: updatedKpis });
         setAgendaDay(agendaResult);
       } catch (err) {
         console.error("Erro ao carregar overview do owner:", err);
@@ -644,33 +392,89 @@ export default function FluxoOwnerDashboard() {
     }
 
     loadOverview();
-  }, [authLoading, user, selectedLocationId]);
+  }, [authLoading, user, selectedLocationId, refreshTick]);
 
-  // ----------- memos -----------
+  // ----------------- MEMOS (TODOS OS HOOKS ANTES DOS RETURNS) -----------------
 
-  const professionals = agendaDay?.professionals ?? [];
+  const professionalsRaw = agendaDay?.professionals ?? [];
+
+  const appointmentsAll = useMemo(() => {
+    return agendaDay?.appointments ?? [];
+  }, [agendaDay]);
+
+  // ids de profissionais que aparecem nos agendamentos do dia
+  const professionalIdsInAgenda = useMemo(() => {
+    const set = new Set<string>();
+    for (const a of appointmentsAll) {
+      if (a?.professionalId) set.add(a.professionalId);
+    }
+    return set;
+  }, [appointmentsAll]);
+
+  // professionalId -> locationId (pega do professional e faz fallback pelo appointment)
+  const professionalLocationById = useMemo(() => {
+    const map: Record<string, string> = {};
+
+    for (const p of professionalsRaw as any[]) {
+      const locId =
+        p?.locationId ??
+        p?.location?.id ??
+        p?.location?.ID ??
+        p?.location ??
+        "";
+
+      if (p?.id && locId) map[p.id] = String(locId);
+    }
+
+    for (const a of appointmentsAll as any[]) {
+      const locId = a?.locationId ?? a?.location?.id ?? "";
+      if (a?.professionalId && locId && !map[a.professionalId]) {
+        map[a.professionalId] = String(locId);
+      }
+    }
+
+    return map;
+  }, [professionalsRaw, appointmentsAll]);
+
+  // profissionais exibidos no select:
+  // - com unidade => só daquela unidade (se não der pra inferir, usa os que aparecem na agenda)
+  const professionals = useMemo(() => {
+    if (!selectedLocationId) return professionalsRaw;
+
+    const byProp = (professionalsRaw as any[]).filter((p) => {
+      const locId = p?.locationId ?? p?.location?.id ?? "";
+      return String(locId) === String(selectedLocationId);
+    });
+
+    if (byProp.length > 0) return byProp as any;
+
+    return (professionalsRaw as any[]).filter((p) =>
+      professionalIdsInAgenda.has(p.id)
+    );
+  }, [professionalsRaw, selectedLocationId, professionalIdsInAgenda]);
+
   const hasMultipleProfessionals = professionals.length > 1;
 
   const appointmentsForView = useMemo(() => {
-    const list = agendaDay?.appointments ?? [];
+    const list = appointmentsAll;
     if (selectedProfessionalId === "all") {
       return [...list].sort((a, b) => a.startMinutes - b.startMinutes);
     }
     return list
       .filter((a) => a.professionalId === selectedProfessionalId)
       .sort((a, b) => a.startMinutes - b.startMinutes);
-  }, [agendaDay, selectedProfessionalId]);
+  }, [appointmentsAll, selectedProfessionalId]);
 
   const professionalNameById = useMemo(() => {
     const map: Record<string, string> = {};
-    for (const p of professionals) map[p.id] = p.name;
+    for (const p of professionals as any[]) map[p.id] = p.name;
     return map;
   }, [professionals]);
 
   const appointmentsByTime = useMemo(() => {
     const map = new Map<string, SlotAppt[]>();
 
-    for (const a of appointmentsForView) {
+    for (const a of appointmentsForView as any[]) {
       const key = a.time; // "08:00"
       const arr = map.get(key) ?? [];
       arr.push({
@@ -684,7 +488,11 @@ export default function FluxoOwnerDashboard() {
     }
 
     for (const [k, arr] of map.entries()) {
-      arr.sort((x, y) => x.time.localeCompare(y.time));
+      arr.sort((x, y) => {
+        const aa = `${x.serviceName} ${x.customerName}`.toLowerCase();
+        const bb = `${y.serviceName} ${y.customerName}`.toLowerCase();
+        return aa.localeCompare(bb);
+      });
       map.set(k, arr);
     }
 
@@ -694,16 +502,61 @@ export default function FluxoOwnerDashboard() {
   const showProfessionalOnChip =
     selectedProfessionalId === "all" && professionals.length > 1;
 
+  // Se NÃO tiver unidade selecionada, mas tiver profissional selecionado:
+  // usa a unidade do profissional pra montar o horário (08-12/14-20 etc)
+  const effectiveLocationIdForSchedule = useMemo(() => {
+    if (selectedLocationId) return selectedLocationId;
+    if (selectedProfessionalId !== "all") {
+      return professionalLocationById[selectedProfessionalId] ?? "";
+    }
+    return "";
+  }, [selectedLocationId, selectedProfessionalId, professionalLocationById]);
+
   const slotsBuild = useMemo(() => {
     return buildSlotsForToday({
-      selectedLocationId,
+      selectedLocationId: effectiveLocationIdForSchedule,
       locations,
-      agendaDay,
       appointmentsByTime,
     });
-  }, [selectedLocationId, locations, agendaDay, appointmentsByTime]);
+  }, [effectiveLocationIdForSchedule, locations, appointmentsByTime]);
 
-  // ----------------- renders -----------------
+  // Próximo agendamento (sempre o próximo >= agora, ignorando cancelled/no_show/done)
+  const nextUpcoming = useMemo(() => {
+    const now = new Date();
+    const nowMinutes = now.getHours() * 60 + now.getMinutes();
+
+    const valid = (appointmentsForView as any[]).filter(
+      (a) =>
+        a.status !== "cancelled" &&
+        a.status !== "no_show" &&
+        a.status !== "done"
+    );
+
+    const upcoming = valid
+      .filter((a) => a.startMinutes >= nowMinutes)
+      .sort((a, b) => a.startMinutes - b.startMinutes);
+
+    return upcoming[0] ?? null;
+  }, [appointmentsForView, refreshTick]);
+
+  const daySummary = useMemo(() => {
+    const list = appointmentsForView as any[];
+
+    const total = list.length;
+    const done = list.filter((a) => a.status === "done").length;
+    const cancelled = list.filter((a) => a.status === "cancelled").length;
+    const noShow = list.filter((a) => a.status === "no_show").length;
+
+    return { total, done, cancelled, noShow };
+  }, [appointmentsForView]);
+
+  const weekdayLabel = useMemo(() => {
+    const today = new Date();
+    const raw = weekdayNames[today.getDay()] ?? "";
+    return raw ? raw.charAt(0).toUpperCase() + raw.slice(1) : "";
+  }, []);
+
+  // ----------------- RENDERS (AGORA PODE TER RETURNS) -----------------
 
   if (authLoading || loadingOverview || !data) {
     return (
@@ -717,17 +570,7 @@ export default function FluxoOwnerDashboard() {
     return <div className="text-sm text-rose-400">{error}</div>;
   }
 
-  const {
-    overviewKpis,
-    nextAppointments,
-    quickFinancialCards,
-    professionalPayouts,
-  } = data;
-
-  const today = new Date();
-  const weekdayLabelRaw = weekdayNames[today.getDay()] ?? "";
-  const weekdayLabel =
-    weekdayLabelRaw.charAt(0).toUpperCase() + weekdayLabelRaw.slice(1);
+  const { overviewKpis, quickFinancialCards, professionalPayouts } = data;
 
   return (
     <>
@@ -762,16 +605,16 @@ export default function FluxoOwnerDashboard() {
         </div>
       </div>
 
-      {/* Metric cards */}
+      {/* KPIs */}
       <section className="grid grid-cols-1 md:grid-cols-4 gap-4">
         {overviewKpis.map((kpi) => (
           <OverviewKpiCard key={kpi.id} kpi={kpi} />
         ))}
       </section>
 
-      {/* Agenda + Lista lateral */}
+      {/* Agenda + Próximo */}
       <section className="grid grid-cols-1 lg:grid-cols-3 gap-4">
-        {/* Calendar real (slots do dia) */}
+        {/* Agenda do dia */}
         <div className="lg:col-span-2 rounded-2xl border border-slate-800 bg-slate-900/60 p-4 flex flex-col">
           <div className="flex items-center justify-between mb-3 gap-3">
             <div>
@@ -788,7 +631,7 @@ export default function FluxoOwnerDashboard() {
                   title="Filtrar profissional"
                 >
                   <option value="all">Todos</option>
-                  {professionals.map((p) => (
+                  {professionals.map((p: any) => (
                     <option key={p.id} value={p.id}>
                       {p.name}
                     </option>
@@ -797,71 +640,102 @@ export default function FluxoOwnerDashboard() {
               )}
 
               <div className="flex gap-2 text-xs">
-                <button className="px-2 py-1 rounded-lg border border-slate-700 hover:border-emerald-500">
+                <button
+                  type="button"
+                  className="px-2 py-1 rounded-lg border border-slate-700 hover:border-emerald-500"
+                  onClick={() => goToAgenda("daily")}
+                  title="Abrir a agenda completa (diário)"
+                >
                   Diário
                 </button>
-                <button className="px-2 py-1 rounded-lg border border-slate-800 bg-slate-950/70 text-slate-400">
+
+                <button
+                  type="button"
+                  className="px-2 py-1 rounded-lg border border-slate-800 bg-slate-950/70 text-slate-300 hover:border-emerald-500"
+                  onClick={() => goToAgenda("weekly")}
+                  title="Ir para a agenda semanal"
+                >
                   Semanal
                 </button>
               </div>
             </div>
           </div>
 
-          {selectedLocationId && !slotsBuild.scheduleOk ? (
+          {effectiveLocationIdForSchedule && !slotsBuild.scheduleOk ? (
             <div className="rounded-xl border border-amber-500/30 bg-amber-500/10 p-3 text-xs text-amber-200">
-              Esta unidade não tem horário configurado para hoje (ou o endpoint
-              da agenda não retornou os slots).
+              Esta unidade não tem horário configurado para hoje.
               <br />
-              Se a página “Agenda” mostra os horários, então aqui o payload está
-              vindo num formato diferente — agora o extractor já cobre strings,
-              objetos e maps.
+              Configure o{" "}
+              <span className="font-semibold">businessHoursTemplate</span> da
+              unidade.
             </div>
           ) : (
             <div className="mt-2 max-h-[340px] overflow-y-auto pr-1">
               <div className="grid grid-cols-4 md:grid-cols-6 gap-2 text-xs">
-                {slotsBuild.slots.map((slot) => (
-                  <div
-                    key={slot.timeLabel}
-                    className="h-16 rounded-xl border border-slate-800/60 bg-slate-950/40 flex flex-col justify-between p-2"
-                  >
-                    <span className="text-[10px] text-slate-500">
-                      {slot.timeLabel}
-                    </span>
+                {slotsBuild.slots.map((slot) => {
+                  const total = slot.appts.length;
+                  const first = slot.appts[0];
+                  const clickable = total > 0;
 
-                    {slot.appts.length > 0 && (
-                      <div className="flex flex-col gap-1">
-                        {slot.appts.slice(0, 2).map((a) => {
-                          const prof =
-                            professionalNameById[a.professionalId] ??
-                            "Profissional";
+                  return (
+                    <button
+                      key={slot.timeLabel}
+                      type="button"
+                      disabled={!clickable}
+                      onClick={() =>
+                        openSlotDetails(slot.timeLabel, slot.appts)
+                      }
+                      className={[
+                        "h-16 rounded-xl border bg-slate-950/40 flex flex-col justify-between p-2 text-left relative transition-colors",
+                        clickable
+                          ? "border-slate-800/60 hover:border-emerald-500/50"
+                          : "border-slate-800/40 opacity-70 cursor-default",
+                      ].join(" ")}
+                    >
+                      <div className="flex items-start justify-between">
+                        <span className="text-[10px] text-slate-500">
+                          {slot.timeLabel}
+                        </span>
 
-                          return (
-                            <div
-                              key={a.id}
-                              className="text-[11px] bg-emerald-500/10 border border-emerald-500/40 text-emerald-200 rounded-lg px-1 py-[2px] truncate"
-                              title={`${a.serviceName} · ${a.customerName}${
-                                showProfessionalOnChip ? ` · ${prof}` : ""
-                              }`}
-                            >
-                              {showProfessionalOnChip ? (
-                                <span className="text-[10px] text-slate-300 mr-1">
-                                  {prof.split(" ")[0]}:
-                                </span>
-                              ) : null}
-                              {a.serviceName} · {a.customerName}
-                            </div>
-                          );
-                        })}
-
-                        {slot.appts.length > 2 && (
-                          <div className="text-[10px] text-slate-500">
-                            +{slot.appts.length - 2} more
-                          </div>
+                        {total > 0 && (
+                          <span className="ml-2 shrink-0 text-[10px] px-2 py-[1px] rounded-md border border-slate-700 bg-slate-950/70 text-slate-200">
+                            {total}
+                          </span>
                         )}
                       </div>
-                    )}
-                  </div>
-                ))}
+
+                      {/* Mostra SÓ 1 chip (os outros só no expand) */}
+                      {first ? (
+                        <div
+                          className="mt-2 text-[11px] bg-emerald-500/10 border border-emerald-500/40 text-emerald-200 rounded-lg px-1 py-[2px] truncate"
+                          title={`${first.serviceName} · ${first.customerName}${
+                            showProfessionalOnChip
+                              ? ` · ${
+                                  professionalNameById[first.professionalId] ??
+                                  "Profissional"
+                                }`
+                              : ""
+                          }`}
+                        >
+                          {showProfessionalOnChip ? (
+                            <span className="text-[10px] text-slate-300 mr-1">
+                              {
+                                (
+                                  professionalNameById[first.professionalId] ??
+                                  "Pro"
+                                ).split(" ")[0]
+                              }
+                              :
+                            </span>
+                          ) : null}
+                          {first.serviceName} · {first.customerName}
+                        </div>
+                      ) : (
+                        <div className="mt-2 text-[11px] text-slate-600" />
+                      )}
+                    </button>
+                  );
+                })}
               </div>
             </div>
           )}
@@ -871,14 +745,61 @@ export default function FluxoOwnerDashboard() {
         <div className="rounded-2xl border border-slate-800 bg-slate-900/60 p-4 flex flex-col gap-3">
           <div className="flex items-center justify-between">
             <p className="text-xs text-slate-400">Próximos horários</p>
-            <button className="text-[11px] text-emerald-400 hover:underline">
+
+            <button
+              type="button"
+              className="text-[11px] text-emerald-400 hover:underline"
+              onClick={() => goToAgenda("daily")}
+            >
               Ver agenda completa
             </button>
           </div>
+
           <div className="space-y-2 text-xs">
-            {nextAppointments.map((appt) => (
-              <NextAppointmentCard key={appt.id} appointment={appt} />
-            ))}
+            {nextUpcoming ? (
+              <div className="rounded-xl border border-slate-800 bg-slate-950/50 p-3">
+                <div className="flex items-center justify-between">
+                  <p className="text-[11px] text-slate-400">
+                    Próximo agendamento
+                  </p>
+                  <span className="text-[11px] text-emerald-300 font-semibold">
+                    {nextUpcoming.time}
+                  </span>
+                </div>
+
+                <p className="mt-1 text-sm font-semibold text-slate-100 truncate">
+                  {nextUpcoming.serviceName}
+                </p>
+
+                <p className="text-[11px] text-slate-400 truncate">
+                  {nextUpcoming.customerName}
+                  {showProfessionalOnChip
+                    ? ` · ${
+                        professionalNameById[nextUpcoming.professionalId] ??
+                        "Profissional"
+                      }`
+                    : ""}
+                </p>
+              </div>
+            ) : (
+              <div className="rounded-xl border border-slate-800 bg-slate-950/40 p-3">
+                <p className="text-sm font-semibold text-slate-100">
+                  Sem mais agendamentos hoje
+                </p>
+
+                {daySummary.total > 0 ? (
+                  <p className="mt-1 text-[11px] text-slate-400">
+                    Resumo do dia: {daySummary.total} total · {daySummary.done}{" "}
+                    concluídos · {daySummary.cancelled} cancelados ·{" "}
+                    {daySummary.noShow} faltas
+                  </p>
+                ) : (
+                  <p className="mt-1 text-[11px] text-slate-400">
+                    Nenhum agendamento para hoje até o momento.
+                  </p>
+                )}
+              </div>
+            )}
           </div>
         </div>
       </section>
@@ -909,12 +830,97 @@ export default function FluxoOwnerDashboard() {
             </button>
           </div>
           <div className="space-y-2 text-xs">
-            {professionalPayouts.map((payout) => (
-              <ProfessionalPayoutRow key={payout.id} payout={payout} />
-            ))}
+            {professionalPayouts.map((payout: any) => {
+              const params = new URLSearchParams();
+              params.set("tab", "payouts");
+              params.set("providerId", payout.id);
+              if (selectedLocationId)
+                params.set("locationId", selectedLocationId);
+
+              return (
+                <ProfessionalPayoutRow
+                  key={payout.id}
+                  payout={payout}
+                  href={`/owner/relatorios?${params.toString()}`}
+                />
+              );
+            })}
           </div>
         </div>
       </section>
+
+      {/* Modal: detalhes do horário */}
+      {expandedSlot && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4">
+          <div className="w-full max-w-lg rounded-2xl border border-slate-800 bg-slate-950 p-4 text-xs shadow-xl">
+            <div className="flex items-start justify-between mb-3">
+              <div>
+                <p className="text-[11px] uppercase tracking-wide text-slate-400">
+                  Agendamentos do horário
+                </p>
+                <p className="text-sm font-semibold text-slate-100">
+                  {expandedSlot.time} · {expandedSlot.appts.length}{" "}
+                  agendamento(s)
+                </p>
+              </div>
+
+              <button
+                type="button"
+                className="text-[11px] text-slate-400 hover:text-slate-100"
+                onClick={closeSlotDetails}
+              >
+                Fechar
+              </button>
+            </div>
+
+            <div className="space-y-2 max-h-[360px] overflow-y-auto pr-1">
+              {expandedSlot.appts.map((a) => {
+                const prof =
+                  professionalNameById[a.professionalId] ?? "Profissional";
+                return (
+                  <div
+                    key={a.id}
+                    className="rounded-xl border border-slate-800 bg-slate-900/30 px-3 py-2"
+                  >
+                    <p className="text-[12px] text-slate-100 font-medium truncate">
+                      {a.serviceName}
+                    </p>
+                    <p className="text-[11px] text-slate-300 truncate">
+                      Cliente: {a.customerName}
+                    </p>
+                    {showProfessionalOnChip ? (
+                      <p className="text-[10px] text-slate-500 truncate">
+                        Profissional: {prof}
+                      </p>
+                    ) : null}
+                  </div>
+                );
+              })}
+            </div>
+
+            <div className="mt-4 flex justify-end gap-2">
+              <button
+                type="button"
+                className="px-3 py-1 rounded-lg border border-slate-700 bg-slate-900 text-[11px]"
+                onClick={closeSlotDetails}
+              >
+                Fechar
+              </button>
+
+              <button
+                type="button"
+                className="px-3 py-1 rounded-lg border border-emerald-600 bg-emerald-600/20 text-[11px] text-emerald-100"
+                onClick={() => {
+                  closeSlotDetails();
+                  goToAgenda("daily");
+                }}
+              >
+                Abrir na agenda completa
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </>
   );
 }
