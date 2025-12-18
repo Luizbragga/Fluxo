@@ -15,6 +15,8 @@ import { RolesGuard } from '../auth/guards/roles.guard';
 import { Roles } from '../auth/decorators/roles.decorator';
 import { Role, CustomerPlanPaymentStatus } from '@prisma/client';
 import { ProviderPayoutsQueryDto } from './dto/provider-payouts-query.dto';
+import { AppointmentsOverviewQueryDto } from './dto/appointments-overview-query.dto';
+import { ServicesReportQueryDto } from './dto/services-report-query.dto';
 
 @ApiTags('Reports')
 @ApiBearerAuth()
@@ -43,11 +45,18 @@ export class ReportsController {
     type: String,
     example: 'cmi8loc0000...',
   })
+  @ApiQuery({
+    name: 'providerId',
+    required: false,
+    type: String,
+    example: 'cmi8prov0000...',
+  })
   getProviderEarnings(
     @Req() req: any,
     @Query('from') from?: string,
     @Query('to') to?: string,
     @Query('locationId') locationId?: string,
+    @Query('providerId') providerId?: string,
   ) {
     const { tenantId } = req.user as { tenantId: string };
 
@@ -56,8 +65,10 @@ export class ReportsController {
       from,
       to,
       locationId,
+      providerId,
     });
   }
+
   @Roles(Role.owner, Role.admin)
   @Get('provider-payouts')
   async getProviderPayouts(
@@ -143,11 +154,18 @@ export class ReportsController {
     type: String,
     example: 'cmi8loc0000...',
   })
+  @ApiQuery({
+    name: 'providerId',
+    required: false,
+    type: String,
+    example: 'cmi8prov0000...',
+  })
   getDailyRevenue(
     @Req() req: any,
     @Query('from') from?: string,
     @Query('to') to?: string,
     @Query('locationId') locationId?: string,
+    @Query('providerId') providerId?: string,
   ) {
     const { tenantId } = req.user as { tenantId: string };
 
@@ -156,8 +174,10 @@ export class ReportsController {
       from,
       to,
       locationId,
+      providerId,
     });
   }
+
   @Roles(Role.owner, Role.admin)
   @Get('cancellations')
   @ApiQuery({
@@ -207,5 +227,27 @@ export class ReportsController {
       providerId,
       type,
     });
+  }
+  @Get('appointments-overview')
+  getAppointmentsOverview(
+    @Req() req: any,
+    @Query() query: AppointmentsOverviewQueryDto,
+  ) {
+    const tenantId = req.user?.tenantId as string;
+
+    return this.reportsService.getAppointmentsOverview({
+      tenantId,
+      from: query.from,
+      to: query.to,
+      locationId: query.locationId,
+      providerId: query.providerId,
+    });
+  }
+  @Get('services')
+  async getServicesReport(
+    @Query() query: ServicesReportQueryDto,
+    @Req() req: any,
+  ) {
+    return this.reportsService.getServicesReport(req.user, query);
   }
 }

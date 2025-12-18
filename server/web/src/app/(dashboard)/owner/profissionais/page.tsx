@@ -705,8 +705,8 @@ export default function OwnerProfessionalsPage() {
                 <p className="text-slate-400">Repasses recentes</p>
                 <button
                   type="button"
-                  className="text-[11px] text-emerald-400 hover:underline"
-                  onClick={() => router.push("/owner/relatorios?view=payouts")}
+                  onClick={() => router.push("/owner/relatorios?tab=payouts")}
+                  className="text-emerald-300 hover:underline"
                 >
                   Ver todos
                 </button>

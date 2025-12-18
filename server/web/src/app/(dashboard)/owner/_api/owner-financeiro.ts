@@ -114,6 +114,7 @@ type RangeParams = {
   from?: string;
   to?: string;
   locationId?: string;
+  providerId?: string;
 };
 
 function formatShortDate(date: Date) {
@@ -129,6 +130,7 @@ function buildRangeQuery(params?: RangeParams): string {
   if (params?.from) qs.set("from", params.from);
   if (params?.to) qs.set("to", params.to);
   if (params?.locationId) qs.set("locationId", params.locationId);
+  if (params?.providerId) qs.set("providerId", params.providerId);
 
   const str = qs.toString();
   return str ? `?${str}` : "";

@@ -1010,11 +1010,17 @@ export default function OwnerServicosPage() {
                 type="button"
                 className="text-[11px] text-emerald-400 hover:underline"
                 onClick={() => {
-                  if (!selectedService) return;
-
                   const params = new URLSearchParams();
-                  params.set("serviceId", selectedService.id);
 
+                  // força abrir na aba certa
+                  params.set("tab", "services");
+
+                  // se tiver serviço selecionado, filtra nele
+                  if (selectedService?.id) {
+                    params.set("serviceId", selectedService.id);
+                  }
+
+                  // mantém a unidade se existir
                   if (locationId) {
                     params.set("locationId", locationId);
                   }

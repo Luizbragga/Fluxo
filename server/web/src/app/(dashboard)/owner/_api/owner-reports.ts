@@ -92,11 +92,15 @@ function formatMonthLabel(date: Date): string {
  * e devolve linhas agregadas por mês para a tabela.
  */
 export async function fetchOwnerMonthlyFinancial(
-  preset: ReportsRangePreset
+  preset: ReportsRangePreset,
+  opts?: { locationId?: string; providerId?: string }
 ): Promise<MonthlyFinancialRow[]> {
   const { from, to } = getRangeDates(preset);
 
-  const query = new URLSearchParams({ from, to }).toString();
+  const qs = new URLSearchParams({ from, to });
+  if (opts?.locationId) qs.set("locationId", opts.locationId);
+  if (opts?.providerId) qs.set("providerId", opts.providerId);
+  const query = qs.toString();
 
   const [earnings, dailyRevenue] = await Promise.all([
     apiClient<ProviderEarningsResponse>(`/reports/provider-earnings?${query}`, {
@@ -190,12 +194,13 @@ export type ProviderEarningsDetailedResult = {
 
 export async function fetchOwnerProviderEarningsDetailed(
   preset: ReportsRangePreset,
-  opts?: { locationId?: string }
+  opts?: { locationId?: string; providerId?: string }
 ): Promise<ProviderEarningsDetailedResult> {
   const { from, to } = getRangeDates(preset);
 
   const params = new URLSearchParams({ from, to });
   if (opts?.locationId) params.set("locationId", opts.locationId);
+  if (opts?.providerId) params.set("providerId", opts.providerId);
 
   const data = await apiClient<ProviderEarningsResponse>(
     `/reports/provider-earnings?${params.toString()}`,
@@ -363,4 +368,129 @@ export async function fetchOwnerProviderPayoutsDetailed(params: {
       method: "GET",
     }
   );
+}
+export type AppointmentsOverviewStatus =
+  | "scheduled"
+  | "in_service"
+  | "done"
+  | "no_show"
+  | "cancelled"
+  | string;
+
+export type AppointmentsOverviewItem = {
+  id: string;
+  date: string; // YYYY-MM-DD (ou ISO, depende do backend)
+  time: string; // "HH:mm"
+  serviceName: string;
+  customerName: string;
+  status: AppointmentsOverviewStatus;
+  billingType?: "plan" | "single" | string;
+  professionalId?: string;
+  professionalName?: string;
+  locationId?: string | null;
+};
+
+export type AppointmentsOverviewDay = {
+  date: string; // YYYY-MM-DD
+  stats?: {
+    total?: number;
+    planCount?: number;
+    avulsoCount?: number;
+    scheduled?: number;
+    inService?: number;
+    done?: number;
+    noShow?: number;
+    cancelled?: number;
+  };
+  items?: AppointmentsOverviewItem[];
+};
+
+export type AppointmentsOverviewResponse = {
+  from: string;
+  to: string;
+  // backend pode mandar "days" ou "items" agregados — deixei tolerante
+  days?: AppointmentsOverviewDay[];
+  items?: AppointmentsOverviewItem[];
+};
+
+export async function fetchOwnerAppointmentsOverview(params: {
+  from: string;
+  to: string;
+  locationId?: string;
+  providerId?: string;
+}): Promise<AppointmentsOverviewResponse> {
+  const qs = new URLSearchParams({
+    from: params.from,
+    to: params.to,
+  });
+
+  if (params.locationId) qs.set("locationId", params.locationId);
+  if (params.providerId) qs.set("providerId", params.providerId);
+
+  return apiClient<AppointmentsOverviewResponse>(
+    `/reports/appointments-overview?${qs.toString()}`,
+    { method: "GET" }
+  );
+}
+// ----------------- Services Report -----------------
+
+export type ServicesReportResponse = {
+  range: {
+    from: string | null;
+    to: string | null;
+  };
+  filters: {
+    locationId: string | null;
+    providerId: string | null;
+    serviceId: string | null;
+  };
+  kpis: {
+    appointmentsDone: number;
+    revenueCents: number;
+    avgTicketCents: number;
+    uniqueCustomers: number;
+    providerEarningsCents: number;
+    houseEarningsCents: number;
+  };
+  services: Array<{
+    serviceId: string;
+    name: string;
+    category: string | null;
+    appointmentsDone: number;
+    revenueCents: number;
+    avgTicketCents: number;
+    avgDurationMin: number;
+    shareAppointments: number;
+    shareRevenue: number;
+    providerEarningsCents: number;
+    houseEarningsCents: number;
+  }>;
+  series: {
+    byDay: Array<{
+      day: string; // "YYYY-MM-DD"
+      appointments: number;
+      revenueCents: number;
+    }>;
+  };
+};
+
+export async function fetchOwnerServicesReport(params?: {
+  from?: string;
+  to?: string;
+  locationId?: string;
+  providerId?: string;
+  serviceId?: string;
+}): Promise<ServicesReportResponse> {
+  const qs = new URLSearchParams();
+
+  if (params?.from) qs.set("from", params.from);
+  if (params?.to) qs.set("to", params.to);
+  if (params?.locationId) qs.set("locationId", params.locationId);
+  if (params?.providerId) qs.set("providerId", params.providerId);
+  if (params?.serviceId) qs.set("serviceId", params.serviceId);
+
+  // ✅ segue o mesmo padrão dos outros endpoints (apiClient já cuida do /v1)
+  const url = `/reports/services${qs.toString() ? `?${qs.toString()}` : ""}`;
+
+  return apiClient<ServicesReportResponse>(url, { method: "GET" });
 }

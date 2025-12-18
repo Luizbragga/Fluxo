@@ -15,6 +15,10 @@ import {
   fetchOwnerProviderPayoutsDetailed,
   type ProviderPayoutItem,
   type ProviderPayoutsStatusFilter,
+  fetchOwnerAppointmentsOverview,
+  type AppointmentsOverviewResponse,
+  fetchOwnerServicesReport,
+  type ServicesReportResponse,
 } from "../_api/owner-reports";
 
 import {
@@ -40,10 +44,16 @@ import {
 
 // ----------------- Helpers -----------------
 
-type TabKey = "overview" | "payouts" | "unidade";
+type TabKey = "overview" | "payouts" | "unidade" | "services";
 
 function safeTab(v: string | null): TabKey {
-  if (v === "payouts" || v === "unidade" || v === "overview") return v;
+  if (
+    v === "payouts" ||
+    v === "unidade" ||
+    v === "overview" ||
+    v === "services"
+  )
+    return v;
   return "overview";
 }
 
@@ -114,7 +124,6 @@ function formatBusinessHours(
 ) {
   const t = template ?? null;
 
-  // Sem template: você decidiu padrão do sistema
   if (!t || Object.keys(t).length === 0) {
     return {
       isDefault: true,
@@ -161,6 +170,14 @@ export default function OwnerRelatoriosPage() {
   const providerIdFromUrl = searchParams.get("providerId") ?? "";
   const locationIdFromUrl = searchParams.get("locationId") ?? "";
 
+  // ✅ estado local do filtro (reage instantaneamente sem F5)
+  const [providerId, setProviderId] = useState(providerIdFromUrl);
+
+  // ✅ sincroniza quando URL muda por push/replace de outros botões
+  useEffect(() => {
+    setProviderId(providerIdFromUrl);
+  }, [providerIdFromUrl]);
+
   const [tab, setTab] = useState<TabKey>("overview");
 
   // período
@@ -171,6 +188,14 @@ export default function OwnerRelatoriosPage() {
   // payouts filters
   const [payoutStatus, setPayoutStatus] =
     useState<ProviderPayoutsStatusFilter>("pending");
+  // appointments overview
+  const [appointmentsOverview, setAppointmentsOverview] =
+    useState<AppointmentsOverviewResponse | null>(null);
+  const [loadingAppointmentsOverview, setLoadingAppointmentsOverview] =
+    useState(false);
+  const [errorAppointmentsOverview, setErrorAppointmentsOverview] = useState<
+    string | null
+  >(null);
 
   // finanças
   const [monthlyFinancialRows, setMonthlyFinancialRows] = useState<
@@ -213,7 +238,7 @@ export default function OwnerRelatoriosPage() {
   const [loadingPayouts, setLoadingPayouts] = useState(false);
   const [errorPayouts, setErrorPayouts] = useState<string | null>(null);
 
-  // unidade detail + professionals
+  // unidade detail
   const [locationDetail, setLocationDetail] = useState<OwnerLocation | null>(
     null
   );
@@ -222,6 +247,7 @@ export default function OwnerRelatoriosPage() {
     null
   );
 
+  // profissionais (para filtro)
   const [allProfessionals, setAllProfessionals] = useState<OwnerProfessional[]>(
     []
   );
@@ -234,7 +260,26 @@ export default function OwnerRelatoriosPage() {
     null
   );
 
+  const serviceIdFromUrl = searchParams.get("serviceId");
+
+  const [servicesReport, setServicesReport] =
+    useState<ServicesReportResponse | null>(null);
+  const [servicesReportLoading, setServicesReportLoading] = useState(false);
+  const [servicesReportError, setServicesReportError] = useState<string | null>(
+    null
+  );
+
   // ----------------- URL helpers -----------------
+  function setUrlServiceId(nextServiceId: string) {
+    const params = new URLSearchParams(searchParams.toString());
+    params.set("tab", "services");
+
+    if (!nextServiceId) params.delete("serviceId");
+    else params.set("serviceId", nextServiceId);
+
+    router.replace(`/owner/relatorios?${params.toString()}`);
+    router.refresh();
+  }
 
   function setUrlTab(nextTab: TabKey) {
     const params = new URLSearchParams(searchParams.toString());
@@ -250,13 +295,30 @@ export default function OwnerRelatoriosPage() {
     if (!nextLocationId) params.delete("locationId");
     else params.set("locationId", nextLocationId);
 
+    // ✅ opcional e recomendado: ao trocar unidade, limpa profissional (evita mismatch)
+    params.delete("providerId");
+    setProviderId("");
+
     router.replace(`/owner/relatorios?${params.toString()}`);
+    router.refresh();
+  }
+
+  function setUrlProviderId(nextProviderId: string) {
+    const params = new URLSearchParams(searchParams.toString());
+
+    if (!nextProviderId) params.delete("providerId");
+    else params.set("providerId", nextProviderId);
+
+    router.replace(`/owner/relatorios?${params.toString()}`);
+    router.refresh();
   }
 
   function clearProviderFilter() {
+    setProviderId("");
     const params = new URLSearchParams(searchParams.toString());
     params.delete("providerId");
     router.replace(`/owner/relatorios?${params.toString()}`);
+    router.refresh();
   }
 
   // ----------------- effects -----------------
@@ -292,7 +354,67 @@ export default function OwnerRelatoriosPage() {
     };
   }, []);
 
-  // finanças (filtra por locationId quando existe)
+  // carrega lista de profissionais (para filtros e unidade)
+  useEffect(() => {
+    let cancelled = false;
+
+    async function loadAllPros() {
+      try {
+        setLoadingAllProfessionals(true);
+        const list = await fetchOwnerProfessionals();
+        if (cancelled) return;
+        setAllProfessionals(list ?? []);
+      } catch (err) {
+        console.error("Erro ao carregar profissionais:", err);
+        if (!cancelled) setAllProfessionals([]);
+      } finally {
+        if (!cancelled) setLoadingAllProfessionals(false);
+      }
+    }
+
+    loadAllPros();
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+  // ✅ appointments overview (reage a range + filtros)
+  useEffect(() => {
+    let cancelled = false;
+
+    async function loadAppointmentsOverview() {
+      try {
+        setLoadingAppointmentsOverview(true);
+        setErrorAppointmentsOverview(null);
+
+        const res = await fetchOwnerAppointmentsOverview({
+          from: range.from,
+          to: range.to,
+          locationId: locationIdFromUrl || undefined,
+          providerId: providerId || undefined,
+        });
+
+        if (cancelled) return;
+        setAppointmentsOverview(res);
+      } catch (err) {
+        console.error("Erro ao carregar overview de atendimentos:", err);
+        if (!cancelled)
+          setErrorAppointmentsOverview(
+            "Erro ao carregar overview de atendimentos."
+          );
+      } finally {
+        if (!cancelled) setLoadingAppointmentsOverview(false);
+      }
+    }
+
+    loadAppointmentsOverview();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [range.from, range.to, locationIdFromUrl, providerId]);
+
+  // ✅ finanças (agora reage ao providerId)
   useEffect(() => {
     let cancelled = false;
 
@@ -302,11 +424,15 @@ export default function OwnerRelatoriosPage() {
         setErrorFinancial(null);
 
         const [monthlyRows, financeiroData] = await Promise.all([
-          fetchOwnerMonthlyFinancial(rangePreset),
+          fetchOwnerMonthlyFinancial(rangePreset, {
+            locationId: locationIdFromUrl || undefined,
+            providerId: providerId || undefined,
+          }),
           fetchOwnerFinanceiroWithRange({
             from: range.from,
             to: range.to,
             locationId: locationIdFromUrl || undefined,
+            providerId: providerId || undefined,
           }),
         ]);
 
@@ -327,9 +453,9 @@ export default function OwnerRelatoriosPage() {
     return () => {
       cancelled = true;
     };
-  }, [rangePreset, range.from, range.to, locationIdFromUrl]);
+  }, [rangePreset, range.from, range.to, locationIdFromUrl, providerId]);
 
-  // providers report (filtra por locationId quando existe)
+  // ✅ providers report (agora reage ao providerId)
   useEffect(() => {
     let cancelled = false;
 
@@ -340,6 +466,7 @@ export default function OwnerRelatoriosPage() {
 
         const result = await fetchOwnerProviderEarningsDetailed(rangePreset, {
           locationId: locationIdFromUrl || undefined,
+          providerId: providerId || undefined,
         });
 
         if (cancelled) return;
@@ -359,9 +486,9 @@ export default function OwnerRelatoriosPage() {
     return () => {
       cancelled = true;
     };
-  }, [rangePreset, locationIdFromUrl]);
+  }, [rangePreset, locationIdFromUrl, providerId]);
 
-  // cancelamentos/no-shows (filtra por locationId quando existe)
+  // ✅ cancelamentos/no-shows (já estava ok, mantido)
   useEffect(() => {
     let cancelled = false;
 
@@ -375,6 +502,7 @@ export default function OwnerRelatoriosPage() {
           cancellationsFilter,
           {
             locationId: locationIdFromUrl || undefined,
+            providerId: providerId || undefined,
           }
         );
 
@@ -394,7 +522,7 @@ export default function OwnerRelatoriosPage() {
     return () => {
       cancelled = true;
     };
-  }, [rangePreset, cancellationsFilter, locationIdFromUrl]);
+  }, [rangePreset, cancellationsFilter, locationIdFromUrl, providerId]);
 
   // payouts detalhado quando tab=payouts
   useEffect(() => {
@@ -412,7 +540,7 @@ export default function OwnerRelatoriosPage() {
           to: range.to,
           status: payoutStatus,
           locationId: locationIdFromUrl || undefined,
-          providerId: providerIdFromUrl || undefined,
+          providerId: providerId || undefined,
         });
 
         if (cancelled) return;
@@ -435,16 +563,9 @@ export default function OwnerRelatoriosPage() {
     return () => {
       cancelled = true;
     };
-  }, [
-    tab,
-    range.from,
-    range.to,
-    payoutStatus,
-    locationIdFromUrl,
-    providerIdFromUrl,
-  ]);
+  }, [tab, range.from, range.to, payoutStatus, locationIdFromUrl, providerId]);
 
-  // unidade: detalhes + lista profissionais
+  // unidade: detalhes
   useEffect(() => {
     let cancelled = false;
 
@@ -478,30 +599,60 @@ export default function OwnerRelatoriosPage() {
       }
     }
 
-    async function loadProfessionals() {
-      if (tab !== "unidade") return;
-
-      try {
-        setLoadingAllProfessionals(true);
-        const list = await fetchOwnerProfessionals();
-        if (cancelled) return;
-        setAllProfessionals(list);
-      } catch (err) {
-        console.error("Erro ao carregar profissionais:", err);
-      } finally {
-        if (!cancelled) setLoadingAllProfessionals(false);
-      }
-    }
-
     loadUnit();
-    loadProfessionals();
 
     return () => {
       cancelled = true;
     };
   }, [tab, locationIdFromUrl]);
+  useEffect(() => {
+    if (tab !== "services") return;
+
+    let cancelled = false;
+
+    (async () => {
+      setServicesReportLoading(true);
+      setServicesReportError(null);
+
+      try {
+        const data = await fetchOwnerServicesReport({
+          from: range.from,
+          to: range.to,
+          locationId: locationIdFromUrl || undefined,
+          providerId: providerId || undefined,
+          serviceId: serviceIdFromUrl || undefined,
+        });
+
+        if (!cancelled) setServicesReport(data);
+      } catch (err) {
+        console.error("Erro ao carregar relatório de serviços:", err);
+        if (!cancelled)
+          setServicesReportError("Erro ao carregar relatório de serviços.");
+      } finally {
+        if (!cancelled) setServicesReportLoading(false);
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    tab,
+    range.from,
+    range.to,
+    locationIdFromUrl,
+    providerId,
+    serviceIdFromUrl,
+  ]);
 
   // ----------------- memos -----------------
+
+  const professionalsForHeader = useMemo(() => {
+    if (!locationIdFromUrl) return allProfessionals;
+    return allProfessionals.filter(
+      (p) => getProfessionalLocationId(p) === locationIdFromUrl
+    );
+  }, [allProfessionals, locationIdFromUrl]);
 
   const revenueChartData: RevenueChartPoint[] = useMemo(
     () =>
@@ -577,6 +728,25 @@ export default function OwnerRelatoriosPage() {
       ? l.isActive
       : true;
   }, [locationDetail]);
+  const selectedService = useMemo(() => {
+    if (!servicesReport || !serviceIdFromUrl) return null;
+    return (
+      servicesReport.services.find((s) => s.serviceId === serviceIdFromUrl) ??
+      null
+    );
+  }, [servicesReport, serviceIdFromUrl]);
+
+  const servicesByDayChartData: RevenueChartPoint[] = useMemo(() => {
+    if (!servicesReport) return [];
+
+    return (servicesReport.series?.byDay ?? []).map((d) => ({
+      label: new Date(d.day).toLocaleDateString("pt-PT", {
+        day: "2-digit",
+        month: "2-digit",
+      }),
+      value: (Number(d.revenueCents ?? 0) || 0) / 100,
+    }));
+  }, [servicesReport]);
 
   // ----------------- render -----------------
 
@@ -603,6 +773,44 @@ export default function OwnerRelatoriosPage() {
             <option value="last_30_days">Últimos 30 dias</option>
             <option value="last_90_days">Últimos 90 dias</option>
             <option value="last_12_months">Últimos 12 meses</option>
+          </select>
+
+          <select
+            value={locationIdFromUrl}
+            onChange={(e) => setUrlLocationId(e.target.value)}
+            className="w-full md:w-[180px] rounded-lg border border-slate-800 bg-slate-950/60 px-3 py-2 text-sm text-slate-100 outline-none focus:border-emerald-400"
+            disabled={loadingLocationsList}
+          >
+            <option value="">Selecione a unidade</option>
+            {locationsList.map((loc) => (
+              <option key={(loc as any).id} value={(loc as any).id}>
+                {(loc as any).name}
+                {(loc as any).address ? ` · ${(loc as any).address}` : ""}
+              </option>
+            ))}
+          </select>
+
+          <select
+            value={providerId}
+            onChange={(e) => {
+              const v = e.target.value;
+              setProviderId(v);
+              setUrlProviderId(v);
+            }}
+            className="w-full md:w-[180px] rounded-lg border border-slate-800 bg-slate-950/60 px-3 py-2 text-sm text-slate-100 outline-none focus:border-emerald-400"
+            disabled={loadingAllProfessionals}
+          >
+            <option value="">
+              {locationIdFromUrl
+                ? "Profissional (da unidade)"
+                : "Profissional (todos)"}
+            </option>
+
+            {professionalsForHeader.map((p) => (
+              <option key={(p as any).id} value={(p as any).id}>
+                {(p as any).name}
+              </option>
+            ))}
           </select>
 
           <button className="px-3 py-1 rounded-lg border border-slate-800 bg-slate-900/80">
@@ -651,8 +859,20 @@ export default function OwnerRelatoriosPage() {
         >
           Unidade
         </button>
+        <button
+          type="button"
+          onClick={() => setUrlTab("services")}
+          className={[
+            "px-3 py-1 rounded-lg border",
+            tab === "services"
+              ? "border-emerald-500 bg-emerald-500/10 text-emerald-100"
+              : "border-slate-800 bg-slate-900/60 text-slate-200 hover:border-slate-700",
+          ].join(" ")}
+        >
+          Serviços
+        </button>
 
-        {providerIdFromUrl ? (
+        {providerId ? (
           <div className="ml-2 flex items-center gap-2">
             <span className="text-[11px] text-slate-400">
               Filtrado por profissional
@@ -673,7 +893,6 @@ export default function OwnerRelatoriosPage() {
       {/* ===================== */}
       {tab === "unidade" ? (
         <section className="space-y-4">
-          {/* Header + seletor */}
           <div className="rounded-2xl border border-slate-800 bg-slate-900/60 p-4">
             <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
               <div>
@@ -703,26 +922,11 @@ export default function OwnerRelatoriosPage() {
               </div>
             </div>
 
-            {/* seletor em linha separada (fica perfeito no layout) */}
             <div className="mt-4 flex flex-col gap-1">
               <label className="text-[11px] text-slate-400">
-                Escolher unidade
+                Obtenha informações e relatorios sobre a unidade que desejar
+                selecionando acima
               </label>
-
-              <select
-                value={locationIdFromUrl}
-                onChange={(e) => setUrlLocationId(e.target.value)}
-                className="w-full md:w-[520px] rounded-lg border border-slate-800 bg-slate-950/60 px-3 py-2 text-sm text-slate-100 outline-none focus:border-emerald-400"
-                disabled={loadingLocationsList}
-              >
-                <option value="">Selecione...</option>
-                {locationsList.map((loc) => (
-                  <option key={(loc as any).id} value={(loc as any).id}>
-                    {(loc as any).name}
-                    {(loc as any).address ? ` · ${(loc as any).address}` : ""}
-                  </option>
-                ))}
-              </select>
 
               {loadingLocationsList ? (
                 <span className="text-[11px] text-slate-500">
@@ -744,7 +948,6 @@ export default function OwnerRelatoriosPage() {
             </div>
           </div>
 
-          {/* Conteúdo */}
           {!locationIdFromUrl ? null : (
             <>
               {errorLocationDetail ? (
@@ -762,7 +965,6 @@ export default function OwnerRelatoriosPage() {
               {!loadingLocationDetail && locationDetail ? (
                 <>
                   <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
-                    {/* Unidade */}
                     <div className="rounded-2xl border border-slate-800 bg-slate-900/60 p-4">
                       <p className="text-[11px] text-slate-400">Unidade</p>
                       <p className="mt-1 text-base font-semibold text-slate-100">
@@ -789,7 +991,6 @@ export default function OwnerRelatoriosPage() {
                       </div>
                     </div>
 
-                    {/* Horários */}
                     <div className="rounded-2xl border border-slate-800 bg-slate-900/60 p-4">
                       <div className="flex items-center justify-between">
                         <div>
@@ -833,7 +1034,6 @@ export default function OwnerRelatoriosPage() {
                       </div>
                     </div>
 
-                    {/* Indicadores */}
                     <div className="rounded-2xl border border-slate-800 bg-slate-900/60 p-4">
                       <p className="text-[11px] text-slate-400">
                         Indicadores no período
@@ -884,7 +1084,6 @@ export default function OwnerRelatoriosPage() {
                     </div>
                   </div>
 
-                  {/* Linha 2 */}
                   <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
                     <div className="rounded-2xl border border-slate-800 bg-slate-900/60 p-4 text-xs">
                       <div className="flex items-center justify-between mb-3">
@@ -972,7 +1171,6 @@ export default function OwnerRelatoriosPage() {
                     </div>
                   </div>
 
-                  {/* Linha 3 */}
                   <div className="rounded-2xl border border-slate-800 bg-slate-900/60 p-4 text-xs">
                     <div className="flex items-center justify-between mb-3">
                       <p className="text-slate-400">
@@ -1048,8 +1246,109 @@ export default function OwnerRelatoriosPage() {
       {/* ===================== */}
       {tab === "overview" ? (
         <>
+          <section className="rounded-2xl border border-slate-800 bg-slate-900/60 p-4 text-xs mb-4">
+            <div className="flex items-center justify-between mb-3">
+              <p className="text-slate-400">Atendimentos no período</p>
+              <span className="text-[10px] text-slate-500">
+                Overview (concluídos / cancelados / no-show)
+              </span>
+            </div>
+
+            {loadingAppointmentsOverview ? (
+              <p className="text-[11px] text-slate-400">Carregando...</p>
+            ) : errorAppointmentsOverview ? (
+              <p className="text-[11px] text-rose-400">
+                {errorAppointmentsOverview}
+              </p>
+            ) : !appointmentsOverview ? (
+              <p className="text-[11px] text-slate-500">Sem dados.</p>
+            ) : (
+              <div className="text-[11px] text-slate-200">
+                {/* backend pode mandar days ou items — aqui só exibimos o que vier */}
+                {Array.isArray((appointmentsOverview as any).items) &&
+                (appointmentsOverview as any).items.length > 0 ? (
+                  <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+                    {(appointmentsOverview as any).items
+                      .slice(0, 8)
+                      .map((it: any, idx: number) => (
+                        <div
+                          key={`${it?.label ?? "item"}-${idx}`}
+                          className="rounded-xl border border-slate-800 bg-slate-950/60 p-3"
+                        >
+                          <p className="text-slate-400 truncate">
+                            {String(it?.label ?? "—")}
+                          </p>
+                          <p className="mt-1 text-sm font-semibold text-slate-100">
+                            {Number(it?.value ?? 0)}
+                          </p>
+                        </div>
+                      ))}
+                  </div>
+                ) : Array.isArray((appointmentsOverview as any).days) &&
+                  (appointmentsOverview as any).days.length > 0 ? (
+                  <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+                    {(() => {
+                      const days = (appointmentsOverview as any).days as any[];
+                      const sum = (keys: string[]) =>
+                        days.reduce((acc, d) => {
+                          for (const k of keys) {
+                            if (typeof d?.[k] === "number") return acc + d[k];
+                          }
+                          return acc;
+                        }, 0);
+
+                      const total =
+                        sum(["total", "count", "totalCount"]) ||
+                        days.reduce((acc, d) => {
+                          const vals = Object.values(d ?? {}).filter(
+                            (v) => typeof v === "number"
+                          ) as number[];
+                          return acc + (vals[0] ?? 0);
+                        }, 0);
+
+                      const completed = sum([
+                        "completed",
+                        "done",
+                        "completedCount",
+                      ]);
+                      const cancelled = sum([
+                        "cancelled",
+                        "canceled",
+                        "cancelledCount",
+                        "canceledCount",
+                      ]);
+                      const noShow = sum(["noShow", "no_show", "noShowCount"]);
+
+                      const kpis = [
+                        { label: "Total", value: total },
+                        { label: "Concluídos", value: completed },
+                        { label: "Cancelados", value: cancelled },
+                        { label: "No-show", value: noShow },
+                      ];
+
+                      return kpis.map((k) => (
+                        <div
+                          key={k.label}
+                          className="rounded-xl border border-slate-800 bg-slate-950/60 p-3"
+                        >
+                          <p className="text-slate-400">{k.label}</p>
+                          <p className="mt-1 text-sm font-semibold text-slate-100">
+                            {k.value}
+                          </p>
+                        </div>
+                      ));
+                    })()}
+                  </div>
+                ) : (
+                  <p className="text-[11px] text-slate-500">
+                    Resposta vazia (sem days/items).
+                  </p>
+                )}
+              </div>
+            )}
+          </section>
+
           <section className="grid grid-cols-1 lg:grid-cols-2 gap-4 mb-4">
-            {/* Ocupação por profissional */}
             <div className="rounded-2xl border border-slate-800 bg-slate-900/60 p-4 text-xs">
               <div className="flex items-center justify-between mb-3">
                 <p className="text-slate-400">Ocupação por profissional</p>
@@ -1124,7 +1423,6 @@ export default function OwnerRelatoriosPage() {
               )}
             </div>
 
-            {/* Faturamento */}
             <div className="rounded-2xl border border-slate-800 bg-slate-900/60 p-4 text-xs">
               <div className="flex items-center justify-between mb-3">
                 <p className="text-slate-400">Faturamento no período</p>
@@ -1168,7 +1466,6 @@ export default function OwnerRelatoriosPage() {
             </div>
           </section>
 
-          {/* Resumo mensal */}
           <section className="rounded-2xl border border-slate-800 bg-slate-900/60 p-4 text-xs mb-4">
             <div className="flex items-center justify-between mb-3">
               <p className="text-slate-400">Resumo mensal</p>
@@ -1230,7 +1527,6 @@ export default function OwnerRelatoriosPage() {
             )}
           </section>
 
-          {/* Cancelamentos */}
           <section className="rounded-2xl border border-slate-800 bg-slate-900/60 p-4 text-xs">
             <div className="flex flex-col gap-2 md:flex-row md:items-center md:justify-between mb-3">
               <div>
@@ -1337,7 +1633,7 @@ export default function OwnerRelatoriosPage() {
                 <option value="all">Todos</option>
               </select>
 
-              {providerIdFromUrl ? (
+              {providerId ? (
                 <button
                   type="button"
                   className="px-3 py-1 rounded-lg border border-slate-800 bg-slate-900/80 text-emerald-200 hover:border-emerald-500/60"
@@ -1445,6 +1741,319 @@ export default function OwnerRelatoriosPage() {
                   Espaço: {formatEURFromCents(payoutTotals.houseEarningsCents)}
                 </p>
               ) : null}
+            </>
+          )}
+        </section>
+      ) : null}
+      {tab === "services" ? (
+        <section className="rounded-2xl border border-slate-800 bg-slate-900/60 p-4 text-xs">
+          <div className="flex items-center justify-between mb-3">
+            <div>
+              <p className="text-slate-200 font-medium">
+                Relatório de Serviços
+              </p>
+              <p className="text-[15px] text-emerald-500">
+                Selecione algum serviço abaixo para relatorio detalhado.
+              </p>
+            </div>
+
+            <button
+              type="button"
+              onClick={() => setUrlTab("overview")}
+              className="rounded-lg border border-slate-700 bg-slate-950/40 px-3 py-1 text-[11px] text-slate-200 hover:border-emerald-500/60 hover:text-emerald-200"
+            >
+              Voltar ao Geral
+            </button>
+          </div>
+
+          {servicesReportLoading ? (
+            <div className="rounded-xl border border-slate-800 bg-slate-950/50 p-3 text-[11px] text-slate-400">
+              Carregando relatório de serviços...
+            </div>
+          ) : servicesReportError ? (
+            <div className="rounded-xl border border-rose-500/30 bg-rose-500/5 p-3 text-[11px] text-rose-200">
+              {servicesReportError}
+            </div>
+          ) : !servicesReport ? (
+            <div className="rounded-xl border border-slate-800 bg-slate-950/50 p-3 text-[11px] text-slate-400">
+              Sem dados para os filtros selecionados.
+            </div>
+          ) : (
+            <>
+              {/* KPIs */}
+              <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3">
+                <div className="rounded-xl border border-slate-800 bg-slate-950/60 p-3">
+                  <p className="text-[10px] text-slate-400">Atendimentos</p>
+                  <p className="mt-1 text-sm font-semibold text-slate-100">
+                    {servicesReport.kpis.appointmentsDone}
+                  </p>
+                </div>
+
+                <div className="rounded-xl border border-slate-800 bg-slate-950/60 p-3">
+                  <p className="text-[10px] text-slate-400">Faturamento</p>
+                  <p className="mt-1 text-sm font-semibold text-slate-100">
+                    {formatEURFromCents(servicesReport.kpis.revenueCents)}
+                  </p>
+                </div>
+
+                <div className="rounded-xl border border-slate-800 bg-slate-950/60 p-3">
+                  <p className="text-[10px] text-slate-400">Ticket médio</p>
+                  <p className="mt-1 text-sm font-semibold text-slate-100">
+                    {formatEURFromCents(servicesReport.kpis.avgTicketCents)}
+                  </p>
+                </div>
+
+                <div className="rounded-xl border border-slate-800 bg-slate-950/60 p-3">
+                  <p className="text-[10px] text-slate-400">Clientes únicos</p>
+                  <p className="mt-1 text-sm font-semibold text-slate-100">
+                    {servicesReport.kpis.uniqueCustomers}
+                  </p>
+                </div>
+
+                <div className="rounded-xl border border-slate-800 bg-slate-950/60 p-3">
+                  <p className="text-[10px] text-slate-400">Profissionais</p>
+                  <p className="mt-1 text-sm font-semibold text-slate-100">
+                    {formatEURFromCents(
+                      servicesReport.kpis.providerEarningsCents
+                    )}
+                  </p>
+                </div>
+
+                <div className="rounded-xl border border-slate-800 bg-slate-950/60 p-3">
+                  <p className="text-[10px] text-slate-400">Espaço</p>
+                  <p className="mt-1 text-sm font-semibold text-slate-100">
+                    {formatEURFromCents(servicesReport.kpis.houseEarningsCents)}
+                  </p>
+                </div>
+              </div>
+
+              {/* Ranking */}
+              <div className="mt-4 rounded-xl border border-slate-800 bg-slate-950/50 p-3">
+                <div className="flex items-center justify-between mb-2">
+                  <p className="text-[11px] text-slate-300 font-medium">
+                    Ranking de serviços
+                  </p>
+
+                  {serviceIdFromUrl ? (
+                    <button
+                      type="button"
+                      onClick={() => setUrlServiceId("")}
+                      className="text-[11px] text-emerald-300 hover:underline"
+                    >
+                      Limpar serviço selecionado
+                    </button>
+                  ) : null}
+                </div>
+
+                {servicesReport.services.length === 0 ? (
+                  <p className="text-[11px] text-slate-500">
+                    Sem serviços no período.
+                  </p>
+                ) : (
+                  <div className="overflow-auto">
+                    <table className="w-full border-collapse text-[11px] min-w-[760px]">
+                      <thead>
+                        <tr className="text-slate-400">
+                          <th className="text-left py-2 pr-3 border-b border-slate-800">
+                            Serviço
+                          </th>
+                          <th className="text-left py-2 pr-3 border-b border-slate-800">
+                            Categoria
+                          </th>
+                          <th className="text-right py-2 px-3 border-b border-slate-800">
+                            Atend.
+                          </th>
+                          <th className="text-right py-2 px-3 border-b border-slate-800">
+                            Receita
+                          </th>
+                          <th className="text-right py-2 px-3 border-b border-slate-800">
+                            Ticket
+                          </th>
+                          <th className="text-right py-2 pl-3 border-b border-slate-800">
+                            % Receita
+                          </th>
+                        </tr>
+                      </thead>
+
+                      <tbody>
+                        {[...servicesReport.services]
+                          .sort((a, b) => b.revenueCents - a.revenueCents)
+                          .map((s) => {
+                            const isSelected = serviceIdFromUrl === s.serviceId;
+
+                            return (
+                              <tr
+                                key={s.serviceId}
+                                onClick={() => setUrlServiceId(s.serviceId)}
+                                className={[
+                                  "cursor-pointer hover:bg-slate-900/40",
+                                  isSelected ? "bg-emerald-500/10" : "",
+                                ].join(" ")}
+                                title="Clique para filtrar este serviço"
+                              >
+                                <td className="py-2 pr-3 text-slate-200">
+                                  <div className="flex items-center gap-2">
+                                    <span className="font-medium">
+                                      {s.name}
+                                    </span>
+                                    {isSelected ? (
+                                      <span className="text-[10px] px-2 py-[1px] rounded-full border border-emerald-500/30 bg-emerald-500/10 text-emerald-200">
+                                        Selecionado
+                                      </span>
+                                    ) : null}
+                                  </div>
+                                </td>
+
+                                <td className="py-2 pr-3 text-slate-300">
+                                  {s.category ?? "—"}
+                                </td>
+
+                                <td className="py-2 px-3 text-right text-slate-200">
+                                  {s.appointmentsDone}
+                                </td>
+
+                                <td className="py-2 px-3 text-right text-slate-200">
+                                  {formatEURFromCents(s.revenueCents)}
+                                </td>
+
+                                <td className="py-2 px-3 text-right text-slate-200">
+                                  {formatEURFromCents(s.avgTicketCents)}
+                                </td>
+
+                                <td className="py-2 pl-3 text-right text-slate-200">
+                                  {`${Math.round(
+                                    (s.shareRevenue ?? 0) * 100
+                                  )}%`}
+                                </td>
+                              </tr>
+                            );
+                          })}
+
+                        {serviceIdFromUrl ? (
+                          <tr>
+                            <td colSpan={6} className="pt-4">
+                              <div className="mt-4 grid grid-cols-1 lg:grid-cols-2 gap-4">
+                                <div className="rounded-2xl border border-slate-800 bg-slate-900/60 p-4 text-xs">
+                                  <div className="flex items-start justify-between gap-3">
+                                    <div>
+                                      <p className="text-[11px] text-slate-400">
+                                        Serviço selecionado
+                                      </p>
+                                      <p className="mt-1 text-base font-semibold text-slate-100">
+                                        {selectedService?.name ?? "—"}
+                                      </p>
+                                      <p className="mt-1 text-[11px] text-slate-300">
+                                        Categoria:{" "}
+                                        {selectedService?.category ?? "—"}
+                                      </p>
+                                    </div>
+
+                                    <button
+                                      type="button"
+                                      onClick={() => setUrlServiceId("")}
+                                      className="rounded-lg border border-slate-700 bg-slate-950/40 px-3 py-1 text-[11px] text-slate-200 hover:border-emerald-500/60 hover:text-emerald-200"
+                                    >
+                                      Limpar
+                                    </button>
+                                  </div>
+
+                                  <div className="mt-4 grid grid-cols-2 md:grid-cols-3 gap-3">
+                                    <div className="rounded-xl border border-slate-800 bg-slate-950/60 p-3">
+                                      <p className="text-slate-400">
+                                        Atendimentos
+                                      </p>
+                                      <p className="mt-1 text-sm font-semibold text-slate-100">
+                                        {selectedService?.appointmentsDone ?? 0}
+                                      </p>
+                                    </div>
+
+                                    <div className="rounded-xl border border-slate-800 bg-slate-950/60 p-3">
+                                      <p className="text-slate-400">Receita</p>
+                                      <p className="mt-1 text-sm font-semibold text-slate-100">
+                                        {formatEURFromCents(
+                                          selectedService?.revenueCents ?? 0
+                                        )}
+                                      </p>
+                                    </div>
+
+                                    <div className="rounded-xl border border-slate-800 bg-slate-950/60 p-3">
+                                      <p className="text-slate-400">
+                                        Ticket médio
+                                      </p>
+                                      <p className="mt-1 text-sm font-semibold text-slate-100">
+                                        {formatEURFromCents(
+                                          selectedService?.avgTicketCents ?? 0
+                                        )}
+                                      </p>
+                                    </div>
+
+                                    <div className="rounded-xl border border-slate-800 bg-slate-950/60 p-3">
+                                      <p className="text-slate-400">
+                                        % Receita
+                                      </p>
+                                      <p className="mt-1 text-sm font-semibold text-slate-100">
+                                        {`${Math.round(
+                                          (selectedService?.shareRevenue ?? 0) *
+                                            100
+                                        )}%`}
+                                      </p>
+                                    </div>
+
+                                    <div className="rounded-xl border border-slate-800 bg-slate-950/60 p-3">
+                                      <p className="text-slate-400">
+                                        Profissionais
+                                      </p>
+                                      <p className="mt-1 text-sm font-semibold text-slate-100">
+                                        {formatEURFromCents(
+                                          selectedService?.providerEarningsCents ??
+                                            0
+                                        )}
+                                      </p>
+                                    </div>
+
+                                    <div className="rounded-xl border border-slate-800 bg-slate-950/60 p-3">
+                                      <p className="text-slate-400">Espaço</p>
+                                      <p className="mt-1 text-sm font-semibold text-slate-100">
+                                        {formatEURFromCents(
+                                          selectedService?.houseEarningsCents ??
+                                            0
+                                        )}
+                                      </p>
+                                    </div>
+                                  </div>
+                                </div>
+
+                                <div className="rounded-2xl border border-slate-800 bg-slate-900/60 p-4 text-xs">
+                                  <div className="flex items-center justify-between mb-3">
+                                    <p className="text-slate-400">
+                                      Receita por dia (serviço)
+                                    </p>
+                                    <span className="text-[10px] text-slate-500">
+                                      Período selecionado
+                                    </span>
+                                  </div>
+
+                                  {servicesByDayChartData.length === 0 ? (
+                                    <p className="text-[11px] text-slate-500">
+                                      Sem dados no período.
+                                    </p>
+                                  ) : (
+                                    <div className="h-[260px]">
+                                      <RevenueLineChart
+                                        data={servicesByDayChartData}
+                                      />
+                                    </div>
+                                  )}
+                                </div>
+                              </div>
+                            </td>
+                          </tr>
+                        ) : null}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+              </div>
             </>
           )}
         </section>

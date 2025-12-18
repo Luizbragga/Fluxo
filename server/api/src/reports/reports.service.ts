@@ -215,8 +215,9 @@ export class ReportsService {
     from?: string;
     to?: string;
     locationId?: string;
+    providerId?: string;
   }) {
-    const { tenantId, from, to, locationId } = params;
+    const { tenantId, from, to, locationId, providerId } = params;
     const { fromDate, toDate } = this.resolveDateRange(from, to);
 
     // 1) Earnings (apenas atendimentos concluídos)
@@ -230,6 +231,7 @@ export class ReportsService {
             lt: toDate,
           },
           ...(locationId ? { locationId } : {}),
+          ...(providerId ? { providerId } : {}),
         },
       },
       include: {
@@ -741,8 +743,9 @@ export class ReportsService {
     from?: string;
     to?: string;
     locationId?: string;
+    providerId?: string;
   }) {
-    const { tenantId, from, to, locationId } = params;
+    const { tenantId, from, to, locationId, providerId } = params;
     const { fromDate, toDate } = this.resolveDateRange(from, to);
 
     const earnings = await this.prisma.appointmentEarning.findMany({
@@ -755,6 +758,7 @@ export class ReportsService {
             lt: toDate,
           },
           ...(locationId ? { locationId } : {}),
+          ...(providerId ? { providerId } : {}),
         },
       },
       include: {
@@ -809,4 +813,364 @@ export class ReportsService {
       })),
     };
   }
+  async getAppointmentsOverview(params: {
+    tenantId: string;
+    from?: string;
+    to?: string;
+    locationId?: string;
+    providerId?: string;
+  }) {
+    const { tenantId, from, to, locationId, providerId } = params;
+    const { fromDate, toDate } = this.resolveDateRange(from, to);
+
+    // ----------------------------
+    // 1) APPOINTMENTS (contagem + série diária por status)
+    // ----------------------------
+    const appointments = await this.prisma.appointment.findMany({
+      where: {
+        tenantId,
+        startAt: { gte: fromDate, lt: toDate },
+        ...(locationId ? { locationId } : {}),
+        ...(providerId ? { providerId } : {}),
+      },
+      select: {
+        startAt: true,
+        status: true,
+      },
+      orderBy: { startAt: 'asc' },
+    });
+
+    type DayBucket = {
+      date: string; // YYYY-MM-DD (UTC)
+      total: number;
+      done: number;
+      cancelled: number;
+      no_show: number;
+      scheduled: number;
+      other: number;
+      revenueCents: number; // preenchido depois
+    };
+
+    const byDay = new Map<string, DayBucket>();
+
+    const totals = {
+      total: 0,
+      done: 0,
+      cancelled: 0,
+      no_show: 0,
+      scheduled: 0,
+      other: 0,
+      revenueCents: 0,
+      averageTicketCents: 0,
+      showUpRate: 0, // done / (done + no_show)
+      cancellationRate: 0, // cancelled / total
+      noShowRate: 0, // no_show / total
+    };
+
+    const bumpDay = (dayKey: string) => {
+      let b = byDay.get(dayKey);
+      if (!b) {
+        b = {
+          date: dayKey,
+          total: 0,
+          done: 0,
+          cancelled: 0,
+          no_show: 0,
+          scheduled: 0,
+          other: 0,
+          revenueCents: 0,
+        };
+        byDay.set(dayKey, b);
+      }
+      return b;
+    };
+
+    for (const a of appointments) {
+      const dayKey = a.startAt.toISOString().slice(0, 10); // UTC yyyy-mm-dd
+      const b = bumpDay(dayKey);
+
+      totals.total += 1;
+      b.total += 1;
+
+      // status vem do enum AppointmentState do Prisma
+      if (a.status === AppointmentState.done) {
+        totals.done += 1;
+        b.done += 1;
+      } else if (a.status === AppointmentState.cancelled) {
+        totals.cancelled += 1;
+        b.cancelled += 1;
+      } else if (a.status === AppointmentState.no_show) {
+        totals.no_show += 1;
+        b.no_show += 1;
+      } else if (a.status === AppointmentState.scheduled) {
+        totals.scheduled += 1;
+        b.scheduled += 1;
+      } else {
+        totals.other += 1;
+        b.other += 1;
+      }
+    }
+
+    // ----------------------------
+    // 2) REVENUE (somente DONE via appointmentEarning)
+    // ----------------------------
+    const earnings = await this.prisma.appointmentEarning.findMany({
+      where: {
+        appointment: {
+          tenantId,
+          status: AppointmentState.done,
+          startAt: { gte: fromDate, lt: toDate },
+          ...(locationId ? { locationId } : {}),
+          ...(providerId ? { providerId } : {}),
+        },
+      },
+      select: {
+        servicePriceCents: true,
+        appointment: { select: { startAt: true } },
+      },
+      orderBy: { appointment: { startAt: 'asc' } },
+    });
+
+    for (const e of earnings) {
+      totals.revenueCents += e.servicePriceCents;
+
+      const dayKey = e.appointment.startAt.toISOString().slice(0, 10);
+      const b = bumpDay(dayKey);
+      b.revenueCents += e.servicePriceCents;
+    }
+
+    // KPIs derivados
+    totals.averageTicketCents =
+      totals.done > 0 ? Math.round(totals.revenueCents / totals.done) : 0;
+
+    const showUpDen = totals.done + totals.no_show;
+    totals.showUpRate =
+      showUpDen > 0 ? Math.round((totals.done / showUpDen) * 1000) / 1000 : 0;
+
+    totals.cancellationRate =
+      totals.total > 0
+        ? Math.round((totals.cancelled / totals.total) * 1000) / 1000
+        : 0;
+
+    totals.noShowRate =
+      totals.total > 0
+        ? Math.round((totals.no_show / totals.total) * 1000) / 1000
+        : 0;
+
+    const daily = Array.from(byDay.values()).sort((a, b) =>
+      a.date.localeCompare(b.date),
+    );
+
+    return {
+      from: fromDate.toISOString(),
+      to: toDate.toISOString(),
+      filters: {
+        locationId: locationId ?? null,
+        providerId: providerId ?? null,
+      },
+      totals: {
+        ...totals,
+        revenue: totals.revenueCents / 100,
+        averageTicket: totals.averageTicketCents / 100,
+      },
+      daily: daily.map((d) => ({
+        ...d,
+        revenue: d.revenueCents / 100,
+      })),
+    };
+  }
+  async getServicesReport(user: any, query: any) {
+    const tenantId = user.tenantId;
+
+    const from = parseDateOrUndefined(query.from);
+    const to = parseDateOrUndefined(query.to);
+
+    // se o user tiver locationId (ex.: attendant) e não veio filtro, usa o dele
+    const locationId = query.locationId ?? user.locationId ?? undefined;
+
+    const where: any = {
+      tenantId,
+      status: 'done',
+      ...(locationId ? { locationId } : {}),
+      ...(query.providerId ? { providerId: query.providerId } : {}),
+      ...(query.serviceId ? { serviceId: query.serviceId } : {}),
+      ...(from || to
+        ? {
+            startAt: {
+              ...(from ? { gte: from } : {}),
+              ...(to ? { lt: to } : {}),
+            },
+          }
+        : {}),
+    };
+
+    const appointments = await this.prisma.appointment.findMany({
+      where,
+      select: {
+        id: true,
+        serviceId: true,
+        serviceName: true,
+        serviceDurationMin: true,
+        servicePriceCents: true,
+        startAt: true,
+        customerId: true,
+        clientPhone: true,
+        service: { select: { category: true } },
+        earning: {
+          select: {
+            providerEarningsCents: true,
+            houseEarningsCents: true,
+            commissionPercentage: true,
+            payoutStatus: true,
+          },
+        },
+      },
+      orderBy: { startAt: 'asc' },
+    });
+
+    let totalAppointments = 0;
+    let totalRevenueCents = 0;
+    let totalProviderCents = 0;
+    let totalHouseCents = 0;
+
+    const customers = new Set<string>();
+
+    const perService = new Map<
+      string,
+      {
+        serviceId: string;
+        name: string;
+        category: string | null;
+        appointments: number;
+        revenueCents: number;
+        durationSum: number;
+        providerCents: number;
+        houseCents: number;
+      }
+    >();
+
+    const byDay = new Map<
+      string,
+      { day: string; appointments: number; revenueCents: number }
+    >();
+
+    for (const a of appointments) {
+      totalAppointments += 1;
+      totalRevenueCents += a.servicePriceCents;
+
+      const prov = a.earning?.providerEarningsCents ?? 0;
+      const house = a.earning?.houseEarningsCents ?? 0;
+      totalProviderCents += prov;
+      totalHouseCents += house;
+
+      const customerKey = a.customerId ?? a.clientPhone;
+      if (customerKey) customers.add(customerKey);
+
+      // série diária
+      const day = toDayKey(a.startAt);
+      const dayRow = byDay.get(day) ?? {
+        day,
+        appointments: 0,
+        revenueCents: 0,
+      };
+      dayRow.appointments += 1;
+      dayRow.revenueCents += a.servicePriceCents;
+      byDay.set(day, dayRow);
+
+      // agregação por serviço
+      const existing = perService.get(a.serviceId) ?? {
+        serviceId: a.serviceId,
+        name: a.serviceName,
+        category: a.service?.category ?? null,
+        appointments: 0,
+        revenueCents: 0,
+        durationSum: 0,
+        providerCents: 0,
+        houseCents: 0,
+      };
+
+      existing.appointments += 1;
+      existing.revenueCents += a.servicePriceCents;
+      existing.durationSum += a.serviceDurationMin;
+      existing.providerCents += prov;
+      existing.houseCents += house;
+
+      perService.set(a.serviceId, existing);
+    }
+
+    const services = Array.from(perService.values())
+      .map((s) => {
+        const avgTicketCents = s.appointments
+          ? Math.round(s.revenueCents / s.appointments)
+          : 0;
+        const avgDurationMin = s.appointments
+          ? Math.round(s.durationSum / s.appointments)
+          : 0;
+
+        const shareAppointments = totalAppointments
+          ? s.appointments / totalAppointments
+          : 0;
+        const shareRevenue = totalRevenueCents
+          ? s.revenueCents / totalRevenueCents
+          : 0;
+
+        return {
+          serviceId: s.serviceId,
+          name: s.name,
+          category: s.category,
+          appointmentsDone: s.appointments,
+          revenueCents: s.revenueCents,
+          avgTicketCents,
+          avgDurationMin,
+          shareAppointments,
+          shareRevenue,
+          providerEarningsCents: s.providerCents,
+          houseEarningsCents: s.houseCents,
+        };
+      })
+      .sort((a, b) => b.revenueCents - a.revenueCents);
+
+    const seriesByDay = Array.from(byDay.values()).sort((a, b) =>
+      a.day.localeCompare(b.day),
+    );
+
+    const avgTicketCents = totalAppointments
+      ? Math.round(totalRevenueCents / totalAppointments)
+      : 0;
+
+    return {
+      range: {
+        from: from?.toISOString() ?? null,
+        to: to?.toISOString() ?? null,
+      },
+      filters: {
+        locationId: locationId ?? null,
+        providerId: query.providerId ?? null,
+        serviceId: query.serviceId ?? null,
+      },
+      kpis: {
+        appointmentsDone: totalAppointments,
+        revenueCents: totalRevenueCents,
+        avgTicketCents,
+        uniqueCustomers: customers.size,
+        providerEarningsCents: totalProviderCents,
+        houseEarningsCents: totalHouseCents,
+      },
+      services,
+      series: {
+        byDay: seriesByDay,
+      },
+    };
+  }
+}
+function toDayKey(d: Date) {
+  // YYYY-MM-DD (UTC)
+  return d.toISOString().slice(0, 10);
+}
+
+function parseDateOrUndefined(v?: string) {
+  if (!v) return undefined;
+  const dt = new Date(v);
+  if (Number.isNaN(dt.getTime())) return undefined;
+  return dt;
 }
