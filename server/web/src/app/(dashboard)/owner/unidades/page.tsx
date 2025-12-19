@@ -12,6 +12,7 @@ import {
   updateOwnerLocationDetails,
 } from "../_api/owner-locations";
 import Link from "next/link";
+import { useSearchParams } from "next/navigation";
 import {
   fetchOwnerProfessionals,
   type OwnerProfessional,
@@ -27,7 +28,11 @@ export default function OwnerUnidadesPage() {
   const [newName, setNewName] = useState("");
   const [newAddress, setNewAddress] = useState("");
   const [creating, setCreating] = useState(false);
-
+  const searchParams = useSearchParams();
+  const focusLocationId = searchParams.get("locationId");
+  const [highlightLocationId, setHighlightLocationId] = useState<string | null>(
+    null
+  );
   const [savingId, setSavingId] = useState<string | null>(null);
 
   // --- profissionais para escolher o responsável ---
@@ -220,6 +225,28 @@ export default function OwnerUnidadesPage() {
       setSavingId(null);
     }
   }
+  useEffect(() => {
+    if (!focusLocationId) return;
+    if (loading) return;
+    if (!locations.length) return;
+
+    const exists = locations.some((l) => l.id === focusLocationId);
+    if (!exists) return;
+
+    setHighlightLocationId(focusLocationId);
+
+    // espera o DOM renderizar a tabela
+    requestAnimationFrame(() => {
+      const el = document.getElementById(`location-row-${focusLocationId}`);
+      if (el) {
+        el.scrollIntoView({ behavior: "smooth", block: "center" });
+      }
+    });
+
+    // remove highlight depois de um tempo
+    const t = setTimeout(() => setHighlightLocationId(null), 2500);
+    return () => clearTimeout(t);
+  }, [focusLocationId, loading, locations]);
 
   useEffect(() => {
     let cancelled = false;
@@ -579,8 +606,14 @@ export default function OwnerUnidadesPage() {
 
                 return (
                   <tr
+                    id={`location-row-${location.id}`}
                     key={location.id}
-                    className="border-b border-slate-800/60 last:border-b-0 hover:bg-slate-900/60"
+                    className={[
+                      "border-b border-slate-800/60 last:border-b-0 hover:bg-slate-900/60",
+                      highlightLocationId === location.id
+                        ? "bg-emerald-500/10 ring-1 ring-emerald-500/30"
+                        : "",
+                    ].join(" ")}
                   >
                     {/* Nome */}
                     <td className="px-4 py-3 align-top text-slate-100">

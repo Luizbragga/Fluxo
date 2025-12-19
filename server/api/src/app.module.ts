@@ -15,6 +15,7 @@ import { PlansModule } from './plans/plans.module';
 import { OverviewModule } from './overview/overview.module';
 import { CustomersModule } from './customers/customers.module';
 import { ScheduleModule } from '@nestjs/schedule';
+import { TenantsModule } from './tenants/tenants.module';
 
 @Module({
   imports: [
@@ -23,6 +24,7 @@ import { ScheduleModule } from '@nestjs/schedule';
     HealthModule,
     AuthModule,
     UsersModule,
+    TenantsModule,
     ServicesModule,
     ProvidersModule,
     BlocksModule,

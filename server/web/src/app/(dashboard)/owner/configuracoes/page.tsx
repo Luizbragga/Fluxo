@@ -1,116 +1,354 @@
+"use client";
+
 // src/app/(dashboard)/owner/configuracoes/page.tsx
 
-type TenantSettings = {
-  name: string;
+import { useEffect, useMemo, useState } from "react";
+import Link from "next/link";
+
+import {
+  fetchOwnerLocations,
+  type OwnerLocation,
+} from "../_api/owner-locations";
+import { fetchOwnerUsers, type OwnerUser } from "../_api/owner-users";
+import { fetchOwnerTenantMe } from "../_api/owner-tenant";
+import {
+  fetchOwnerTenantSettings,
+  updateOwnerTenantSettings,
+  type TenantSettings,
+} from "../_api/owner-tenant-settings";
+
+import { apiClient } from "@/lib/api-client";
+
+/**
+ * Tipagem local alinhada com o que o backend devolve em /v1/tenants/settings
+ * (inclui Preferências + Notificações + Segurança + extras opcionais)
+ */
+type TenantSettingsDTO = {
+  timezone: string;
+  defaultCurrency: string;
+  dateFormat: string;
+  use24hClock: boolean;
+
+  // Notificações
+  emailNewBooking: boolean;
+  emailCancellation: boolean;
+  emailReschedule: boolean;
+  notifyProvidersNewBooking: boolean;
+  notifyProvidersChanges: boolean;
+  clientRemindersEnabled: boolean;
+  reminderHoursBefore: number;
+
+  // Segurança (MVP)
+  sessionIdleTimeoutMin: number;
+  requireReauthForSensitiveActions: boolean;
+  twoFactorEnabled: boolean;
+
+  // Agenda
+  defaultAppointmentDurationMin: number;
+  bufferBetweenAppointmentsMin: number;
+  allowOverbooking: boolean;
+
+  // Cancelamento / no-show (extras)
+  minCancelNoticeHours: number;
+  autoNoShowEnabled?: boolean;
+  noShowAfterMin?: number | null;
+  defaultPaymentMethod?: string | null;
+};
+
+type TenantSettingsUI = {
+  legalName: string;
   brandName: string;
   defaultCurrency: "EUR";
   country: string;
   timezone: string;
   contactEmail: string;
   contactPhone: string;
+  tenantId: string | null;
 };
 
-type LocationSettings = {
-  id: string;
-  name: string;
-  shortCode: string;
-  addressLine: string;
-  city: string;
-  isActive: boolean;
-  opensAt: string;
-  closesAt: string;
-};
+type UserRole = "owner" | "admin" | "attendant" | "provider" | "unknown";
+type SettingsTab = "prefs" | "notifications" | "security";
 
-type UserRole = "owner" | "admin" | "attendant" | "provider";
-
-type UserSettings = {
-  id: string;
-  name: string;
-  email: string;
-  role: UserRole;
-  locationName?: string;
-  isActive: boolean;
-};
-
-const tenantSettings: TenantSettings = {
-  name: "Demo Barber Group Lda.",
-  brandName: "Demo Barber",
-  defaultCurrency: "EUR",
-  country: "Portugal",
-  timezone: "Europe/Lisbon",
-  contactEmail: "contato@demobarber.pt",
-  contactPhone: "+351 912 000 000",
-};
-
-const locations: LocationSettings[] = [
-  {
-    id: "loc_centro",
-    name: "Demo Barber – Centro",
-    shortCode: "CENTRO",
-    addressLine: "Rua Principal 123",
-    city: "Barcelos",
-    isActive: true,
-    opensAt: "09:00",
-    closesAt: "20:00",
-  },
-  {
-    id: "loc_anexo",
-    name: "Demo Nails – Anexo",
-    shortCode: "ANEXO",
-    addressLine: "Rua Secundária 45",
-    city: "Barcelos",
-    isActive: true,
-    opensAt: "10:00",
-    closesAt: "19:00",
-  },
-];
-
-const users: UserSettings[] = [
-  {
-    id: "u1",
-    name: "Rafa Barber",
-    email: "rafa@demobarber.pt",
-    role: "owner",
-    isActive: true,
-  },
-  {
-    id: "u2",
-    name: "João Manager",
-    email: "joao.manager@demobarber.pt",
-    role: "admin",
-    locationName: "Demo Barber – Centro",
-    isActive: true,
-  },
-  {
-    id: "u3",
-    name: "Ana Recepção",
-    email: "recepcao@demobarber.pt",
-    role: "attendant",
-    locationName: "Demo Barber – Centro",
-    isActive: true,
-  },
-  {
-    id: "u4",
-    name: "Rafa Barber",
-    email: "rafa.prof@demobarber.pt",
-    role: "provider",
-    locationName: "Demo Barber – Centro",
-    isActive: true,
-  },
-  {
-    id: "u5",
-    name: "Ana Nails",
-    email: "ana.nails@demobarber.pt",
-    role: "provider",
-    locationName: "Demo Nails – Anexo",
-    isActive: false,
-  },
-];
+function normalizeRole(role: string | null | undefined): UserRole {
+  const r = (role ?? "").toLowerCase().trim();
+  if (r === "owner") return "owner";
+  if (r === "admin") return "admin";
+  if (r === "attendant") return "attendant";
+  if (r === "provider") return "provider";
+  return "unknown";
+}
 
 export default function OwnerConfiguracoesPage() {
+  const [tenant, setTenant] = useState<TenantSettingsUI>({
+    legalName: "—",
+    brandName: "—",
+    defaultCurrency: "EUR",
+    country: "Portugal",
+    timezone: "Europe/Lisbon",
+    contactEmail: "—",
+    contactPhone: "—",
+    tenantId: null,
+  });
+
+  const [locations, setLocations] = useState<OwnerLocation[]>([]);
+  const [users, setUsers] = useState<OwnerUser[]>([]);
+
+  const [settings, setSettings] = useState<TenantSettingsDTO | null>(null);
+
+  const [isLoading, setIsLoading] = useState(true);
+  const [errorMessage, setErrorMessage] = useState<string | null>(null);
+
+  // Tabs (por padrão: NADA aberto)
+  const [activeTab, setActiveTab] = useState<SettingsTab | null>(null);
+
+  // Preferências (edição)
+  const [isEditingPrefs, setIsEditingPrefs] = useState(false);
+  const [draftPrefs, setDraftPrefs] = useState<Pick<
+    TenantSettingsDTO,
+    | "timezone"
+    | "defaultCurrency"
+    | "dateFormat"
+    | "use24hClock"
+    | "defaultAppointmentDurationMin"
+    | "bufferBetweenAppointmentsMin"
+    | "allowOverbooking"
+    | "minCancelNoticeHours"
+  > | null>(null);
+  const [prefsError, setPrefsError] = useState<string | null>(null);
+  const [isSavingPrefs, setIsSavingPrefs] = useState(false);
+
+  // Notificações (edição)
+  const [isEditingNotifs, setIsEditingNotifs] = useState(false);
+  const [draftNotifs, setDraftNotifs] = useState<Pick<
+    TenantSettingsDTO,
+    | "emailNewBooking"
+    | "emailCancellation"
+    | "emailReschedule"
+    | "notifyProvidersNewBooking"
+    | "notifyProvidersChanges"
+    | "clientRemindersEnabled"
+    | "reminderHoursBefore"
+  > | null>(null);
+  const [notifsError, setNotifsError] = useState<string | null>(null);
+  const [isSavingNotifs, setIsSavingNotifs] = useState(false);
+
+  // Segurança (edição)
+  const [isEditingSecurity, setIsEditingSecurity] = useState(false);
+  const [draftSecurity, setDraftSecurity] = useState<Pick<
+    TenantSettingsDTO,
+    | "sessionIdleTimeoutMin"
+    | "requireReauthForSensitiveActions"
+    | "twoFactorEnabled"
+  > | null>(null);
+  const [securityError, setSecurityError] = useState<string | null>(null);
+  const [isSavingSecurity, setIsSavingSecurity] = useState(false);
+
+  const locationNameById = useMemo(() => {
+    return new Map(locations.map((l) => [l.id, l.name]));
+  }, [locations]);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    async function load() {
+      setIsLoading(true);
+      setErrorMessage(null);
+
+      try {
+        const tenantId =
+          typeof window !== "undefined"
+            ? localStorage.getItem("fluxo_tenant")
+            : null;
+
+        const [tenantRes, settingsRes, locRes, userRes] = await Promise.all([
+          fetchOwnerTenantMe(),
+          fetchOwnerTenantSettings(),
+          fetchOwnerLocations({ page: 1, pageSize: 200 }),
+          fetchOwnerUsers(),
+        ]);
+
+        if (cancelled) return;
+
+        setLocations(locRes.data);
+        setUsers(userRes);
+        setSettings(settingsRes as TenantSettingsDTO);
+
+        setTenant((prev) => ({
+          ...prev,
+          tenantId,
+          legalName: tenantRes.name ?? "—",
+          brandName: tenantRes.name ?? "—",
+          timezone: (settingsRes as any)?.timezone ?? prev.timezone,
+        }));
+
+        // email/phone do user logado (se existir)
+        try {
+          const me = await apiClient<any>("/users/me", { method: "GET" });
+          if (!cancelled) {
+            setTenant((prev) => ({
+              ...prev,
+              contactEmail: me?.email ?? prev.contactEmail,
+              contactPhone: me?.phone ?? prev.contactPhone,
+            }));
+          }
+        } catch {
+          // não bloqueia
+        }
+      } catch (err: any) {
+        if (cancelled) return;
+        setErrorMessage(
+          err?.message ??
+            "Erro ao carregar configurações. Verifica a API e o token."
+        );
+      } finally {
+        if (!cancelled) setIsLoading(false);
+      }
+    }
+
+    load();
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  // ---------- Preferências ----------
+  function startEditPrefs() {
+    if (!settings) return;
+    setPrefsError(null);
+    setDraftPrefs({
+      timezone: settings.timezone,
+      defaultCurrency: settings.defaultCurrency,
+      dateFormat: settings.dateFormat,
+      use24hClock: settings.use24hClock,
+      defaultAppointmentDurationMin: settings.defaultAppointmentDurationMin,
+      bufferBetweenAppointmentsMin: settings.bufferBetweenAppointmentsMin,
+      allowOverbooking: settings.allowOverbooking,
+      minCancelNoticeHours: settings.minCancelNoticeHours,
+    });
+    setIsEditingPrefs(true);
+  }
+
+  function cancelEditPrefs() {
+    setPrefsError(null);
+    setDraftPrefs(null);
+    setIsEditingPrefs(false);
+  }
+
+  async function savePrefs() {
+    if (!draftPrefs) return;
+
+    try {
+      setIsSavingPrefs(true);
+      setPrefsError(null);
+
+      const updated = await apiClient<TenantSettingsDTO>("/tenants/settings", {
+        method: "PATCH",
+        body: draftPrefs, // <-- NÃO stringify aqui (o apiClient já faz)
+      });
+
+      setSettings(updated);
+      setDraftPrefs(null);
+      setIsEditingPrefs(false);
+    } catch (e) {
+      console.error(e);
+      setPrefsError("Não foi possível salvar as preferências gerais.");
+    } finally {
+      setIsSavingPrefs(false);
+    }
+  }
+
+  // ---------- Notificações ----------
+  function startEditNotifs() {
+    if (!settings) return;
+    setNotifsError(null);
+    setDraftNotifs({
+      emailNewBooking: settings.emailNewBooking,
+      emailCancellation: settings.emailCancellation,
+      emailReschedule: settings.emailReschedule,
+      notifyProvidersNewBooking: settings.notifyProvidersNewBooking,
+      notifyProvidersChanges: settings.notifyProvidersChanges,
+      clientRemindersEnabled: settings.clientRemindersEnabled,
+      reminderHoursBefore: settings.reminderHoursBefore,
+    });
+    setIsEditingNotifs(true);
+  }
+
+  function cancelEditNotifs() {
+    setNotifsError(null);
+    setDraftNotifs(null);
+    setIsEditingNotifs(false);
+  }
+
+  async function saveNotifs() {
+    if (!draftNotifs) return;
+
+    try {
+      setIsSavingNotifs(true);
+      setNotifsError(null);
+
+      const updated = await apiClient<TenantSettingsDTO>("/tenants/settings", {
+        method: "PATCH",
+        body: draftNotifs,
+      });
+
+      setSettings(updated);
+      setDraftNotifs(null);
+      setIsEditingNotifs(false);
+    } catch (e) {
+      console.error(e);
+      setNotifsError("Não foi possível salvar as notificações.");
+    } finally {
+      setIsSavingNotifs(false);
+    }
+  }
+
+  // ---------- Segurança ----------
+  function startEditSecurity() {
+    if (!settings) return;
+    setSecurityError(null);
+    setDraftSecurity({
+      sessionIdleTimeoutMin: settings.sessionIdleTimeoutMin,
+      requireReauthForSensitiveActions:
+        settings.requireReauthForSensitiveActions,
+      twoFactorEnabled: settings.twoFactorEnabled,
+    });
+    setIsEditingSecurity(true);
+  }
+
+  function cancelEditSecurity() {
+    setSecurityError(null);
+    setDraftSecurity(null);
+    setIsEditingSecurity(false);
+  }
+
+  async function saveSecurity() {
+    if (!draftSecurity) return;
+
+    try {
+      setIsSavingSecurity(true);
+      setSecurityError(null);
+
+      const updated = await apiClient<TenantSettingsDTO>("/tenants/settings", {
+        method: "PATCH",
+        body: draftSecurity,
+      });
+
+      setSettings(updated);
+      setDraftSecurity(null);
+      setIsEditingSecurity(false);
+    } catch (e) {
+      console.error(e);
+      setSecurityError(
+        "Não foi possível salvar as configurações de segurança."
+      );
+    } finally {
+      setIsSavingSecurity(false);
+    }
+  }
+
   return (
     <>
-      {/* Cabeçalho */}
       <header className="mb-4 flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
         <div>
           <h1 className="text-lg font-semibold">Configurações</h1>
@@ -120,21 +358,532 @@ export default function OwnerConfiguracoesPage() {
         </div>
 
         <div className="flex flex-wrap gap-2 text-xs">
-          <button className="px-3 py-1 rounded-lg border border-slate-800 bg-slate-900/80">
+          <TabButton
+            active={activeTab === "prefs"}
+            onClick={() => setActiveTab(activeTab === "prefs" ? null : "prefs")}
+          >
             Preferências gerais
-          </button>
-          <button className="px-3 py-1 rounded-lg border border-slate-800 bg-slate-900/80">
+          </TabButton>
+
+          <TabButton
+            active={activeTab === "notifications"}
+            onClick={() =>
+              setActiveTab(
+                activeTab === "notifications" ? null : "notifications"
+              )
+            }
+          >
             Notificações
-          </button>
-          <button className="px-3 py-1 rounded-lg border border-slate-800 bg-slate-900/80">
+          </TabButton>
+
+          <TabButton
+            active={activeTab === "security"}
+            onClick={() =>
+              setActiveTab(activeTab === "security" ? null : "security")
+            }
+          >
             Segurança
-          </button>
+          </TabButton>
         </div>
       </header>
 
-      {/* Grid principal: tenant + unidades + utilizadores */}
+      {errorMessage && (
+        <div className="mb-4 rounded-xl border border-rose-900/40 bg-rose-950/30 px-4 py-3 text-xs text-rose-200">
+          {errorMessage}
+        </div>
+      )}
+
+      {/* ====== BLOCO: Preferências gerais (só abre se clicar) ====== */}
+      {activeTab === "prefs" && (
+        <section className="mb-4 rounded-2xl border border-slate-800 bg-slate-900/60 p-4 text-xs">
+          <div className="flex items-center justify-between">
+            <div>
+              <p className="text-slate-200 font-medium">Preferências gerais</p>
+              <p className="text-[11px] text-slate-400">
+                Regras globais do tenant (agenda, formatos e defaults).
+              </p>
+            </div>
+
+            {!isEditingPrefs ? (
+              <button
+                onClick={startEditPrefs}
+                className="px-3 py-1 rounded-lg border border-slate-800 bg-slate-900/80 text-[11px]"
+                disabled={!settings || isLoading}
+              >
+                Editar
+              </button>
+            ) : (
+              <div className="flex gap-2">
+                <button
+                  onClick={cancelEditPrefs}
+                  className="px-3 py-1 rounded-lg border border-slate-800 bg-slate-900/80 text-[11px]"
+                  disabled={isSavingPrefs}
+                >
+                  Cancelar
+                </button>
+                <button
+                  onClick={savePrefs}
+                  className="px-3 py-1 rounded-lg border border-emerald-600 bg-emerald-600/20 text-emerald-200 text-[11px]"
+                  disabled={isSavingPrefs}
+                >
+                  {isSavingPrefs ? "Salvando..." : "Salvar"}
+                </button>
+              </div>
+            )}
+          </div>
+
+          {prefsError && (
+            <div className="mt-3 rounded-xl border border-rose-900/40 bg-rose-950/30 px-3 py-2 text-[11px] text-rose-200">
+              {prefsError}
+            </div>
+          )}
+
+          {isLoading ? (
+            <p className="mt-3 text-[11px] text-slate-400">Carregando...</p>
+          ) : !settings ? (
+            <p className="mt-3 text-[11px] text-slate-400">
+              Sem dados de preferências.
+            </p>
+          ) : !isEditingPrefs ? (
+            <div className="mt-3 grid grid-cols-2 md:grid-cols-4 gap-3">
+              <PrefItem label="Timezone" value={settings.timezone} />
+              <PrefItem label="Moeda padrão" value={settings.defaultCurrency} />
+              <PrefItem label="Formato data" value={settings.dateFormat} />
+              <PrefItem
+                label="Relógio"
+                value={settings.use24hClock ? "24h" : "12h"}
+              />
+              <PrefItem
+                label="Duração padrão"
+                value={`${settings.defaultAppointmentDurationMin} min`}
+              />
+              <PrefItem
+                label="Intervalo (buffer)"
+                value={`${settings.bufferBetweenAppointmentsMin} min`}
+              />
+              <PrefItem
+                label="Overbooking"
+                value={settings.allowOverbooking ? "Permitido" : "Bloqueado"}
+              />
+              <PrefItem
+                label="Aviso mínimo cancel."
+                value={`${settings.minCancelNoticeHours} h`}
+              />
+            </div>
+          ) : (
+            <div className="mt-3 grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-3">
+              <FieldText
+                label="Timezone"
+                value={draftPrefs?.timezone ?? ""}
+                onChange={(v) =>
+                  setDraftPrefs((p) => (p ? { ...p, timezone: v } : p))
+                }
+              />
+              <FieldText
+                label="Moeda padrão"
+                value={draftPrefs?.defaultCurrency ?? ""}
+                onChange={(v) =>
+                  setDraftPrefs((p) => (p ? { ...p, defaultCurrency: v } : p))
+                }
+              />
+              <FieldText
+                label="Formato data"
+                value={draftPrefs?.dateFormat ?? ""}
+                onChange={(v) =>
+                  setDraftPrefs((p) => (p ? { ...p, dateFormat: v } : p))
+                }
+              />
+              <FieldToggle
+                label="Relógio 24h"
+                checked={!!draftPrefs?.use24hClock}
+                onChange={(checked) =>
+                  setDraftPrefs((p) => (p ? { ...p, use24hClock: checked } : p))
+                }
+              />
+
+              <FieldNumber
+                label="Duração padrão (min)"
+                value={draftPrefs?.defaultAppointmentDurationMin ?? 0}
+                onChange={(n) =>
+                  setDraftPrefs((p) =>
+                    p ? { ...p, defaultAppointmentDurationMin: n } : p
+                  )
+                }
+              />
+              <FieldNumber
+                label="Buffer (min)"
+                value={draftPrefs?.bufferBetweenAppointmentsMin ?? 0}
+                onChange={(n) =>
+                  setDraftPrefs((p) =>
+                    p ? { ...p, bufferBetweenAppointmentsMin: n } : p
+                  )
+                }
+              />
+              <FieldToggle
+                label="Overbooking"
+                checked={!!draftPrefs?.allowOverbooking}
+                onChange={(checked) =>
+                  setDraftPrefs((p) =>
+                    p ? { ...p, allowOverbooking: checked } : p
+                  )
+                }
+              />
+              <FieldNumber
+                label="Aviso mínimo cancel. (h)"
+                value={draftPrefs?.minCancelNoticeHours ?? 0}
+                onChange={(n) =>
+                  setDraftPrefs((p) =>
+                    p ? { ...p, minCancelNoticeHours: n } : p
+                  )
+                }
+              />
+            </div>
+          )}
+        </section>
+      )}
+
+      {/* ====== BLOCO: Notificações (só abre se clicar) ====== */}
+      {activeTab === "notifications" && (
+        <section className="mb-4 rounded-2xl border border-slate-800 bg-slate-900/60 p-4 text-xs">
+          <div className="flex items-center justify-between">
+            <div>
+              <p className="text-slate-200 font-medium">Notificações</p>
+              <p className="text-[11px] text-slate-400">
+                Preferências de avisos (salva no backend em TenantSettings).
+              </p>
+            </div>
+
+            {!isEditingNotifs ? (
+              <button
+                onClick={startEditNotifs}
+                className="px-3 py-1 rounded-lg border border-slate-800 bg-slate-900/80 text-[11px]"
+                disabled={!settings || isLoading}
+              >
+                Editar
+              </button>
+            ) : (
+              <div className="flex gap-2">
+                <button
+                  onClick={cancelEditNotifs}
+                  className="px-3 py-1 rounded-lg border border-slate-800 bg-slate-900/80 text-[11px]"
+                  disabled={isSavingNotifs}
+                >
+                  Cancelar
+                </button>
+                <button
+                  onClick={saveNotifs}
+                  className="px-3 py-1 rounded-lg border border-emerald-600 bg-emerald-600/20 text-emerald-200 text-[11px]"
+                  disabled={isSavingNotifs}
+                >
+                  {isSavingNotifs ? "Salvando..." : "Salvar"}
+                </button>
+              </div>
+            )}
+          </div>
+
+          {notifsError && (
+            <div className="mt-3 rounded-xl border border-rose-900/40 bg-rose-950/30 px-3 py-2 text-[11px] text-rose-200">
+              {notifsError}
+            </div>
+          )}
+
+          {isLoading ? (
+            <p className="mt-3 text-[11px] text-slate-400">Carregando...</p>
+          ) : !settings ? (
+            <p className="mt-3 text-[11px] text-slate-400">
+              Sem dados de notificações.
+            </p>
+          ) : (
+            <div className="mt-3 grid grid-cols-1 lg:grid-cols-2 gap-3">
+              <div className="rounded-2xl border border-slate-800 bg-slate-950/40 p-4">
+                <p className="text-slate-200 font-medium">Owner / Gestão</p>
+                <p className="text-[11px] text-slate-400 mb-3">
+                  Avisos internos para o dono do espaço.
+                </p>
+
+                <div className="space-y-2">
+                  <ToggleRow
+                    label="Email: novo agendamento"
+                    caption={
+                      (isEditingNotifs ? draftNotifs : settings).emailNewBooking
+                        ? "Ativo"
+                        : "Desativado"
+                    }
+                    checked={
+                      (isEditingNotifs ? draftNotifs : settings).emailNewBooking
+                    }
+                    disabled={!isEditingNotifs}
+                    onChange={(v) =>
+                      setDraftNotifs((p) =>
+                        p ? { ...p, emailNewBooking: v } : p
+                      )
+                    }
+                  />
+                  <ToggleRow
+                    label="Email: cancelamento"
+                    caption={
+                      (isEditingNotifs ? draftNotifs : settings)
+                        .emailCancellation
+                        ? "Ativo"
+                        : "Desativado"
+                    }
+                    checked={
+                      (isEditingNotifs ? draftNotifs : settings)
+                        .emailCancellation
+                    }
+                    disabled={!isEditingNotifs}
+                    onChange={(v) =>
+                      setDraftNotifs((p) =>
+                        p ? { ...p, emailCancellation: v } : p
+                      )
+                    }
+                  />
+                  <ToggleRow
+                    label="Email: reagendamento"
+                    caption={
+                      (isEditingNotifs ? draftNotifs : settings).emailReschedule
+                        ? "Ativo"
+                        : "Desativado"
+                    }
+                    checked={
+                      (isEditingNotifs ? draftNotifs : settings).emailReschedule
+                    }
+                    disabled={!isEditingNotifs}
+                    onChange={(v) =>
+                      setDraftNotifs((p) =>
+                        p ? { ...p, emailReschedule: v } : p
+                      )
+                    }
+                  />
+                </div>
+              </div>
+
+              <div className="rounded-2xl border border-slate-800 bg-slate-950/40 p-4">
+                <p className="text-slate-200 font-medium">Profissionais</p>
+                <p className="text-[11px] text-slate-400 mb-3">
+                  Notificações para quem executa o serviço.
+                </p>
+
+                <div className="space-y-2">
+                  <ToggleRow
+                    label="Avisar profissional: novo agendamento"
+                    caption={
+                      (isEditingNotifs ? draftNotifs : settings)
+                        .notifyProvidersNewBooking
+                        ? "Ativo"
+                        : "Desativado"
+                    }
+                    checked={
+                      (isEditingNotifs ? draftNotifs : settings)
+                        .notifyProvidersNewBooking
+                    }
+                    disabled={!isEditingNotifs}
+                    onChange={(v) =>
+                      setDraftNotifs((p) =>
+                        p ? { ...p, notifyProvidersNewBooking: v } : p
+                      )
+                    }
+                  />
+                  <ToggleRow
+                    label="Avisar profissional: alterações/cancelamentos"
+                    caption={
+                      (isEditingNotifs ? draftNotifs : settings)
+                        .notifyProvidersChanges
+                        ? "Ativo"
+                        : "Desativado"
+                    }
+                    checked={
+                      (isEditingNotifs ? draftNotifs : settings)
+                        .notifyProvidersChanges
+                    }
+                    disabled={!isEditingNotifs}
+                    onChange={(v) =>
+                      setDraftNotifs((p) =>
+                        p ? { ...p, notifyProvidersChanges: v } : p
+                      )
+                    }
+                  />
+                </div>
+              </div>
+
+              <div className="lg:col-span-2 rounded-2xl border border-slate-800 bg-slate-950/40 p-4">
+                <p className="text-slate-200 font-medium">Cliente</p>
+                <p className="text-[11px] text-slate-400 mb-3">
+                  Lembretes automáticos (canal será definido depois).
+                </p>
+
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                  <ToggleRow
+                    label="Ativar lembretes ao cliente"
+                    caption={
+                      (isEditingNotifs ? draftNotifs : settings)
+                        .clientRemindersEnabled
+                        ? "Ativo"
+                        : "Desativado"
+                    }
+                    checked={
+                      (isEditingNotifs ? draftNotifs : settings)
+                        .clientRemindersEnabled
+                    }
+                    disabled={!isEditingNotifs}
+                    onChange={(v) =>
+                      setDraftNotifs((p) =>
+                        p ? { ...p, clientRemindersEnabled: v } : p
+                      )
+                    }
+                  />
+
+                  <div className="rounded-xl border border-slate-800 bg-slate-950/50 p-3 flex items-center justify-between gap-3">
+                    <div>
+                      <p className="text-[10px] text-slate-400">
+                        Enviar lembrete (horas antes)
+                      </p>
+                      <p className="text-[11px] text-slate-300">
+                        Define quantas horas antes do agendamento.
+                      </p>
+                    </div>
+
+                    <input
+                      type="number"
+                      min={1}
+                      max={168}
+                      className="w-20 rounded-lg border border-slate-800 bg-slate-900/70 px-2 py-1 text-sm text-slate-100 outline-none disabled:opacity-60"
+                      disabled={!isEditingNotifs}
+                      value={
+                        (isEditingNotifs ? draftNotifs : settings)
+                          .reminderHoursBefore
+                      }
+                      onChange={(e) =>
+                        setDraftNotifs((p) =>
+                          p
+                            ? {
+                                ...p,
+                                reminderHoursBefore: Number(e.target.value),
+                              }
+                            : p
+                        )
+                      }
+                    />
+                  </div>
+                </div>
+
+                <p className="mt-2 text-[10px] text-slate-500">
+                  Próximo passo: escolher canal (email/SMS/WhatsApp) e ligar o
+                  disparo real com jobs/cron.
+                </p>
+              </div>
+            </div>
+          )}
+        </section>
+      )}
+
+      {/* ====== BLOCO: Segurança (só abre se clicar) ====== */}
+      {activeTab === "security" && (
+        <section className="mb-4 rounded-2xl border border-slate-800 bg-slate-900/60 p-4 text-xs">
+          <div className="flex items-center justify-between">
+            <div>
+              <p className="text-slate-200 font-medium">Segurança</p>
+              <p className="text-[11px] text-slate-400">
+                Ajustes de sessão e proteção de ações sensíveis (MVP).
+              </p>
+            </div>
+
+            {!isEditingSecurity ? (
+              <button
+                onClick={startEditSecurity}
+                className="px-3 py-1 rounded-lg border border-slate-800 bg-slate-900/80 text-[11px]"
+                disabled={!settings || isLoading}
+              >
+                Editar
+              </button>
+            ) : (
+              <div className="flex gap-2">
+                <button
+                  onClick={cancelEditSecurity}
+                  className="px-3 py-1 rounded-lg border border-slate-800 bg-slate-900/80 text-[11px]"
+                  disabled={isSavingSecurity}
+                >
+                  Cancelar
+                </button>
+                <button
+                  onClick={saveSecurity}
+                  className="px-3 py-1 rounded-lg border border-emerald-600 bg-emerald-600/20 text-emerald-200 text-[11px]"
+                  disabled={isSavingSecurity}
+                >
+                  {isSavingSecurity ? "Salvando..." : "Salvar"}
+                </button>
+              </div>
+            )}
+          </div>
+
+          {securityError && (
+            <div className="mt-3 rounded-xl border border-rose-900/40 bg-rose-950/30 px-3 py-2 text-[11px] text-rose-200">
+              {securityError}
+            </div>
+          )}
+
+          {isLoading ? (
+            <p className="mt-3 text-[11px] text-slate-400">Carregando...</p>
+          ) : !settings ? (
+            <p className="mt-3 text-[11px] text-slate-400">
+              Sem dados de segurança.
+            </p>
+          ) : !isEditingSecurity ? (
+            <div className="mt-3 grid grid-cols-1 md:grid-cols-3 gap-3">
+              <PrefItem
+                label="Timeout ocioso (min)"
+                value={`${settings.sessionIdleTimeoutMin} min`}
+              />
+              <PrefItem
+                label="Reautenticar ações sensíveis"
+                value={
+                  settings.requireReauthForSensitiveActions
+                    ? "Ativo"
+                    : "Desativado"
+                }
+              />
+              <PrefItem
+                label="2FA"
+                value={settings.twoFactorEnabled ? "Ativo" : "Desativado"}
+              />
+            </div>
+          ) : (
+            <div className="mt-3 grid grid-cols-1 md:grid-cols-3 gap-3">
+              <FieldNumber
+                label="Timeout ocioso (min)"
+                value={draftSecurity?.sessionIdleTimeoutMin ?? 0}
+                onChange={(n) =>
+                  setDraftSecurity((p) =>
+                    p ? { ...p, sessionIdleTimeoutMin: n } : p
+                  )
+                }
+              />
+              <FieldToggle
+                label="Reautenticar ações sensíveis"
+                checked={!!draftSecurity?.requireReauthForSensitiveActions}
+                onChange={(checked) =>
+                  setDraftSecurity((p) =>
+                    p ? { ...p, requireReauthForSensitiveActions: checked } : p
+                  )
+                }
+              />
+              <FieldToggle
+                label="2FA"
+                checked={!!draftSecurity?.twoFactorEnabled}
+                onChange={(checked) =>
+                  setDraftSecurity((p) =>
+                    p ? { ...p, twoFactorEnabled: checked } : p
+                  )
+                }
+              />
+            </div>
+          )}
+        </section>
+      )}
+
+      {/* Grid principal (sempre visível) */}
       <section className="grid grid-cols-1 xl:grid-cols-3 gap-4">
-        {/* Dados da marca / tenant */}
+        {/* Dados da marca */}
         <div className="xl:col-span-1 rounded-2xl border border-slate-800 bg-slate-900/60 p-4 text-xs">
           <div className="flex items-center justify-between mb-3">
             <p className="text-slate-400">Dados da marca</p>
@@ -146,52 +895,53 @@ export default function OwnerConfiguracoesPage() {
           <div className="space-y-3">
             <div>
               <p className="text-[11px] text-slate-400">Nome legal</p>
-              <p className="text-sm font-semibold">{tenantSettings.name}</p>
+              <p className="text-sm font-semibold">{tenant.legalName}</p>
             </div>
+
             <div>
               <p className="text-[11px] text-slate-400">Nome da marca</p>
-              <p className="text-sm font-semibold">
-                {tenantSettings.brandName}
-              </p>
+              <p className="text-sm font-semibold">{tenant.brandName}</p>
             </div>
+
             <div className="grid grid-cols-2 gap-3">
               <div>
                 <p className="text-[11px] text-slate-400">Moeda padrão</p>
                 <p className="text-sm font-semibold">
-                  {tenantSettings.defaultCurrency}
+                  {tenant.defaultCurrency}
                 </p>
               </div>
               <div>
                 <p className="text-[11px] text-slate-400">País</p>
-                <p className="text-sm font-semibold">
-                  {tenantSettings.country}
-                </p>
+                <p className="text-sm font-semibold">{tenant.country}</p>
               </div>
             </div>
+
             <div className="grid grid-cols-2 gap-3">
               <div>
                 <p className="text-[11px] text-slate-400">Timezone</p>
-                <p className="text-sm font-semibold">
-                  {tenantSettings.timezone}
-                </p>
+                <p className="text-sm font-semibold">{tenant.timezone}</p>
               </div>
               <div>
                 <p className="text-[11px] text-slate-400">Telefone</p>
-                <p className="text-sm font-semibold">
-                  {tenantSettings.contactPhone}
-                </p>
+                <p className="text-sm font-semibold">{tenant.contactPhone}</p>
               </div>
             </div>
+
             <div>
               <p className="text-[11px] text-slate-400">Email de contacto</p>
-              <p className="text-sm font-semibold">
-                {tenantSettings.contactEmail}
+              <p className="text-sm font-semibold">{tenant.contactEmail}</p>
+            </div>
+
+            <div>
+              <p className="text-[11px] text-slate-400">Tenant ID</p>
+              <p className="text-[11px] text-slate-300 font-mono">
+                {tenant.tenantId ?? "—"}
               </p>
             </div>
+
             <p className="mt-2 text-[10px] text-slate-500">
-              Depois estes dados vêm diretamente do{" "}
-              <span className="font-mono text-[10px]">Tenant</span> no backend,
-              com edição segura aqui.
+              Nesta fase, “Nome legal” e “Nome da marca” ainda não vêm do
+              backend (modelo Tenant ainda não expõe esses campos).
             </p>
           </div>
         </div>
@@ -205,49 +955,63 @@ export default function OwnerConfiguracoesPage() {
             </button>
           </div>
 
-          <div className="space-y-2">
-            {locations.map((loc) => (
-              <div
-                key={loc.id}
-                className="rounded-xl border border-slate-800 bg-slate-950/60 px-3 py-2 flex items-center justify-between gap-3"
-              >
-                <div>
-                  <p className="text-[11px] font-medium">{loc.name}</p>
-                  <p className="text-[10px] text-slate-400">
-                    {loc.addressLine} · {loc.city}
-                  </p>
-                  <p className="text-[10px] text-slate-500 mt-1">
-                    Código: {loc.shortCode} · Horário: {loc.opensAt}–
-                    {loc.closesAt}
-                  </p>
+          {isLoading ? (
+            <p className="text-[11px] text-slate-400">Carregando unidades...</p>
+          ) : (
+            <div className="space-y-2">
+              {locations.map((loc) => (
+                <div
+                  key={loc.id}
+                  className="rounded-xl border border-slate-800 bg-slate-950/60 px-3 py-2 flex items-center justify-between gap-3"
+                >
+                  <div>
+                    <p className="text-[11px] font-medium">{loc.name}</p>
+                    <p className="text-[10px] text-slate-400">
+                      {loc.address ?? "—"}
+                    </p>
+                    <p className="text-[10px] text-slate-500 mt-1">
+                      Código: {loc.slug ?? "—"} · Horário:{" "}
+                      {loc.businessHoursTemplate ? "configurado" : "—"}
+                    </p>
+                  </div>
+
+                  <div className="text-right">
+                    <span
+                      className={[
+                        "inline-block px-2 py-[1px] rounded-full text-[9px]",
+                        loc.active
+                          ? "bg-emerald-500/20 text-emerald-100"
+                          : "bg-slate-700 text-slate-100",
+                      ].join(" ")}
+                    >
+                      {loc.active ? "Ativa" : "Inativa"}
+                    </span>
+
+                    <Link
+                      href={`/owner/unidades?locationId=${loc.id}`}
+                      className="mt-2 inline-flex px-2 py-[2px] rounded text-[10px] border border-slate-700 text-slate-200 hover:border-emerald-500"
+                    >
+                      Gerir
+                    </Link>
+                  </div>
                 </div>
-                <div className="text-right">
-                  <span
-                    className={[
-                      "inline-block px-2 py-[1px] rounded-full text-[9px]",
-                      loc.isActive
-                        ? "bg-emerald-500/20 text-emerald-100"
-                        : "bg-slate-700 text-slate-100",
-                    ].join(" ")}
-                  >
-                    {loc.isActive ? "Ativa" : "Inativa"}
-                  </span>
-                  <button className="mt-2 px-2 py-[2px] rounded text-[10px] border border-slate-700 text-slate-200 hover:border-emerald-500">
-                    Gerir
-                  </button>
-                </div>
-              </div>
-            ))}
-          </div>
+              ))}
+
+              {!locations.length && (
+                <p className="text-[11px] text-slate-400">
+                  Nenhuma unidade encontrada.
+                </p>
+              )}
+            </div>
+          )}
 
           <p className="mt-2 text-[10px] text-slate-500">
             Estas unidades mapeiam diretamente as{" "}
-            <span className="font-mono text-[10px]">Locations</span> do backend,
-            usadas em agenda, profissionais e financeiro.
+            <span className="font-mono text-[10px]">Locations</span> do backend.
           </p>
         </div>
 
-        {/* Utilizadores & roles */}
+        {/* Utilizadores */}
         <div className="xl:col-span-1 rounded-2xl border border-slate-800 bg-slate-900/60 p-4 text-xs">
           <div className="flex items-center justify-between mb-3">
             <p className="text-slate-400">Utilizadores & permissões</p>
@@ -256,55 +1020,113 @@ export default function OwnerConfiguracoesPage() {
             </button>
           </div>
 
-          <div className="overflow-auto max-h-80 pr-1">
-            <table className="w-full border-collapse text-[11px]">
-              <thead>
-                <tr className="text-slate-400">
-                  <th className="text-left py-2 pr-3 border-b border-slate-800">
-                    Nome
-                  </th>
-                  <th className="text-left py-2 pr-3 border-b border-slate-800">
-                    Email
-                  </th>
-                  <th className="text-left py-2 pr-3 border-b border-slate-800">
-                    Role
-                  </th>
-                  <th className="text-left py-2 pr-3 border-b border-slate-800">
-                    Unidade
-                  </th>
-                  <th className="text-left py-2 pl-3 border-b border-slate-800">
-                    Estado
-                  </th>
-                </tr>
-              </thead>
-              <tbody>
-                {users.map((user) => (
-                  <tr key={user.id} className="hover:bg-slate-950/50">
-                    <td className="py-2 pr-3 text-slate-200">{user.name}</td>
-                    <td className="py-2 pr-3 text-slate-200">{user.email}</td>
-                    <td className="py-2 pr-3">
-                      <RoleBadge role={user.role} />
-                    </td>
-                    <td className="py-2 pr-3 text-slate-300">
-                      {user.locationName ?? "—"}
-                    </td>
-                    <td className="py-2 pl-3">
-                      <UserStatusBadge isActive={user.isActive} />
-                    </td>
+          {isLoading ? (
+            <p className="text-[11px] text-slate-400">
+              Carregando utilizadores...
+            </p>
+          ) : (
+            <div className="overflow-auto max-h-80 pr-1">
+              <table className="w-full border-collapse text-[11px]">
+                <thead>
+                  <tr className="text-slate-400">
+                    <th className="text-left py-2 pr-3 border-b border-slate-800">
+                      Nome
+                    </th>
+                    <th className="text-left py-2 pr-3 border-b border-slate-800">
+                      Email
+                    </th>
+                    <th className="text-left py-2 pr-3 border-b border-slate-800">
+                      Role
+                    </th>
+                    <th className="text-left py-2 pr-3 border-b border-slate-800">
+                      Unidade
+                    </th>
+                    <th className="text-left py-2 pl-3 border-b border-slate-800">
+                      Estado
+                    </th>
                   </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
+                </thead>
+
+                <tbody>
+                  {users.map((user) => {
+                    const role = normalizeRole(user.role);
+                    const locationName =
+                      user.locationId && locationNameById.has(user.locationId)
+                        ? locationNameById.get(user.locationId)
+                        : null;
+
+                    return (
+                      <tr key={user.id} className="hover:bg-slate-950/50">
+                        <td className="py-2 pr-3 text-slate-200">
+                          {user.name}
+                        </td>
+                        <td className="py-2 pr-3 text-slate-200">
+                          {user.email}
+                        </td>
+                        <td className="py-2 pr-3">
+                          <RoleBadge role={role} />
+                        </td>
+                        <td className="py-2 pr-3 text-slate-300">
+                          {locationName ?? "—"}
+                        </td>
+                        <td className="py-2 pl-3">
+                          <UserStatusBadge isActive={user.active} />
+                        </td>
+                      </tr>
+                    );
+                  })}
+
+                  {!users.length && (
+                    <tr>
+                      <td
+                        colSpan={5}
+                        className="py-3 text-[11px] text-slate-400"
+                      >
+                        Nenhum utilizador encontrado.
+                      </td>
+                    </tr>
+                  )}
+                </tbody>
+              </table>
+            </div>
+          )}
 
           <p className="mt-2 text-[10px] text-slate-500">
             Estes utilizadores correspondem à tabela{" "}
-            <span className="font-mono text-[10px]">User</span> com roles como
-            owner, admin, attendant e provider.
+            <span className="font-mono text-[10px]">User</span>. A coluna
+            “Unidade” só aparecerá quando o backend expor{" "}
+            <span className="font-mono">locationId</span> no endpoint de
+            listagem.
           </p>
         </div>
       </section>
     </>
+  );
+}
+
+// ---------------- UI Components ----------------
+
+function TabButton({
+  active,
+  onClick,
+  children,
+}: {
+  active: boolean;
+  onClick: () => void;
+  children: React.ReactNode;
+}) {
+  return (
+    <button
+      onClick={onClick}
+      className={[
+        "px-3 py-1 rounded-lg border text-xs",
+        active
+          ? "border-emerald-600 bg-emerald-600/20 text-emerald-200"
+          : "border-slate-800 bg-slate-900/80 text-slate-200",
+      ].join(" ")}
+    >
+      {children}
+    </button>
   );
 }
 
@@ -334,18 +1156,125 @@ function RoleBadge({ role }: { role: UserRole }) {
         </span>
       );
     default:
-      return null;
+      return <span className={`${base} bg-slate-700 text-slate-100`}>—</span>;
   }
 }
 
 function UserStatusBadge({ isActive }: { isActive: boolean }) {
   const base = "inline-block px-2 py-[1px] rounded-full text-[9px]";
-  if (isActive) {
-    return (
-      <span className={`${base} bg-emerald-500/20 text-emerald-100`}>
-        Ativo
-      </span>
-    );
-  }
-  return <span className={`${base} bg-slate-700 text-slate-100`}>Inativo</span>;
+  return isActive ? (
+    <span className={`${base} bg-emerald-500/20 text-emerald-100`}>Ativo</span>
+  ) : (
+    <span className={`${base} bg-slate-700 text-slate-100`}>Inativo</span>
+  );
+}
+
+function PrefItem({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="rounded-xl border border-slate-800 bg-slate-950/50 p-3">
+      <p className="text-[10px] text-slate-400">{label}</p>
+      <p className="mt-1 text-sm font-semibold text-slate-100">{value}</p>
+    </div>
+  );
+}
+
+function ToggleRow({
+  label,
+  caption,
+  checked,
+  disabled,
+  onChange,
+}: {
+  label: string;
+  caption: string;
+  checked: boolean;
+  disabled: boolean;
+  onChange: (checked: boolean) => void;
+}) {
+  return (
+    <div className="rounded-xl border border-slate-800 bg-slate-950/50 px-3 py-2 flex items-center justify-between gap-3">
+      <div>
+        <p className="text-[11px] font-medium text-slate-200">{label}</p>
+        <p className="text-[10px] text-slate-400">{caption}</p>
+      </div>
+
+      <input
+        type="checkbox"
+        className="h-4 w-4 accent-emerald-500 disabled:opacity-60"
+        disabled={disabled}
+        checked={checked}
+        onChange={(e) => onChange(e.target.checked)}
+      />
+    </div>
+  );
+}
+
+function FieldText({
+  label,
+  value,
+  onChange,
+}: {
+  label: string;
+  value: string;
+  onChange: (v: string) => void;
+}) {
+  return (
+    <div className="rounded-xl border border-slate-800 bg-slate-950/50 p-3">
+      <p className="text-[10px] text-slate-400">{label}</p>
+      <input
+        className="mt-2 w-full rounded-lg border border-slate-800 bg-slate-900/70 px-2 py-1 text-sm text-slate-100 outline-none"
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+      />
+    </div>
+  );
+}
+
+function FieldNumber({
+  label,
+  value,
+  onChange,
+}: {
+  label: string;
+  value: number;
+  onChange: (n: number) => void;
+}) {
+  return (
+    <div className="rounded-xl border border-slate-800 bg-slate-950/50 p-3">
+      <p className="text-[10px] text-slate-400">{label}</p>
+      <input
+        type="number"
+        className="mt-2 w-full rounded-lg border border-slate-800 bg-slate-900/70 px-2 py-1 text-sm text-slate-100 outline-none"
+        value={value}
+        onChange={(e) => onChange(Number(e.target.value))}
+      />
+    </div>
+  );
+}
+
+function FieldToggle({
+  label,
+  checked,
+  onChange,
+}: {
+  label: string;
+  checked: boolean;
+  onChange: (checked: boolean) => void;
+}) {
+  return (
+    <div className="rounded-xl border border-slate-800 bg-slate-950/50 p-3 flex items-center justify-between">
+      <div>
+        <p className="text-[10px] text-slate-400">{label}</p>
+        <p className="mt-1 text-sm font-semibold text-slate-100">
+          {checked ? "Ativo" : "Desativado"}
+        </p>
+      </div>
+      <input
+        type="checkbox"
+        className="h-4 w-4 accent-emerald-500"
+        checked={checked}
+        onChange={(e) => onChange(e.target.checked)}
+      />
+    </div>
+  );
 }

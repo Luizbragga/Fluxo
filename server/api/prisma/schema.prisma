@@ -50,11 +50,22 @@ enum CustomerPlanPaymentStatus {
   late
 }
 
+enum PaymentMethod {
+  cash
+  mbway
+  card
+  transfer
+  other
+}
+
 model Tenant {
   id        String   @id @default(cuid())
   name      String
   slug      String   @unique
   nif       String?
+  
+  settings TenantSettings?
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
@@ -69,6 +80,53 @@ model Tenant {
   customerPlans        CustomerPlan[]
   customerPlanPayments CustomerPlanPayment[]
   customers            Customer[]
+}
+
+model TenantSettings {
+  id        String   @id @default(cuid())
+  tenantId  String   @unique
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // -------- Preferências gerais (MVP) --------
+
+  timezone        String  @default("Europe/Lisbon")
+  defaultCurrency String  @default("EUR") // por enquanto EUR fixo, mas já deixa campo
+  dateFormat      String  @default("dd/MM/yyyy")
+  use24hClock     Boolean @default(true)
+  
+  // Notificações
+  emailNewBooking              Boolean @default(true)
+  emailCancellation            Boolean @default(true)
+  emailReschedule              Boolean @default(true)
+
+  notifyProvidersNewBooking    Boolean @default(true)
+  notifyProvidersChanges       Boolean @default(true)
+
+  clientRemindersEnabled       Boolean @default(false)
+  reminderHoursBefore          Int     @default(24)
+  
+  // Segurança (MVP)
+  sessionIdleTimeoutMin          Int     @default(240) // 4h (depois tu escolhe no front)
+  requireReauthForSensitiveActions Boolean @default(true)
+  twoFactorEnabled               Boolean @default(false)
+
+  // Agenda
+  defaultAppointmentDurationMin Int  @default(30)
+  bufferBetweenAppointmentsMin  Int  @default(0)
+  allowOverbooking              Boolean @default(false)
+
+  // Cancelamento / no-show
+  minCancelNoticeHours Int  @default(0)     // 0 = sem regra
+  autoNoShowEnabled    Boolean @default(false)
+  noShowAfterMin       Int?                // ex.: 15
+
+  // Financeiro
+  defaultPaymentMethod PaymentMethod @default(cash)
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId])
 }
 
 model Location {

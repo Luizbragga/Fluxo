@@ -19,6 +19,8 @@ export class UsersService {
         email: true,
         createdAt: true,
         active: true,
+        locationId: true,
+        phone: true,
       },
     });
   }
@@ -33,6 +35,7 @@ export class UsersService {
         role: true,
         active: true,
         createdAt: true,
+        locationId: true,
       },
       orderBy: { createdAt: 'desc' },
     });
@@ -61,6 +64,7 @@ export class UsersService {
         role: true,
         active: true,
         createdAt: true,
+        locationId: true,
       },
     });
   }
@@ -90,6 +94,7 @@ export class UsersService {
         role: true,
         active: true,
         createdAt: true,
+        locationId: true,
       },
     });
   }

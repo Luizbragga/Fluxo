@@ -2,7 +2,7 @@
 
 export type ApiClientOptions = {
   method?: "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
-  body?: unknown;
+  body?: unknown; // pode ser objeto OU string (vamos tratar)
   // no futuro a gente pode adicionar query params tipados aqui também
 };
 
@@ -29,14 +29,21 @@ export async function apiClient<T>(
     headers.Authorization = `Bearer ${token}`;
   }
 
+  // ✅ aqui é o ajuste: se o body já for string, não stringify de novo
+  const body =
+    options.body === undefined
+      ? undefined
+      : typeof options.body === "string"
+      ? options.body
+      : JSON.stringify(options.body);
+
   const res = await fetch(url, {
     method: options.method ?? "GET",
     headers,
-    body: options.body ? JSON.stringify(options.body) : undefined,
+    body,
   });
 
   if (!res.ok) {
-    // aqui depois podemos tratar 401, 403, etc.
     const text = await res.text().catch(() => "");
     throw new Error(
       `API error ${res.status} ${res.statusText}${

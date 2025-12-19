@@ -1953,7 +1953,7 @@ export default function OwnerRelatoriosPage() {
                                       onClick={() => setUrlServiceId("")}
                                       className="rounded-lg border border-slate-700 bg-slate-950/40 px-3 py-1 text-[11px] text-slate-200 hover:border-emerald-500/60 hover:text-emerald-200"
                                     >
-                                      Limpar
+                                      Voltar
                                     </button>
                                   </div>
 
