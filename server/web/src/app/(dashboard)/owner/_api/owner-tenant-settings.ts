@@ -17,6 +17,7 @@ export type TenantSettings = {
   defaultAppointmentDurationMin: number;
   bufferBetweenAppointmentsMin: number;
   allowOverbooking: boolean;
+  bookingIntervalMin: number;
   minCancelNoticeHours: number;
 
   // Notificações
@@ -51,6 +52,7 @@ export type UpdateTenantSettingsInput = Partial<
     | "defaultAppointmentDurationMin"
     | "bufferBetweenAppointmentsMin"
     | "allowOverbooking"
+    | "bookingIntervalMin"
     | "minCancelNoticeHours"
     | "emailNewBooking"
     | "emailCancellation"

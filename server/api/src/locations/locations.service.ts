@@ -53,7 +53,12 @@ export class LocationsService {
         businessHoursTemplate: dto.businessHoursTemplate ?? undefined,
         active: dto.active ?? true,
         managerProviderId: dto.managerProviderId ?? undefined,
+        bookingIntervalMin:
+          typeof dto.bookingIntervalMin !== 'undefined'
+            ? dto.bookingIntervalMin
+            : undefined,
       },
+
       include: {
         managerProvider: {
           select: { id: true, name: true },
@@ -153,7 +158,14 @@ export class LocationsService {
           typeof dto.managerProviderId !== 'undefined'
             ? dto.managerProviderId
             : undefined,
+
+        // ✅ override por unidade (number) ou remover override (null)
+        bookingIntervalMin:
+          typeof dto.bookingIntervalMin !== 'undefined'
+            ? dto.bookingIntervalMin
+            : undefined,
       },
+
       include: {
         managerProvider: {
           select: { id: true, name: true },

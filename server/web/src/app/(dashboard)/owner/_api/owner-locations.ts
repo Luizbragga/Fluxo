@@ -10,7 +10,7 @@ export type OwnerLocation = {
   address?: string | null;
   active: boolean;
   businessHoursTemplate?: Record<string, [string, string][]> | null;
-
+  bookingIntervalMin?: number | null;
   managerProviderId?: string | null;
   managerProviderName?: string | null;
 };
@@ -35,7 +35,7 @@ type BackendLocation = {
   address?: string | null;
   active?: boolean;
   businessHoursTemplate?: any;
-
+  bookingIntervalMin?: number | null;
   managerProviderId?: string | null;
   managerProviderName?: string | null;
   managerProvider?: { id: string; name: string } | null;
@@ -64,6 +64,7 @@ function normalizeLocation(loc: BackendLocation): OwnerLocation {
     managerProviderId: loc.managerProviderId ?? loc.managerProvider?.id ?? null,
     managerProviderName:
       loc.managerProviderName ?? loc.managerProvider?.name ?? null,
+    bookingIntervalMin: loc.bookingIntervalMin ?? null,
   };
 }
 
@@ -223,6 +224,20 @@ export async function updateOwnerLocationBusinessHours(params: {
 
   return normalizeLocation(updated);
 }
+export async function updateOwnerLocationBookingInterval(params: {
+  id: string;
+  bookingIntervalMin: number | null;
+}): Promise<OwnerLocation> {
+  const updated = await apiClient<BackendLocation>(`/locations/${params.id}`, {
+    method: "PATCH",
+    body: {
+      bookingIntervalMin: params.bookingIntervalMin,
+    },
+  });
+
+  return normalizeLocation(updated);
+}
+
 /**
  * Busca uma unidade (location) específica por ID.
  */

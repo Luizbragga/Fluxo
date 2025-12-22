@@ -105,7 +105,7 @@ model TenantSettings {
 
   clientRemindersEnabled       Boolean @default(false)
   reminderHoursBefore          Int     @default(24)
-  
+
   // Segurança (MVP)
   sessionIdleTimeoutMin          Int     @default(240) // 4h (depois tu escolhe no front)
   requireReauthForSensitiveActions Boolean @default(true)
@@ -115,6 +115,7 @@ model TenantSettings {
   defaultAppointmentDurationMin Int  @default(30)
   bufferBetweenAppointmentsMin  Int  @default(0)
   allowOverbooking              Boolean @default(false)
+  bookingIntervalMin Int @default(15)
 
   // Cancelamento / no-show
   minCancelNoticeHours Int  @default(0)     // 0 = sem regra
@@ -138,7 +139,7 @@ model Location {
   active    Boolean  @default(true)
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
-
+ bookingIntervalMin Int?
   tenant        Tenant         @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   providers     Provider[]
   appointments  Appointment[]

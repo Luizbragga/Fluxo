@@ -20,6 +20,7 @@ import {
   fetchOwnerLocations,
   type OwnerLocation,
 } from "../_api/owner-locations";
+import { fetchOwnerTenantSettings } from "../_api/owner-tenant-settings";
 
 type PendingAppointmentSlot = {
   time: string;
@@ -205,6 +206,53 @@ export default function OwnerAgendaPage() {
   );
   const [locations, setLocations] = useState<OwnerLocation[]>([]);
   const [viewMode, setViewMode] = useState<"daily" | "weekly">("daily");
+  const [tenantSettings, setTenantSettings] = useState<{
+    bookingIntervalMin?: number;
+  } | null>(null);
+
+  useEffect(() => {
+    let alive = true;
+
+    async function loadTenantSettings() {
+      if (authLoading) return;
+      if (!user) return;
+
+      try {
+        const s = await fetchOwnerTenantSettings();
+        if (!alive) return;
+        setTenantSettings(s);
+      } catch (err) {
+        console.error("Erro ao carregar tenant settings:", err);
+        if (!alive) return;
+        setTenantSettings(null);
+      }
+    }
+
+    loadTenantSettings();
+
+    return () => {
+      alive = false;
+    };
+  }, [authLoading, user]);
+  const selectedLocation = useMemo(() => {
+    if (selectedLocationId === "all") return null;
+    return locations.find((l) => l.id === selectedLocationId) ?? null;
+  }, [locations, selectedLocationId]);
+
+  const agendaStepMin = useMemo(() => {
+    const raw =
+      selectedLocation?.bookingIntervalMin ??
+      tenantSettings?.bookingIntervalMin;
+
+    const allowed = [5, 10, 15, 20, 30, 45, 60] as const;
+
+    if (!raw) return 30;
+    return (allowed as readonly number[]).includes(raw) ? raw : 30;
+  }, [
+    selectedLocation?.bookingIntervalMin,
+    tenantSettings?.bookingIntervalMin,
+  ]);
+
   const [weekDays, setWeekDays] = useState<WeekDayData[]>([]);
   const [loadingWeek, setLoadingWeek] = useState(false);
   const [weekError, setWeekError] = useState<string | null>(null);
@@ -215,10 +263,11 @@ export default function OwnerAgendaPage() {
   const [restoredPlanVisits, setRestoredPlanVisits] = useState<string[]>([]);
   const [selectedAppointment, setSelectedAppointment] =
     useState<AgendaAppointment | null>(null);
-  const selectedLocation = useMemo(() => {
-    if (selectedLocationId === "all") return null;
-    return locations.find((l) => l.id === selectedLocationId) ?? null;
-  }, [locations, selectedLocationId]);
+
+  useEffect(() => {
+    if (!selectedLocation) return;
+    console.log("selectedLocation:", selectedLocation);
+  }, [selectedLocation]);
 
   const dayIntervals = useMemo(() => {
     if (!selectedLocation) return null;
@@ -228,21 +277,21 @@ export default function OwnerAgendaPage() {
   const dayTimeSlots = useMemo(() => {
     // se estiver em "todas", mantém o comportamento atual (por enquanto)
     if (!dayIntervals) return DEFAULT_TIME_SLOTS;
-    return buildSlotsFromIntervals(dayIntervals, 30);
-  }, [dayIntervals]);
+    return buildSlotsFromIntervals(dayIntervals, agendaStepMin);
+  }, [dayIntervals, agendaStepMin]);
 
   // para manter tua UI de “manhã/tarde”, usamos até 2 intervalos quando existir
   const morningSlots = useMemo(() => {
     if (!dayIntervals) return DEFAULT_TIME_SLOTS.filter((t) => t < "14:00");
     const first = dayIntervals[0] ? [dayIntervals[0]] : [];
-    return buildSlotsFromIntervals(first, 30);
-  }, [dayIntervals]);
+    return buildSlotsFromIntervals(first, agendaStepMin);
+  }, [dayIntervals, agendaStepMin]);
 
   const afternoonSlots = useMemo(() => {
     if (!dayIntervals) return DEFAULT_TIME_SLOTS.filter((t) => t >= "14:00");
     const second = dayIntervals[1] ? [dayIntervals[1]] : [];
-    return buildSlotsFromIntervals(second, 30);
-  }, [dayIntervals]);
+    return buildSlotsFromIntervals(second, agendaStepMin);
+  }, [dayIntervals, agendaStepMin]);
 
   // Slot clicado para criar agendamento
   const [pendingSlot, setPendingSlot] = useState<PendingAppointmentSlot | null>(
@@ -287,6 +336,7 @@ export default function OwnerAgendaPage() {
   const [selectedServiceId, setSelectedServiceId] = useState<string>("");
   const [modalProviderId, setModalProviderId] = useState<string>("");
   const [didApplyLocationFromUrl, setDidApplyLocationFromUrl] = useState(false);
+
   // RESUMO DO DIA (contagens simples)
   const agendaStats = useMemo(() => {
     const total = appointments.length;
@@ -995,7 +1045,13 @@ export default function OwnerAgendaPage() {
     for (let i = 0; i < maxDaysToSearch; i++) {
       const currentStr = formatDateYYYYMMDD(current);
       const data = await fetchOwnerAgendaDay(currentStr);
-
+      const stepMinForSearch =
+        locationFilter === "all"
+          ? tenantSettings?.bookingIntervalMin ?? 30
+          : locations.find((l) => l.id === locationFilter)
+              ?.bookingIntervalMin ??
+            tenantSettings?.bookingIntervalMin ??
+            30;
       const prosByLocation =
         locationFilter === "all"
           ? data.professionals
@@ -1025,16 +1081,18 @@ export default function OwnerAgendaPage() {
               const loc = locations.find((l) => l.id === locationFilter);
               if (!loc) return DEFAULT_TIME_SLOTS;
 
-              const intervals = getLocationDayIntervals(loc as any, current);
-              const computed = buildSlotsFromIntervals(intervals, 30);
+              const step =
+                loc.bookingIntervalMin ??
+                tenantSettings?.bookingIntervalMin ??
+                30;
 
-              // se unidade fechada, nenhum slot
-              return computed;
+              const intervals = getLocationDayIntervals(loc as any, current);
+              return buildSlotsFromIntervals(intervals, step);
             })();
 
       outer: for (const slot of slotsForDay) {
         const slotStartMinutes = timeStrToMinutes(slot);
-        const slotEndMinutes = slotStartMinutes + 30;
+        const slotEndMinutes = slotStartMinutes + stepMinForSearch;
 
         // não considerar slots já passados
         if (isDayPast || (isDayToday && slotEndMinutes <= nowMinutesToday)) {
@@ -1051,8 +1109,8 @@ export default function OwnerAgendaPage() {
               const durationMin = ((a as any).serviceDurationMin ??
                 (a as any).durationMin ??
                 30) as number;
-              const slotsNeeded = Math.ceil(durationMin / 30);
-              const apptEndMin = startMin + slotsNeeded * 30;
+              const slotsNeeded = Math.ceil(durationMin / stepMinForSearch);
+              const apptEndMin = startMin + slotsNeeded * stepMinForSearch;
 
               return (
                 slotStartMinutes >= startMin && slotStartMinutes < apptEndMin
@@ -1456,6 +1514,7 @@ export default function OwnerAgendaPage() {
                     <RowTimeSlot
                       key={slot}
                       slot={slot}
+                      stepMin={agendaStepMin}
                       professionals={visibleProfessionals}
                       appointments={appointments}
                       onCreateAppointment={handleCreateAppointmentClick}
@@ -1503,6 +1562,7 @@ export default function OwnerAgendaPage() {
                     <RowTimeSlot
                       key={slot}
                       slot={slot}
+                      stepMin={agendaStepMin}
                       professionals={visibleProfessionals}
                       appointments={appointments}
                       onCreateAppointment={handleCreateAppointmentClick}
@@ -1871,6 +1931,7 @@ export default function OwnerAgendaPage() {
 
 function RowTimeSlot({
   slot,
+  stepMin,
   professionals,
   appointments,
   onCreateAppointment,
@@ -1880,6 +1941,7 @@ function RowTimeSlot({
   nowMinutes,
 }: {
   slot: string;
+  stepMin: number;
   professionals: AgendaProfessional[];
   appointments: AgendaAppointment[];
   onCreateAppointment?: (params: {
@@ -1893,7 +1955,7 @@ function RowTimeSlot({
   nowMinutes: number;
 }) {
   const slotStartMinutes = timeStrToMinutes(slot);
-  const slotEndMinutes = slotStartMinutes + 30; // cada slot = 30min
+  const slotEndMinutes = slotStartMinutes + stepMin;
 
   const isPastSlot = isPastDay || (isToday && slotEndMinutes <= nowMinutes);
 
@@ -1916,8 +1978,8 @@ function RowTimeSlot({
               (a as any).durationMin ??
               30) as number;
 
-            const slotsNeeded = Math.ceil(durationMin / 30);
-            const apptEndMin = startMin + slotsNeeded * 30;
+            const slotsNeeded = Math.ceil(durationMin / stepMin);
+            const apptEndMin = startMin + slotsNeeded * stepMin;
 
             return (
               slotStartMinutes >= startMin && slotStartMinutes < apptEndMin

@@ -1,5 +1,12 @@
 import { ApiPropertyOptional } from '@nestjs/swagger';
-import { IsBoolean, IsOptional, IsString, MinLength } from 'class-validator';
+import {
+  IsBoolean,
+  IsInt,
+  IsOptional,
+  IsString,
+  Min,
+  MinLength,
+} from 'class-validator';
 
 export class CreateLocationDto {
   @IsString()
@@ -27,4 +34,12 @@ export class CreateLocationDto {
   @IsOptional()
   @IsString()
   managerProviderId?: string;
+  @ApiPropertyOptional({
+    description:
+      'Intervalo de agendamento em minutos (override por unidade). Se null, usa o tenant.',
+  })
+  @IsOptional()
+  @IsInt()
+  @Min(5)
+  bookingIntervalMin?: number | null;
 }

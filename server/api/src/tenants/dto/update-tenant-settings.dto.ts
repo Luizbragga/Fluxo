@@ -1,12 +1,15 @@
 import { ApiPropertyOptional } from '@nestjs/swagger';
 import {
   IsBoolean,
+  IsEnum,
   IsInt,
   IsOptional,
   IsString,
-  Max,
+  IsIn,
   Min,
+  Max,
 } from 'class-validator';
+import { PaymentMethod } from '@prisma/client';
 
 export class UpdateTenantSettingsDto {
   // ---------------- Preferências gerais ----------------
@@ -126,8 +129,15 @@ export class UpdateTenantSettingsDto {
   @Max(1440)
   noShowAfterMin?: number | null;
 
-  @ApiPropertyOptional()
+  @ApiPropertyOptional({ enum: PaymentMethod })
   @IsOptional()
-  @IsString()
-  defaultPaymentMethod?: string | null;
+  @IsEnum(PaymentMethod)
+  defaultPaymentMethod?: PaymentMethod | null;
+
+  // ---------------- Intervalo de agendamento (fixo) ----------------
+  @ApiPropertyOptional({ enum: [5, 10, 15, 20, 30, 45, 60] })
+  @IsOptional()
+  @IsInt()
+  @IsIn([5, 10, 15, 20, 30, 45, 60])
+  bookingIntervalMin?: number;
 }

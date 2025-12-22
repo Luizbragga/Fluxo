@@ -10,6 +10,7 @@ import {
   createOwnerLocation,
   updateOwnerLocationBusinessHours,
   updateOwnerLocationDetails,
+  updateOwnerLocationBookingInterval,
 } from "../_api/owner-locations";
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
@@ -70,6 +71,7 @@ export default function OwnerUnidadesPage() {
     { key: "sat", label: "Sábado" },
     { key: "sun", label: "Domingo" },
   ];
+  const BOOKING_INTERVAL_OPTIONS = [5, 10, 15, 20, 30, 45, 60] as const;
 
   function templateToForm(
     template?: Record<string, [string, string][]>
@@ -179,17 +181,21 @@ export default function OwnerUnidadesPage() {
 
   const [editName, setEditName] = useState("");
   const [editAddress, setEditAddress] = useState("");
+  const [editBookingIntervalMin, setEditBookingIntervalMin] =
+    useState<number>(30);
 
   function handleStartEditDetails(location: OwnerLocation) {
     setEditingDetailsLocationId(location.id);
     setEditName(location.name ?? "");
     setEditAddress(location.address ?? "");
+    setEditBookingIntervalMin(location.bookingIntervalMin ?? 30);
   }
 
   function handleCancelEditDetails() {
     setEditingDetailsLocationId(null);
     setEditName("");
     setEditAddress("");
+    setEditBookingIntervalMin(30);
   }
 
   async function handleSaveDetails(location: OwnerLocation) {
@@ -210,9 +216,15 @@ export default function OwnerUnidadesPage() {
         name,
         address: address ? address : null,
       });
+      const updatedInterval = await updateOwnerLocationBookingInterval({
+        id: location.id,
+        bookingIntervalMin: editBookingIntervalMin,
+      });
 
       setLocations((prev) =>
-        prev.map((loc) => (loc.id === updated.id ? updated : loc))
+        prev.map((loc) =>
+          loc.id === updatedInterval.id ? updatedInterval : loc
+        )
       );
 
       setEditingDetailsLocationId(null);
@@ -695,6 +707,22 @@ export default function OwnerUnidadesPage() {
                                 placeholder="Endereço (opcional)"
                                 disabled={isSaving}
                               />
+                              <select
+                                className="w-full rounded-full border border-slate-700 bg-slate-950 px-3 py-1 text-[11px] text-slate-100 outline-none focus:border-emerald-400"
+                                value={String(editBookingIntervalMin)}
+                                onChange={(e) =>
+                                  setEditBookingIntervalMin(
+                                    Number(e.target.value)
+                                  )
+                                }
+                                disabled={isSaving}
+                              >
+                                {BOOKING_INTERVAL_OPTIONS.map((v) => (
+                                  <option key={v} value={String(v)}>
+                                    Intervalo de agendamento: {v} min
+                                  </option>
+                                ))}
+                              </select>
                             </div>
 
                             <div className="flex gap-2">

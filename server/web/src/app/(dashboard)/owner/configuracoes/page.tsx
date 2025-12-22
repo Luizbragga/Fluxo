@@ -47,6 +47,7 @@ type TenantSettingsDTO = {
   defaultAppointmentDurationMin: number;
   bufferBetweenAppointmentsMin: number;
   allowOverbooking: boolean;
+  bookingIntervalMin: number; // 5, 10, 15, 20, 30, 45, 60
 
   // Cancelamento / no-show (extras)
   minCancelNoticeHours: number;
@@ -68,6 +69,7 @@ type TenantSettingsUI = {
 
 type UserRole = "owner" | "admin" | "attendant" | "provider" | "unknown";
 type SettingsTab = "prefs" | "notifications" | "security";
+const BOOKING_INTERVAL_OPTIONS = [5, 10, 15, 20, 30, 45, 60] as const;
 
 function normalizeRole(role: string | null | undefined): UserRole {
   const r = (role ?? "").toLowerCase().trim();
@@ -112,6 +114,7 @@ export default function OwnerConfiguracoesPage() {
     | "defaultAppointmentDurationMin"
     | "bufferBetweenAppointmentsMin"
     | "allowOverbooking"
+    | "bookingIntervalMin"
     | "minCancelNoticeHours"
   > | null>(null);
   const [prefsError, setPrefsError] = useState<string | null>(null);
@@ -224,6 +227,7 @@ export default function OwnerConfiguracoesPage() {
       defaultAppointmentDurationMin: settings.defaultAppointmentDurationMin,
       bufferBetweenAppointmentsMin: settings.bufferBetweenAppointmentsMin,
       allowOverbooking: settings.allowOverbooking,
+      bookingIntervalMin: settings.bookingIntervalMin,
       minCancelNoticeHours: settings.minCancelNoticeHours,
     });
     setIsEditingPrefs(true);
@@ -244,7 +248,7 @@ export default function OwnerConfiguracoesPage() {
 
       const updated = await apiClient<TenantSettingsDTO>("/tenants/settings", {
         method: "PATCH",
-        body: draftPrefs, // <-- NÃO stringify aqui (o apiClient já faz)
+        body: draftPrefs,
       });
 
       setSettings(updated);
@@ -462,6 +466,10 @@ export default function OwnerConfiguracoesPage() {
                 value={`${settings.bufferBetweenAppointmentsMin} min`}
               />
               <PrefItem
+                label="Step da agenda"
+                value={`${settings.bookingIntervalMin} min`}
+              />
+              <PrefItem
                 label="Overbooking"
                 value={settings.allowOverbooking ? "Permitido" : "Bloqueado"}
               />
@@ -519,6 +527,18 @@ export default function OwnerConfiguracoesPage() {
                   )
                 }
               />
+
+              <FieldSelect
+                label="Step da agenda (min)"
+                value={draftPrefs?.bookingIntervalMin ?? 15}
+                options={BOOKING_INTERVAL_OPTIONS as unknown as number[]}
+                onChange={(n) =>
+                  setDraftPrefs((p) =>
+                    p ? { ...p, bookingIntervalMin: n } : p
+                  )
+                }
+              />
+
               <FieldToggle
                 label="Overbooking"
                 checked={!!draftPrefs?.allowOverbooking}
@@ -528,6 +548,7 @@ export default function OwnerConfiguracoesPage() {
                   )
                 }
               />
+
               <FieldNumber
                 label="Aviso mínimo cancel. (h)"
                 value={draftPrefs?.minCancelNoticeHours ?? 0}
@@ -1248,6 +1269,35 @@ function FieldNumber({
         value={value}
         onChange={(e) => onChange(Number(e.target.value))}
       />
+    </div>
+  );
+}
+function FieldSelect({
+  label,
+  value,
+  options,
+  onChange,
+}: {
+  label: string;
+  value: number;
+  options: number[];
+  onChange: (n: number) => void;
+}) {
+  return (
+    <div className="rounded-xl border border-slate-800 bg-slate-950/50 p-3">
+      <p className="text-[10px] text-slate-400">{label}</p>
+
+      <select
+        className="mt-2 w-full rounded-lg border border-slate-800 bg-slate-900/70 px-2 py-1 text-sm text-slate-100 outline-none"
+        value={value}
+        onChange={(e) => onChange(Number(e.target.value))}
+      >
+        {options.map((opt) => (
+          <option key={opt} value={opt}>
+            {opt} min
+          </option>
+        ))}
+      </select>
     </div>
   );
 }
