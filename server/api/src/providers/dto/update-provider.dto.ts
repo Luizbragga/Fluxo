@@ -5,6 +5,7 @@ import {
   IsOptional,
   IsString,
   IsEmail,
+  MinLength,
 } from 'class-validator';
 import { Specialty } from '@prisma/client';
 
@@ -41,4 +42,9 @@ export class UpdateProviderDto {
   @IsOptional()
   @IsString()
   phone?: string;
+
+  @IsOptional()
+  @IsString()
+  @MinLength(6)
+  newPassword?: string;
 }

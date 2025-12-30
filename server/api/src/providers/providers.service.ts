@@ -379,14 +379,14 @@ export class ProvidersService {
 
     const updated = await this.prisma.$transaction(async (tx) => {
       // 1) atualiza o User vinculado (name/email/phone/locationId) se vierem
-      //    (mantém user e provider sincronizados)
       if (
         exists.userId &&
         (dto.name ||
           dto.email ||
           dto.phone ||
           dto.locationId ||
-          dto.active !== undefined)
+          dto.active !== undefined ||
+          dto.newPassword)
       ) {
         await tx.user.update({
           where: { id: exists.userId },
@@ -396,8 +396,18 @@ export class ProvidersService {
             phone: dto.phone ?? undefined,
             locationId: dto.locationId ?? undefined,
             active: dto.active ?? undefined,
+            passwordHash: dto.newPassword
+              ? await bcrypt.hash(dto.newPassword, 10)
+              : undefined,
           },
         });
+
+        // ✅ recomendado: invalida sessões antigas quando muda senha
+        if (dto.newPassword) {
+          await tx.refreshToken.deleteMany({
+            where: { userId: exists.userId },
+          });
+        }
       }
 
       // 2) atualiza o Provider

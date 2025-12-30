@@ -208,6 +208,7 @@ export default function OwnerAgendaPage() {
   const [viewMode, setViewMode] = useState<"daily" | "weekly">("daily");
   const [tenantSettings, setTenantSettings] = useState<{
     bookingIntervalMin?: number;
+    bufferBetweenAppointmentsMin?: number;
   } | null>(null);
 
   useEffect(() => {
@@ -253,6 +254,32 @@ export default function OwnerAgendaPage() {
     tenantSettings?.bookingIntervalMin,
   ]);
 
+  const agendaBufferMin = useMemo(() => {
+    const raw =
+      (selectedLocation as any)?.bookingBufferMin ??
+      (tenantSettings as any)?.bookingBufferMin ??
+      (tenantSettings as any)?.bufferMin; // fallback se teu backend tiver outro nome
+
+    const v = Number(raw);
+    if (!Number.isFinite(v) || v <= 0) return 0;
+
+    // evita maluquice
+    return Math.min(v, 60);
+  }, [selectedLocation, tenantSettings]);
+
+  const bufferBetweenAppointmentsMin = useMemo(() => {
+    const raw = tenantSettings?.bufferBetweenAppointmentsMin;
+
+    if (typeof raw !== "number") return 0;
+    if (!Number.isFinite(raw)) return 0;
+
+    // segurança básica (não deixa negativo nem valores absurdos)
+    if (raw < 0) return 0;
+    if (raw > 60) return 60;
+
+    return Math.floor(raw);
+  }, [tenantSettings?.bufferBetweenAppointmentsMin]);
+
   const [weekDays, setWeekDays] = useState<WeekDayData[]>([]);
   const [loadingWeek, setLoadingWeek] = useState(false);
   const [weekError, setWeekError] = useState<string | null>(null);
@@ -263,6 +290,13 @@ export default function OwnerAgendaPage() {
   const [restoredPlanVisits, setRestoredPlanVisits] = useState<string[]>([]);
   const [selectedAppointment, setSelectedAppointment] =
     useState<AgendaAppointment | null>(null);
+
+  const [selectedOverbooking, setSelectedOverbooking] = useState<null | {
+    slotTime: string;
+    professionalId: string;
+    professionalName: string;
+    appointments: AgendaAppointment[];
+  }>(null);
 
   useEffect(() => {
     if (!selectedLocation) return;
@@ -297,6 +331,20 @@ export default function OwnerAgendaPage() {
   const [pendingSlot, setPendingSlot] = useState<PendingAppointmentSlot | null>(
     null
   );
+
+  const overbookingCount = useMemo(() => {
+    if (!pendingSlot) return 0;
+
+    return appointments.filter(
+      (a) =>
+        a.status !== "cancelled" &&
+        a.professionalId === pendingSlot.professionalId &&
+        a.time === pendingSlot.time
+    ).length;
+  }, [appointments, pendingSlot]);
+
+  const isOverbookingNow = overbookingCount > 0;
+
   const [modalCustomerName, setModalCustomerName] = useState("");
   const [modalCustomerPhone, setModalCustomerPhone] = useState("");
 
@@ -394,6 +442,23 @@ export default function OwnerAgendaPage() {
 
   function handleCloseDetailsModal() {
     setSelectedAppointment(null);
+  }
+  function handleOpenOverbooking(params: {
+    slotTime: string;
+    professionalId: string;
+    professionalName: string;
+    appointments: AgendaAppointment[];
+  }) {
+    setSelectedOverbooking(params);
+  }
+
+  function handleCloseOverbookingModal() {
+    setSelectedOverbooking(null);
+  }
+
+  function handlePickOverbookingAppointment(appt: AgendaAppointment) {
+    setSelectedOverbooking(null);
+    setSelectedAppointment(appt); // reutiliza o modal atual de detalhes
   }
 
   function handleDetailsStatusChange(
@@ -647,6 +712,22 @@ export default function OwnerAgendaPage() {
 
     // profissional do slot clicado
     setModalProviderId(slot.professionalId);
+  }
+  function getProfessionalNameById(proId: string) {
+    return professionals.find((p) => p.id === proId)?.name ?? "Profissional";
+  }
+
+  function handleCreateOverbookingFromAppointment(appt: AgendaAppointment) {
+    // fecha o modal atual
+    setSelectedAppointment(null);
+    setSelectedOverbooking(null);
+
+    // abre o modal de criar no MESMO horário/profissional
+    handleCreateAppointmentClick({
+      time: appt.time,
+      professionalId: appt.professionalId,
+      professionalName: getProfessionalNameById(appt.professionalId),
+    });
   }
 
   function handleCloseCreateModal() {
@@ -1016,6 +1097,42 @@ export default function OwnerAgendaPage() {
   const isToday = selectedDateStr === todayStr;
   const isPastDay = selectedDateStr < todayStr;
   const nowMinutes = today.getHours() * 60 + today.getMinutes();
+  const overbookingEnabled = Boolean(
+    (selectedLocation as any)?.overbookingEnabled ??
+      (tenantSettings as any)?.overbookingEnabled ??
+      true // fallback: se ainda não tiver settings no backend, deixa ligado pra testar
+  );
+
+  const overbookingMaxPerSlot = (() => {
+    const raw =
+      (selectedLocation as any)?.overbookingMaxPerSlot ??
+      (selectedLocation as any)?.maxOverbookingPerSlot ??
+      (tenantSettings as any)?.overbookingMaxPerSlot ??
+      (tenantSettings as any)?.maxOverbookingPerSlot ??
+      2; // padrão: 2 no mesmo horário
+    const v = Number(raw);
+    if (!Number.isFinite(v) || v < 1) return 1;
+    return Math.min(v, 10);
+  })();
+
+  function canOverbookSlot(proId: string, slotTime: string) {
+    if (!overbookingEnabled) return false;
+
+    // não deixa encaixar em horário já passado (mantém coerência com teu save)
+    const slotStart = timeStrToMinutes(slotTime);
+    const slotEnd = slotStart + agendaStepMin;
+    const isPastSlot = isPastDay || (isToday && slotEnd <= nowMinutes);
+    if (isPastSlot) return false;
+
+    const currentCount = appointments.filter(
+      (a) =>
+        a.professionalId === proId &&
+        a.time === slotTime &&
+        a.status !== "cancelled"
+    ).length;
+
+    return currentCount < overbookingMaxPerSlot;
+  }
 
   // label bonitinho
   const dateLabel = isToday
@@ -1487,42 +1604,42 @@ export default function OwnerAgendaPage() {
                 </p>
 
                 <div
-                  className="grid gap-2 text-xs"
+                  className="grid gap-3 text-xs"
                   style={{
-                    gridTemplateColumns: `80px repeat(${visibleProfessionals.length}, minmax(0, 1fr))`,
+                    gridTemplateColumns: `repeat(${visibleProfessionals.length}, minmax(0, 1fr))`,
                   }}
                 >
-                  {/* coluna de horários à esquerda */}
-                  <div />
-
-                  {/* cabeçalhos de profissionais */}
                   {visibleProfessionals.map((pro) => (
-                    <div
-                      key={pro.id}
-                      className="px-2 py-2 rounded-2xl border border-slate-700/80 bg-slate-950/70 flex flex-col"
-                    >
-                      <span className="text-[10px] uppercase tracking-wide text-slate-400">
-                        Profissional
-                      </span>
-                      <span className="text-sm font-semibold text-slate-50">
-                        {pro.name}
-                      </span>
-                    </div>
-                  ))}
+                    <div key={pro.id} className="flex flex-col gap-2">
+                      {/* cabeçalho do profissional */}
+                      <div className="px-2 py-2 rounded-2xl border border-slate-700/80 bg-slate-950/70 flex flex-col">
+                        <span className="text-[10px] uppercase tracking-wide text-slate-400">
+                          Profissional
+                        </span>
+                        <span className="text-sm font-semibold text-slate-50">
+                          {pro.name}
+                        </span>
+                      </div>
 
-                  {morningSlots.map((slot) => (
-                    <RowTimeSlot
-                      key={slot}
-                      slot={slot}
-                      stepMin={agendaStepMin}
-                      professionals={visibleProfessionals}
-                      appointments={appointments}
-                      onCreateAppointment={handleCreateAppointmentClick}
-                      onOpenDetails={handleOpenAppointmentDetails}
-                      isPastDay={isPastDay}
-                      isToday={isToday}
-                      nowMinutes={nowMinutes}
-                    />
+                      {/* timeline do período */}
+                      <ProfessionalTimeline
+                        pro={pro}
+                        periodLabel="Manhã"
+                        periodStart={morningSlots?.[0] ?? "08:00"}
+                        periodEnd={
+                          morningSlots?.[morningSlots.length - 1] ?? "13:45"
+                        }
+                        stepMin={agendaStepMin}
+                        bufferMin={bufferBetweenAppointmentsMin}
+                        onOpenOverbooking={handleOpenOverbooking}
+                        appointments={appointments}
+                        onCreateAppointment={handleCreateAppointmentClick}
+                        onOpenDetails={handleOpenAppointmentDetails}
+                        isPastDay={isPastDay}
+                        isToday={isToday}
+                        nowMinutes={nowMinutes}
+                      />
+                    </div>
                   ))}
                 </div>
               </div>
@@ -1534,43 +1651,42 @@ export default function OwnerAgendaPage() {
                 </p>
 
                 <div
-                  className="grid gap-2 text-xs"
+                  className="grid gap-3 text-xs"
                   style={{
-                    gridTemplateColumns: `80px repeat(${visibleProfessionals.length}, minmax(0, 1fr))`,
+                    gridTemplateColumns: `repeat(${visibleProfessionals.length}, minmax(0, 1fr))`,
                   }}
                 >
-                  {/* coluna de horários à esquerda */}
-                  <div />
-
-                  {/* cabeçalhos de profissionais */}
                   {visibleProfessionals.map((pro) => (
-                    <div
-                      key={pro.id}
-                      className="px-2 py-2 rounded-2xl border border-slate-700/80 bg-slate-950/70 flex flex-col"
-                    >
-                      <span className="text-[10px] uppercase tracking-wide text-slate-400">
-                        Profissional
-                      </span>
-                      <span className="text-sm font-semibold text-slate-50">
-                        {pro.name}
-                      </span>
-                    </div>
-                  ))}
+                    <div key={pro.id} className="flex flex-col gap-2">
+                      {/* cabeçalho do profissional */}
+                      <div className="px-2 py-2 rounded-2xl border border-slate-700/80 bg-slate-950/70 flex flex-col">
+                        <span className="text-[10px] uppercase tracking-wide text-slate-400">
+                          Profissional
+                        </span>
+                        <span className="text-sm font-semibold text-slate-50">
+                          {pro.name}
+                        </span>
+                      </div>
 
-                  {/* linhas de horários da tarde */}
-                  {afternoonSlots.map((slot) => (
-                    <RowTimeSlot
-                      key={slot}
-                      slot={slot}
-                      stepMin={agendaStepMin}
-                      professionals={visibleProfessionals}
-                      appointments={appointments}
-                      onCreateAppointment={handleCreateAppointmentClick}
-                      onOpenDetails={handleOpenAppointmentDetails}
-                      isPastDay={isPastDay}
-                      isToday={isToday}
-                      nowMinutes={nowMinutes}
-                    />
+                      {/* timeline do período */}
+                      <ProfessionalTimeline
+                        pro={pro}
+                        periodLabel="Tarde"
+                        periodStart={afternoonSlots?.[0] ?? "14:00"}
+                        periodEnd={
+                          afternoonSlots?.[afternoonSlots.length - 1] ?? "20:00"
+                        }
+                        stepMin={agendaStepMin}
+                        bufferMin={bufferBetweenAppointmentsMin}
+                        onOpenOverbooking={handleOpenOverbooking}
+                        appointments={appointments}
+                        onCreateAppointment={handleCreateAppointmentClick}
+                        onOpenDetails={handleOpenAppointmentDetails}
+                        isPastDay={isPastDay}
+                        isToday={isToday}
+                        nowMinutes={nowMinutes}
+                      />
+                    </div>
                   ))}
                 </div>
               </div>
@@ -1636,6 +1752,95 @@ export default function OwnerAgendaPage() {
           )}
         </section>
       )}
+      {selectedOverbooking && (
+        <div className="fixed inset-0 z-40 flex items-center justify-center bg-black/60 p-4">
+          <div className="w-full max-w-xl rounded-2xl border border-slate-800 bg-slate-950 p-4 text-xs shadow-xl">
+            <div className="flex items-start justify-between gap-3">
+              <div>
+                <p className="text-[11px] uppercase tracking-wide text-slate-400">
+                  Overbooking
+                </p>
+                <p className="text-sm font-semibold text-slate-100">
+                  {selectedOverbooking.professionalName} ·{" "}
+                  {selectedOverbooking.slotTime}
+                </p>
+                <p className="text-[11px] text-slate-400">
+                  {selectedOverbooking.appointments.length} agendamentos neste
+                  horário
+                </p>
+              </div>
+
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  disabled={
+                    !canOverbookSlot(
+                      selectedOverbooking.professionalId,
+                      selectedOverbooking.slotTime
+                    )
+                  }
+                  className="px-3 py-1 rounded-lg border border-amber-400 bg-amber-500/10 text-[11px] text-amber-200 disabled:opacity-50 disabled:cursor-not-allowed"
+                  onClick={() => {
+                    // abre o modal de criar no mesmo horário/profissional (encaixe)
+                    handleCloseOverbookingModal();
+                    handleCreateAppointmentClick({
+                      time: selectedOverbooking.slotTime,
+                      professionalId: selectedOverbooking.professionalId,
+                      professionalName: selectedOverbooking.professionalName,
+                    });
+                  }}
+                >
+                  + Novo encaixe
+                </button>
+
+                <button
+                  className="text-[11px] text-slate-400 hover:text-slate-100"
+                  onClick={handleCloseOverbookingModal}
+                >
+                  Fechar
+                </button>
+              </div>
+            </div>
+
+            <div className="mt-4 space-y-2">
+              {selectedOverbooking.appointments.map((a) => {
+                const st = getStatusClasses(a.status);
+
+                return (
+                  <button
+                    key={a.id}
+                    type="button"
+                    onClick={() => handlePickOverbookingAppointment(a)}
+                    className="w-full rounded-xl border border-slate-800 bg-slate-900/30 px-3 py-2 text-left hover:border-emerald-500/60 hover:bg-slate-900/50"
+                  >
+                    <div className="flex items-start justify-between gap-2">
+                      <div className="min-w-0">
+                        <p className="text-[10px] text-slate-400">{a.time}</p>
+                        <p className="text-[12px] font-medium text-slate-100 truncate">
+                          {a.serviceName}
+                        </p>
+                        <p className="text-[10px] text-slate-300 truncate">
+                          Cliente: {a.customerName}
+                        </p>
+                      </div>
+
+                      <span
+                        className={`text-[9px] px-2 py-[2px] rounded ${st.badge}`}
+                      >
+                        {st.label}
+                      </span>
+                    </div>
+                  </button>
+                );
+              })}
+            </div>
+
+            <p className="mt-3 text-[10px] text-slate-500">
+              Clique em um agendamento para abrir os detalhes.
+            </p>
+          </div>
+        </div>
+      )}
 
       {selectedAppointment &&
         (() => {
@@ -1697,6 +1902,25 @@ export default function OwnerAgendaPage() {
                       onClick={() => handleDetailsStatusChange()}
                     >
                       Iniciar atendimento
+                    </button>
+                  )}
+                  {overbookingEnabled && (
+                    <button
+                      type="button"
+                      disabled={
+                        !canOverbookSlot(
+                          selectedAppointment.professionalId,
+                          selectedAppointment.time
+                        )
+                      }
+                      className="w-full px-3 py-1 rounded-lg border border-amber-400 bg-amber-500/10 text-[11px] text-amber-200 disabled:opacity-50 disabled:cursor-not-allowed"
+                      onClick={() =>
+                        handleCreateOverbookingFromAppointment(
+                          selectedAppointment
+                        )
+                      }
+                    >
+                      + Encaixar outro cliente neste horário
                     </button>
                   )}
 
@@ -1900,6 +2124,12 @@ export default function OwnerAgendaPage() {
                 <p className="text-[11px] text-slate-400">Horário</p>
                 <p className="text-sm text-slate-100">{pendingSlot.time}</p>
               </div>
+              {isOverbookingNow && (
+                <div className="mt-2 rounded-lg border border-rose-500/40 bg-rose-500/10 px-3 py-2 text-[11px] text-rose-200">
+                  Atenção: já existe {overbookingCount} agendamento(s) neste
+                  horário. Ao salvar, ficará {overbookingCount + 1}.
+                </div>
+              )}
             </div>
 
             {createError && (
@@ -1929,20 +2159,53 @@ export default function OwnerAgendaPage() {
   );
 }
 
-function RowTimeSlot({
-  slot,
+function minutesToTimeStr(totalMin: number): string {
+  const h = Math.floor(totalMin / 60);
+  const m = totalMin % 60;
+  return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}`;
+}
+
+function getApptDurationMin(appt: AgendaAppointment, fallback: number) {
+  const d =
+    (appt as any).serviceDurationMin ??
+    (appt as any).durationMin ??
+    (appt as any).service?.durationMin ??
+    fallback;
+
+  const v = Number(d);
+  return Number.isFinite(v) && v > 0 ? v : fallback;
+}
+
+function getApptStartMin(appt: AgendaAppointment) {
+  return timeStrToMinutes(appt.time);
+}
+
+function getStatusLabel(status: AgendaAppointment["status"]) {
+  const s = getStatusClasses(status);
+  return s.label;
+}
+
+function ProfessionalTimeline({
+  pro,
+  periodLabel,
+  periodStart,
+  periodEnd,
   stepMin,
-  professionals,
+  bufferMin,
   appointments,
   onCreateAppointment,
   onOpenDetails,
+  onOpenOverbooking,
   isPastDay,
   isToday,
   nowMinutes,
 }: {
-  slot: string;
+  pro: AgendaProfessional;
+  periodLabel: string;
+  periodStart: string;
+  periodEnd: string;
   stepMin: number;
-  professionals: AgendaProfessional[];
+  bufferMin: number;
   appointments: AgendaAppointment[];
   onCreateAppointment?: (params: {
     time: string;
@@ -1950,132 +2213,279 @@ function RowTimeSlot({
     professionalName: string;
   }) => void;
   onOpenDetails?: (appointment: AgendaAppointment) => void;
+
+  // ✅ NOVO (opcional): abrir lista quando tiver overbooking
+  onOpenOverbooking?: (params: {
+    slotTime: string;
+    professionalId: string;
+    professionalName: string;
+    appointments: AgendaAppointment[];
+  }) => void;
+
   isPastDay: boolean;
   isToday: boolean;
   nowMinutes: number;
 }) {
-  const slotStartMinutes = timeStrToMinutes(slot);
-  const slotEndMinutes = slotStartMinutes + stepMin;
+  const rowPx = 56;
 
-  const isPastSlot = isPastDay || (isToday && slotEndMinutes <= nowMinutes);
+  const startMin = timeStrToMinutes(periodStart);
+  const lastStartMin = timeStrToMinutes(periodEnd);
 
-  return (
-    <>
-      {/* Coluna de horário (esquerda) */}
-      <div className="flex items-start justify-end pr-1 pt-2 text-[10px] text-slate-500">
-        {slot}
-      </div>
+  const proGroups = useMemo(() => {
+    const list = appointments
+      .filter((a) => a.professionalId === pro.id && a.status !== "cancelled")
+      .map((a) => {
+        const sMin = getApptStartMin(a);
+        const dur = getApptDurationMin(a, stepMin);
+        const eMin = sMin + dur;
+        return { appt: a, startMin: sMin, endMin: eMin, durMin: dur };
+      })
+      .sort((a, b) => a.startMin - b.startMin);
 
-      {/* Colunas por profissional */}
-      {professionals.map((pro) => {
-        const appt = appointments
-          .filter(
-            (a) => a.professionalId === pro.id && a.status !== "cancelled"
-          )
-          .find((a) => {
-            const startMin = timeStrToMinutes(a.time);
-            const durationMin = ((a as any).serviceDurationMin ??
-              (a as any).durationMin ??
-              30) as number;
+    // agrupa por startMin (overbooking)
+    const groupsMap = new Map<number, typeof list>();
 
-            const slotsNeeded = Math.ceil(durationMin / stepMin);
-            const apptEndMin = startMin + slotsNeeded * stepMin;
+    for (const item of list) {
+      const arr = groupsMap.get(item.startMin) ?? [];
+      arr.push(item);
+      groupsMap.set(item.startMin, arr);
+    }
 
-            return (
-              slotStartMinutes >= startMin && slotStartMinutes < apptEndMin
-            );
-          });
+    return Array.from(groupsMap.entries())
+      .map(([startMinKey, items]) => {
+        const maxEndMin = Math.max(...items.map((x) => x.endMin));
+        const maxDurMin = Math.max(...items.map((x) => x.durMin));
+        return {
+          startMin: startMinKey,
+          items,
+          maxEndMin,
+          maxDurMin,
+        };
+      })
+      .sort((a, b) => a.startMin - b.startMin);
+  }, [appointments, pro.id, stepMin]);
 
-        // Sem agendamento ocupando este slot
-        if (!appt) {
-          if (isPastSlot) {
-            return (
-              <div
-                key={pro.id}
-                className="h-14 rounded-xl border border-slate-900/60 bg-slate-950/40 opacity-40 cursor-not-allowed"
-              />
-            );
-          }
+  const items: React.ReactNode[] = [];
 
-          return (
+  let cursor = startMin;
+  let guard = 0;
+
+  while (cursor <= lastStartMin && guard < 2000) {
+    guard++;
+
+    const nextGroup = proGroups.find((g) => g.startMin >= cursor);
+
+    // ✅ se não tem mais appt, desenha slots até o fim
+    if (!nextGroup) {
+      while (cursor <= lastStartMin && guard < 2000) {
+        guard++;
+
+        const slotTime = minutesToTimeStr(cursor);
+        const slotEnd = cursor + stepMin;
+
+        const isPastSlot = isPastDay || (isToday && slotEnd <= nowMinutes);
+
+        if (isPastSlot) {
+          items.push(
+            <div
+              key={`past-${pro.id}-${cursor}`}
+              className="rounded-xl border border-slate-900/60 bg-slate-950/40 opacity-40 cursor-not-allowed flex items-center justify-between px-2"
+              style={{ height: rowPx }}
+              title={`${periodLabel} · ${slotTime}`}
+            >
+              <span className="text-[10px] text-slate-500">{slotTime}</span>
+            </div>
+          );
+        } else {
+          items.push(
             <button
-              key={pro.id}
+              key={`free-${pro.id}-${cursor}`}
               type="button"
-              className="h-14 rounded-xl border border-slate-800/50 bg-slate-950/30 hover:border-emerald-500/60 hover:bg-slate-900/60 transition-colors text-left"
+              className="rounded-xl border border-slate-800/50 bg-slate-950/30 hover:border-emerald-500/60 hover:bg-slate-900/60 transition-colors text-left flex items-center justify-between px-2"
+              style={{ height: rowPx }}
               onClick={() =>
                 onCreateAppointment?.({
-                  time: slot,
+                  time: slotTime,
                   professionalId: pro.id,
                   professionalName: pro.name,
                 })
               }
-            />
-          );
-        }
-
-        const statusStyles = getStatusClasses(appt.status);
-        const isStart = timeStrToMinutes(appt.time) === slotStartMinutes;
-        const billingType = (appt as any).billingType as
-          | "plan"
-          | "single"
-          | undefined;
-
-        // Slot de início -> card compacto clicável
-        if (isStart) {
-          return (
-            <button
-              key={pro.id}
-              type="button"
-              className={`h-14 w-full rounded-xl border px-2 py-1.5 flex items-start justify-between text-left ${statusStyles.container}`}
-              onClick={() => onOpenDetails?.(appt)}
+              title={`${periodLabel} · ${slotTime}`}
             >
-              <div className="min-w-0">
-                <p className="text-[11px] font-medium truncate">
-                  {appt.serviceName}
-                </p>
-                <p className="text-[10px] text-slate-300 truncate">
-                  Cliente: {appt.customerName}
-                </p>
-              </div>
-
-              <div className="flex flex-col items-end gap-1">
-                <span
-                  className={`text-[9px] px-1 rounded ${statusStyles.badge}`}
-                >
-                  {statusStyles.label}
-                </span>
-                <span
-                  className={`text-[9px] px-1 rounded border ${
-                    billingType === "plan"
-                      ? "bg-emerald-500/15 text-emerald-100 border-emerald-400/60"
-                      : "bg-slate-700/40 text-slate-100 border-slate-500/60"
-                  }`}
-                >
-                  {billingType === "plan" ? "Plano" : "Avulso"}
-                </span>
-              </div>
+              <span className="text-[10px] text-slate-500">{slotTime}</span>
             </button>
           );
         }
 
-        // Continuação do agendamento -> também abre detalhes se clicar
-        return (
-          <button
-            key={pro.id}
-            type="button"
-            className={`h-14 rounded-xl border px-2 py-1 flex items-center text-[10px] text-slate-300 text-left ${statusStyles.container}`}
-            onClick={() => onOpenDetails?.(appt)}
+        cursor += stepMin;
+      }
+
+      break;
+    }
+
+    // ✅ 1) slots livres até começar o próximo grupo
+    while (cursor + stepMin <= nextGroup.startMin && cursor <= lastStartMin) {
+      const slotTime = minutesToTimeStr(cursor);
+      const slotEnd = cursor + stepMin;
+
+      const isPastSlot = isPastDay || (isToday && slotEnd <= nowMinutes);
+
+      if (isPastSlot) {
+        items.push(
+          <div
+            key={`past-${pro.id}-${cursor}`}
+            className="rounded-xl border border-slate-900/60 bg-slate-950/40 opacity-40 cursor-not-allowed flex items-center justify-between px-2"
+            style={{ height: rowPx }}
+            title={`${periodLabel} · ${slotTime}`}
           >
-            <span className="truncate">
-              Continuação · {appt.serviceName} · {appt.customerName} ·{" "}
-              {billingType === "plan" ? "Plano" : "Avulso"}
-            </span>
+            <span className="text-[10px] text-slate-500">{slotTime}</span>
+          </div>
+        );
+      } else {
+        items.push(
+          <button
+            key={`free-${pro.id}-${cursor}`}
+            type="button"
+            className="rounded-xl border border-slate-800/50 bg-slate-950/30 hover:border-emerald-500/60 hover:bg-slate-900/60 transition-colors text-left flex items-center justify-between px-2"
+            style={{ height: rowPx }}
+            onClick={() =>
+              onCreateAppointment?.({
+                time: slotTime,
+                professionalId: pro.id,
+                professionalName: pro.name,
+              })
+            }
+            title={`${periodLabel} · ${slotTime}`}
+          >
+            <span className="text-[10px] text-slate-500">{slotTime}</span>
           </button>
         );
-      })}
-    </>
-  );
+      }
+
+      cursor += stepMin;
+    }
+
+    if (cursor > lastStartMin) break;
+
+    // ✅ 2) renderiza o bloco (normal OU overbooking)
+    const apptHeightPx = Math.max(
+      rowPx,
+      (nextGroup.maxDurMin / stepMin) * rowPx
+    );
+
+    if (nextGroup.items.length === 1) {
+      const one = nextGroup.items[0];
+      const statusStyles = getStatusClasses(one.appt.status);
+      const billingType = (one.appt as any).billingType as
+        | "plan"
+        | "single"
+        | undefined;
+
+      items.push(
+        <button
+          key={`appt-${one.appt.id}`}
+          type="button"
+          className={`w-full rounded-xl border px-2 py-2 text-left ${statusStyles.container}`}
+          style={{ height: apptHeightPx }}
+          onClick={() => onOpenDetails?.(one.appt)}
+          title={`${one.appt.time} · ${one.appt.serviceName} · ${
+            one.appt.customerName
+          } · ${getStatusLabel(one.appt.status)}`}
+        >
+          <div className="flex items-start justify-between gap-2">
+            <div className="min-w-0">
+              <p className="text-[10px] text-slate-300">{one.appt.time}</p>
+              <p className="text-[12px] font-medium truncate">
+                {one.appt.serviceName}
+              </p>
+              <p className="text-[10px] text-slate-300 truncate">
+                Cliente: {one.appt.customerName}
+              </p>
+            </div>
+
+            <div className="flex flex-col items-end gap-1">
+              <span className={`text-[9px] px-1 rounded ${statusStyles.badge}`}>
+                {statusStyles.label}
+              </span>
+              <span
+                className={`text-[9px] px-1 rounded border ${
+                  billingType === "plan"
+                    ? "bg-emerald-500/15 text-emerald-100 border-emerald-400/60"
+                    : "bg-slate-700/40 text-slate-100 border-slate-500/60"
+                }`}
+              >
+                {billingType === "plan" ? "Plano" : "Avulso"}
+              </span>
+            </div>
+          </div>
+        </button>
+      );
+    } else {
+      const count = nextGroup.items.length;
+      const slotTime = minutesToTimeStr(nextGroup.startMin);
+
+      items.push(
+        <button
+          key={`overbook-${pro.id}-${nextGroup.startMin}`}
+          type="button"
+          className="w-full rounded-xl border px-2 py-2 text-left border-amber-500/40 bg-amber-500/10 hover:bg-amber-500/15 transition-colors"
+          style={{ height: apptHeightPx }}
+          onClick={() => {
+            // ✅ se tiver handler de overbooking, usa ele
+            if (onOpenOverbooking) {
+              onOpenOverbooking({
+                slotTime,
+                professionalId: pro.id,
+                professionalName: pro.name,
+                appointments: nextGroup.items.map((x) => x.appt),
+              });
+              return;
+            }
+
+            // fallback: abre o primeiro
+            onOpenDetails?.(nextGroup.items[0].appt);
+          }}
+          title={`${slotTime} · Overbooking (${count} agendamentos)`}
+        >
+          <div className="flex items-start justify-between gap-2">
+            <div className="min-w-0">
+              <p className="text-[10px] text-slate-300">{slotTime}</p>
+              <p className="text-[12px] font-medium truncate">Overbooking</p>
+              <p className="text-[10px] text-slate-300 truncate">
+                {count} agendamentos neste horário
+              </p>
+            </div>
+
+            <span className="text-[9px] px-2 py-[2px] rounded border border-amber-400/60 bg-amber-500/20 text-amber-100">
+              +{count - 1}
+            </span>
+          </div>
+        </button>
+      );
+    }
+
+    // ✅ 3) buffer visual + shift real
+    if (bufferMin > 0) {
+      const bufferHeightPx = Math.max(16, (bufferMin / stepMin) * rowPx);
+
+      items.push(
+        <div
+          key={`buffer-${pro.id}-${nextGroup.startMin}`}
+          className="rounded-xl border border-slate-800/40 bg-slate-900/30 flex items-center justify-center text-[10px] text-slate-500"
+          style={{ height: bufferHeightPx }}
+          title={`Buffer ${bufferMin} min`}
+        >
+          Buffer · {bufferMin}m
+        </div>
+      );
+    }
+
+    cursor = nextGroup.maxEndMin + bufferMin;
+  }
+
+  return <div className="flex flex-col gap-2">{items}</div>;
 }
+
 function WeeklySkeleton() {
   return (
     <div className="overflow-x-auto">

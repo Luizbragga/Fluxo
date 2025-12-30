@@ -44,7 +44,6 @@ type TenantSettingsDTO = {
   twoFactorEnabled: boolean;
 
   // Agenda
-  defaultAppointmentDurationMin: number;
   bufferBetweenAppointmentsMin: number;
   allowOverbooking: boolean;
   bookingIntervalMin: number; // 5, 10, 15, 20, 30, 45, 60
@@ -70,6 +69,30 @@ type TenantSettingsUI = {
 type UserRole = "owner" | "admin" | "attendant" | "provider" | "unknown";
 type SettingsTab = "prefs" | "notifications" | "security";
 const BOOKING_INTERVAL_OPTIONS = [5, 10, 15, 20, 30, 45, 60] as const;
+const FALLBACK_TIMEZONES = [
+  "Europe/Lisbon",
+  "Europe/Madrid",
+  "Europe/London",
+  "Europe/Paris",
+  "Europe/Berlin",
+  "Europe/Rome",
+  "Atlantic/Azores",
+  "Atlantic/Madeira",
+  "America/Sao_Paulo",
+  "America/Fortaleza",
+  "America/Recife",
+  "America/Manaus",
+  "America/Belem",
+  "America/New_York",
+  "America/Los_Angeles",
+  "America/Mexico_City",
+] as const;
+const CURRENCY_OPTIONS = ["EUR", "USD", "GBP", "BRL"] as const;
+const DATE_FORMAT_OPTIONS = [
+  "dd/MM/yyyy", // PT / BR
+  "MM/dd/yyyy", // US
+  "yyyy-MM-dd", // ISO
+] as const;
 
 function normalizeRole(role: string | null | undefined): UserRole {
   const r = (role ?? "").toLowerCase().trim();
@@ -111,7 +134,6 @@ export default function OwnerConfiguracoesPage() {
     | "defaultCurrency"
     | "dateFormat"
     | "use24hClock"
-    | "defaultAppointmentDurationMin"
     | "bufferBetweenAppointmentsMin"
     | "allowOverbooking"
     | "bookingIntervalMin"
@@ -149,6 +171,18 @@ export default function OwnerConfiguracoesPage() {
   const locationNameById = useMemo(() => {
     return new Map(locations.map((l) => [l.id, l.name]));
   }, [locations]);
+  const timezoneOptions = useMemo(() => {
+    // Preferência: pegar a lista oficial do runtime (Chrome moderno suporta)
+    const intlAny = Intl as any;
+
+    const list: string[] =
+      typeof intlAny?.supportedValuesOf === "function"
+        ? (intlAny.supportedValuesOf("timeZone") as string[])
+        : [...FALLBACK_TIMEZONES];
+
+    // normaliza e ordena
+    return Array.from(new Set(list)).sort((a, b) => a.localeCompare(b));
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -224,7 +258,6 @@ export default function OwnerConfiguracoesPage() {
       defaultCurrency: settings.defaultCurrency,
       dateFormat: settings.dateFormat,
       use24hClock: settings.use24hClock,
-      defaultAppointmentDurationMin: settings.defaultAppointmentDurationMin,
       bufferBetweenAppointmentsMin: settings.bufferBetweenAppointmentsMin,
       allowOverbooking: settings.allowOverbooking,
       bookingIntervalMin: settings.bookingIntervalMin,
@@ -245,6 +278,21 @@ export default function OwnerConfiguracoesPage() {
     try {
       setIsSavingPrefs(true);
       setPrefsError(null);
+      // valida timezone antes de salvar
+      if (!timezoneOptions.includes(draftPrefs.timezone)) {
+        setPrefsError("Timezone inválido. Selecione um timezone da lista.");
+        return;
+      }
+      if (!CURRENCY_OPTIONS.includes(draftPrefs.defaultCurrency as any)) {
+        setPrefsError("Moeda inválida. Selecione uma moeda da lista.");
+        return;
+      }
+      if (!DATE_FORMAT_OPTIONS.includes(draftPrefs.dateFormat as any)) {
+        setPrefsError(
+          "Formato de data inválido. Selecione um formato da lista."
+        );
+        return;
+      }
 
       const updated = await apiClient<TenantSettingsDTO>("/tenants/settings", {
         method: "PATCH",
@@ -458,10 +506,6 @@ export default function OwnerConfiguracoesPage() {
                 value={settings.use24hClock ? "24h" : "12h"}
               />
               <PrefItem
-                label="Duração padrão"
-                value={`${settings.defaultAppointmentDurationMin} min`}
-              />
-              <PrefItem
                 label="Intervalo (buffer)"
                 value={`${settings.bufferBetweenAppointmentsMin} min`}
               />
@@ -480,29 +524,35 @@ export default function OwnerConfiguracoesPage() {
             </div>
           ) : (
             <div className="mt-3 grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-3">
-              <FieldText
+              <FieldTimezoneSelect
                 label="Timezone"
-                value={draftPrefs?.timezone ?? ""}
+                value={draftPrefs?.timezone ?? "Europe/Lisbon"}
+                options={timezoneOptions}
                 onChange={(v) =>
                   setDraftPrefs((p) => (p ? { ...p, timezone: v } : p))
                 }
               />
-              <FieldText
+
+              <FieldCurrencySelect
                 label="Moeda padrão"
-                value={draftPrefs?.defaultCurrency ?? ""}
+                value={draftPrefs?.defaultCurrency ?? "EUR"}
+                options={CURRENCY_OPTIONS}
                 onChange={(v) =>
                   setDraftPrefs((p) => (p ? { ...p, defaultCurrency: v } : p))
                 }
               />
-              <FieldText
+
+              <FieldDateFormatSelect
                 label="Formato data"
-                value={draftPrefs?.dateFormat ?? ""}
+                value={draftPrefs?.dateFormat ?? "dd/MM/yyyy"}
+                options={DATE_FORMAT_OPTIONS}
                 onChange={(v) =>
                   setDraftPrefs((p) => (p ? { ...p, dateFormat: v } : p))
                 }
               />
+
               <FieldToggle
-                label="Relógio 24h"
+                label="Relógio 24h (desative se quiser usar padrão 12h AM/PM)"
                 checked={!!draftPrefs?.use24hClock}
                 onChange={(checked) =>
                   setDraftPrefs((p) => (p ? { ...p, use24hClock: checked } : p))
@@ -510,16 +560,7 @@ export default function OwnerConfiguracoesPage() {
               />
 
               <FieldNumber
-                label="Duração padrão (min)"
-                value={draftPrefs?.defaultAppointmentDurationMin ?? 0}
-                onChange={(n) =>
-                  setDraftPrefs((p) =>
-                    p ? { ...p, defaultAppointmentDurationMin: n } : p
-                  )
-                }
-              />
-              <FieldNumber
-                label="Buffer (min)"
+                label="Buffer (Minutos de espera entre agendamentos)"
                 value={draftPrefs?.bufferBetweenAppointmentsMin ?? 0}
                 onChange={(n) =>
                   setDraftPrefs((p) =>
@@ -1251,6 +1292,80 @@ function FieldText({
   );
 }
 
+function FieldTimezoneSelect({
+  label,
+  value,
+  options,
+  onChange,
+}: {
+  label: string;
+  value: string;
+  options: string[];
+  onChange: (v: string) => void;
+}) {
+  const [query, setQuery] = useState("");
+
+  const filtered = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    if (!q) return options;
+    return options.filter((tz) => tz.toLowerCase().includes(q));
+  }, [options, query]);
+
+  useEffect(() => {
+    const q = query.trim().toLowerCase();
+    if (!q) return;
+
+    // 1) se bater exatamente com algum timezone, seleciona
+    const exact = options.find((tz) => tz.toLowerCase() === q);
+    if (exact && exact !== value) {
+      onChange(exact);
+      return;
+    }
+
+    // 2) se só sobrar 1 opção filtrada, seleciona automaticamente
+    if (filtered.length === 1 && filtered[0] !== value) {
+      onChange(filtered[0]);
+      return;
+    }
+
+    // 3) se o valor atual não estiver no filtro, seleciona o 1º do filtro
+    if (filtered.length > 0 && !filtered.includes(value)) {
+      onChange(filtered[0]);
+    }
+  }, [query, options, filtered, value, onChange]);
+
+  return (
+    <div className="rounded-xl border border-slate-800 bg-slate-950/50 p-3">
+      <p className="text-[10px] text-slate-400">{label}</p>
+
+      {/* Busca */}
+      <input
+        className="mt-2 w-full rounded-lg border border-slate-800 bg-slate-900/70 px-2 py-1 text-sm text-slate-100 outline-none"
+        placeholder="Pesquisar… (ex: Lisbon, Madrid, Sao_Paulo)"
+        value={query}
+        onChange={(e) => setQuery(e.target.value)}
+      />
+
+      {/* Lista */}
+      <select
+        className="mt-2 w-full rounded-lg border border-slate-800 bg-slate-900/70 px-2 py-1 text-sm text-slate-100 outline-none"
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+      >
+        {filtered.map((tz) => (
+          <option key={tz} value={tz}>
+            {tz}
+          </option>
+        ))}
+      </select>
+
+      <p className="mt-2 text-[10px] text-slate-500">
+        Digite para filtrar e selecione um timezone válido (IANA).
+      </p>
+    </div>
+  );
+}
+
 function FieldNumber({
   label,
   value,
@@ -1272,6 +1387,48 @@ function FieldNumber({
     </div>
   );
 }
+
+function FieldDateFormatSelect({
+  label,
+  value,
+  options,
+  onChange,
+}: {
+  label: string;
+  value: string;
+  options: readonly string[];
+  onChange: (v: string) => void;
+}) {
+  return (
+    <div className="rounded-xl border border-slate-800 bg-slate-950/50 p-3">
+      <p className="text-[10px] text-slate-400">{label}</p>
+
+      <select
+        className="mt-2 w-full rounded-lg border border-slate-800 bg-slate-900/70 px-2 py-1 text-sm text-slate-100 outline-none"
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+      >
+        {options.map((fmt) => (
+          <option key={fmt} value={fmt}>
+            {fmt}
+          </option>
+        ))}
+      </select>
+
+      <p className="mt-2 text-[10px] text-slate-500">
+        Exemplo:{" "}
+        <span className="font-mono">
+          {value === "dd/MM/yyyy"
+            ? "23/12/2025"
+            : value === "MM/dd/yyyy"
+            ? "12/23/2025"
+            : "2025-12-23"}
+        </span>
+      </p>
+    </div>
+  );
+}
+
 function FieldSelect({
   label,
   value,
@@ -1295,6 +1452,35 @@ function FieldSelect({
         {options.map((opt) => (
           <option key={opt} value={opt}>
             {opt} min
+          </option>
+        ))}
+      </select>
+    </div>
+  );
+}
+function FieldCurrencySelect({
+  label,
+  value,
+  options,
+  onChange,
+}: {
+  label: string;
+  value: string;
+  options: readonly string[];
+  onChange: (v: string) => void;
+}) {
+  return (
+    <div className="rounded-xl border border-slate-800 bg-slate-950/50 p-3">
+      <p className="text-[10px] text-slate-400">{label}</p>
+
+      <select
+        className="mt-2 w-full rounded-lg border border-slate-800 bg-slate-900/70 px-2 py-1 text-sm text-slate-100 outline-none"
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+      >
+        {options.map((c) => (
+          <option key={c} value={c}>
+            {c}
           </option>
         ))}
       </select>

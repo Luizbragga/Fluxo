@@ -9,7 +9,6 @@ import {
   Query,
   Req,
   UseGuards,
-  BadRequestException,
 } from '@nestjs/common';
 import {
   ApiBearerAuth,
@@ -104,14 +103,19 @@ export class AppointmentsController {
 
     // se veio startAt/endAt -> usa o reschedule, que já tem validação de plano
     if (startAt || endAt) {
-      return this.appointmentsService.reschedule(tenantId, id, {
-        startAt,
-        endAt,
-      });
+      return this.appointmentsService.reschedule(
+        tenantId,
+        id,
+        { startAt, endAt },
+        user.role,
+      );
     }
 
-    // se veio status -> usa a lógica de status (que cuida dos earnings)
     if (status) {
+      if (status === 'cancelled') {
+        return this.appointmentsService.remove(tenantId, id, user.role);
+      }
+
       return this.appointmentsService.updateStatus(tenantId, id, status);
     }
 
@@ -122,8 +126,8 @@ export class AppointmentsController {
   // Cancelamento lógico (status = cancelled)
   @Roles(Role.owner, Role.admin, Role.attendant, Role.provider)
   @Delete(':id')
-  remove(@Req() req: any, @Param('id') id: string) {
-    const tenantId = req.user?.tenantId as string;
-    return this.appointmentsService.remove(tenantId, id);
+  remove(@CurrentUser() user: AuthUser, @Param('id') id: string) {
+    const tenantId = user.tenantId as string;
+    return this.appointmentsService.remove(tenantId, id, user.role);
   }
 }

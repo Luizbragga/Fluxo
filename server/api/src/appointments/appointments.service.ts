@@ -8,13 +8,50 @@ import { PrismaService } from '../prisma/prisma.service';
 import { CreateAppointmentDto } from './dto/create-appointment.dto';
 import { addMinutes, isBefore } from 'date-fns';
 import { AppointmentStateEnum } from './dto/update-status.dto';
-import { CustomerPlanStatus, CustomerPlanPaymentStatus } from '@prisma/client';
+import {
+  CustomerPlanStatus,
+  CustomerPlanPaymentStatus,
+  Role,
+} from '@prisma/client';
 
 const DEFAULT_COMMISSION_PERCENTAGE = 50; // 50% por padrão (ajustável depois)
 
 @Injectable()
 export class AppointmentsService {
   constructor(private prisma: PrismaService) {}
+  private async assertMinCancelNotice(
+    tenantId: string,
+    appointmentStartAt: Date,
+    actorRole: Role,
+    action: 'cancel' | 'reschedule',
+  ) {
+    // Owner/Admin podem sempre fazer override (regra típica: vale pro cliente/operadores, não pro dono)
+    if (actorRole === Role.owner || actorRole === Role.admin) return;
+
+    const settings = await this.prisma.tenantSettings.findUnique({
+      where: { tenantId },
+      select: { minCancelNoticeHours: true },
+    });
+
+    const hours = settings?.minCancelNoticeHours ?? 0;
+    if (!hours || hours <= 0) return;
+
+    const now = new Date();
+    const cutoff = addMinutes(appointmentStartAt, -hours * 60);
+
+    // se já passou do limite, bloqueia
+    if (now > cutoff) {
+      const verb = action === 'cancel' ? 'cancelar' : 'reagendar';
+
+      throw new BadRequestException({
+        code: 'MIN_CANCEL_NOTICE',
+        message: `Não é possível ${verb} com menos de ${hours}h de antecedência.`,
+        minNoticeHours: hours,
+        appointmentStartAt: appointmentStartAt.toISOString(),
+        cutoffAt: cutoff.toISOString(),
+      });
+    }
+  }
 
   async create(tenantId: string, userId: string, dto: CreateAppointmentDto) {
     const startAt = new Date(dto.startAt);
@@ -382,6 +419,28 @@ export class AppointmentsService {
         );
       }
     }
+    // ----------------------------------------------------------------
+    // SETTINGS DO TENANT (buffer/overbooking)
+    // ----------------------------------------------------------------
+    const tenantSettings = await this.prisma.tenantSettings.findUnique({
+      where: { tenantId },
+      select: {
+        bufferBetweenAppointmentsMin: true,
+        allowOverbooking: true,
+      },
+    });
+
+    const bufferMinRaw = tenantSettings?.bufferBetweenAppointmentsMin ?? 0;
+    const bufferMin = Number.isFinite(bufferMinRaw)
+      ? Math.max(0, bufferMinRaw)
+      : 0;
+
+    const allowOverbooking = !!tenantSettings?.allowOverbooking;
+
+    // janela “expandida” para validar buffer entre atendimentos
+    const startAtBuffered =
+      bufferMin > 0 ? addMinutes(startAt, -bufferMin) : startAt;
+    const endAtBuffered = bufferMin > 0 ? addMinutes(endAt, bufferMin) : endAt;
 
     // ----------------------------------------------------------------
     // CONFLITO COM BLOCKS
@@ -390,8 +449,8 @@ export class AppointmentsService {
       where: {
         tenantId,
         providerId: dto.providerId,
-        startAt: { lt: endAt },
-        endAt: { gt: startAt },
+        startAt: { lt: endAtBuffered },
+        endAt: { gt: startAtBuffered },
       },
       select: { id: true },
     });
@@ -403,19 +462,21 @@ export class AppointmentsService {
     // ----------------------------------------------------------------
     // CONFLITO COM OUTROS APPOINTMENTS (ignora cancelados)
     // ----------------------------------------------------------------
-    const hasApptConflict = await this.prisma.appointment.findFirst({
-      where: {
-        tenantId,
-        providerId: dto.providerId,
-        status: { not: 'cancelled' as any },
-        startAt: { lt: endAt },
-        endAt: { gt: startAt },
-      },
-      select: { id: true },
-    });
+    if (!allowOverbooking) {
+      const hasApptConflict = await this.prisma.appointment.findFirst({
+        where: {
+          tenantId,
+          providerId: dto.providerId,
+          status: { not: 'cancelled' as any },
+          startAt: { lt: endAtBuffered },
+          endAt: { gt: startAtBuffered },
+        },
+        select: { id: true },
+      });
 
-    if (hasApptConflict) {
-      throw new BadRequestException('Conflito com outro agendamento.');
+      if (hasApptConflict) {
+        throw new BadRequestException('Conflito com outro agendamento.');
+      }
     }
 
     // ----------------------------------------------------------------
@@ -567,6 +628,7 @@ export class AppointmentsService {
     tenantId: string,
     appointmentId: string,
     dto: { startAt?: string; endAt?: string },
+    actorRole: Role,
   ) {
     return this.prisma.$transaction(async (tx) => {
       const current = await tx.appointment.findFirst({
@@ -580,6 +642,12 @@ export class AppointmentsService {
       if (!current) {
         throw new NotFoundException('Appointment não encontrado no tenant');
       }
+      await this.assertMinCancelNotice(
+        tenantId,
+        current.startAt,
+        actorRole,
+        'reschedule',
+      );
 
       const startAt = dto.startAt ? new Date(dto.startAt) : current.startAt;
       const endAt = dto.endAt
@@ -644,24 +712,45 @@ export class AppointmentsService {
           );
         }
       }
-
-      // conflito com OUTROS appointments (ignora cancelados e o próprio)
-      const overlapAppointment = await tx.appointment.findFirst({
-        where: {
-          tenantId,
-          providerId: current.providerId,
-          id: { not: current.id },
-          status: { not: 'cancelled' as any },
-          startAt: { lt: endAt },
-          endAt: { gt: startAt },
+      const tenantSettings = await tx.tenantSettings.findUnique({
+        where: { tenantId },
+        select: {
+          bufferBetweenAppointmentsMin: true,
+          allowOverbooking: true,
         },
-        select: { id: true },
       });
 
-      if (overlapAppointment) {
-        throw new BadRequestException(
-          'Conflito com outro appointment no intervalo solicitado',
-        );
+      const bufferMinRaw = tenantSettings?.bufferBetweenAppointmentsMin ?? 0;
+      const bufferMin = Number.isFinite(bufferMinRaw)
+        ? Math.max(0, bufferMinRaw)
+        : 0;
+
+      const allowOverbooking = !!tenantSettings?.allowOverbooking;
+
+      const startAtBuffered =
+        bufferMin > 0 ? addMinutes(startAt, -bufferMin) : startAt;
+      const endAtBuffered =
+        bufferMin > 0 ? addMinutes(endAt, bufferMin) : endAt;
+
+      // conflito com OUTROS appointments (ignora cancelados e o próprio)
+      if (!allowOverbooking) {
+        const overlapAppointment = await tx.appointment.findFirst({
+          where: {
+            tenantId,
+            providerId: current.providerId,
+            id: { not: current.id },
+            status: { not: 'cancelled' as any },
+            startAt: { lt: endAtBuffered },
+            endAt: { gt: startAtBuffered },
+          },
+          select: { id: true },
+        });
+
+        if (overlapAppointment) {
+          throw new BadRequestException(
+            'Conflito com outro appointment no intervalo solicitado',
+          );
+        }
       }
 
       // conflito com BLOCKS
@@ -669,8 +758,8 @@ export class AppointmentsService {
         where: {
           tenantId,
           providerId: current.providerId,
-          startAt: { lt: endAt },
-          endAt: { gt: startAt },
+          startAt: { lt: endAtBuffered },
+          endAt: { gt: startAtBuffered },
         },
         select: { id: true },
       });
@@ -781,7 +870,7 @@ export class AppointmentsService {
   }
 
   // CANCELAMENTO SEGURO (ajusta plano e financeiro) ---------------------------
-  async remove(tenantId: string, id: string) {
+  async remove(tenantId: string, id: string, actorRole: Role) {
     return this.prisma.$transaction(async (tx) => {
       const appt = await tx.appointment.findFirst({
         where: { id, tenantId },
@@ -789,12 +878,19 @@ export class AppointmentsService {
           id: true,
           status: true,
           customerPlanId: true,
+          startAt: true,
         },
       });
 
       if (!appt) {
         throw new NotFoundException('Appointment não encontrado no tenant');
       }
+      await this.assertMinCancelNotice(
+        tenantId,
+        appt.startAt,
+        actorRole,
+        'cancel',
+      );
 
       if (appt.status === AppointmentStateEnum.done) {
         throw new BadRequestException(
