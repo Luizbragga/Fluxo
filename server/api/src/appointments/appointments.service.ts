@@ -1,8 +1,10 @@
+// src/appointments/appointments.service.ts
 import {
   Injectable,
   BadRequestException,
   NotFoundException,
   ForbiddenException,
+  Logger,
 } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { CreateAppointmentDto } from './dto/create-appointment.dto';
@@ -13,19 +15,26 @@ import {
   CustomerPlanPaymentStatus,
   Role,
 } from '@prisma/client';
+import { EmailService } from '../notifications/email.service';
 
-const DEFAULT_COMMISSION_PERCENTAGE = 50; // 50% por padrão (ajustável depois)
+const DEFAULT_COMMISSION_PERCENTAGE = 50; // 50% por padrão (ajustável)
 
 @Injectable()
 export class AppointmentsService {
-  constructor(private prisma: PrismaService) {}
+  private readonly logger = new Logger(AppointmentsService.name);
+
+  constructor(
+    private prisma: PrismaService,
+    private email: EmailService,
+  ) {}
+
   private async assertMinCancelNotice(
     tenantId: string,
     appointmentStartAt: Date,
     actorRole: Role,
     action: 'cancel' | 'reschedule',
   ) {
-    // Owner/Admin podem sempre fazer override (regra típica: vale pro cliente/operadores, não pro dono)
+    // Owner/Admin podem sempre fazer override
     if (actorRole === Role.owner || actorRole === Role.admin) return;
 
     const settings = await this.prisma.tenantSettings.findUnique({
@@ -39,7 +48,6 @@ export class AppointmentsService {
     const now = new Date();
     const cutoff = addMinutes(appointmentStartAt, -hours * 60);
 
-    // se já passou do limite, bloqueia
     if (now > cutoff) {
       const verb = action === 'cancel' ? 'cancelar' : 'reagendar';
 
@@ -89,7 +97,6 @@ export class AppointmentsService {
     let effectiveServicePriceCents = service.priceCents;
     let effectiveServiceName = service.name;
 
-    // helper pra mensagens de horário
     const formatMinutesToTime = (minutes: number) => {
       const h = Math.floor(minutes / 60);
       const m = minutes % 60;
@@ -106,15 +113,10 @@ export class AppointmentsService {
         where: {
           id: dto.customerPlanId,
           tenantId,
-          status: CustomerPlanStatus.active, // só planos ativos
-          OR: [
-            { locationId: provider.locationId }, // plano daquela filial
-            { locationId: null }, // ou plano global
-          ],
+          status: CustomerPlanStatus.active,
+          OR: [{ locationId: provider.locationId }, { locationId: null }],
         },
-        include: {
-          planTemplate: true,
-        },
+        include: { planTemplate: true },
       });
 
       if (!customerPlan) {
@@ -122,13 +124,11 @@ export class AppointmentsService {
           'Plano do cliente inválido para este tenant/local ou não está ativo.',
         );
       }
+
       customerPlanId = customerPlan.id;
       const template = customerPlan.planTemplate;
 
-      // ----------------------------------------------------------------
-      // 1) RESTRIÇÃO DE SERVIÇOS DO PLANO (sameDayServiceIds)
-      //    - impede usar o plano com serviço fora da lista
-      // ----------------------------------------------------------------
+      // 1) Restrições de serviço do plano
       if (template?.sameDayServiceIds) {
         const allowedServiceIds =
           template.sameDayServiceIds as unknown as string[];
@@ -144,14 +144,10 @@ export class AppointmentsService {
         }
       }
 
-      // ----------------------------------------------------------------
-      // 2) DIAS DA SEMANA PERMITIDOS
-      // ----------------------------------------------------------------
-      // 2) DIAS DA SEMANA PERMITIDOS (usando números 0–6 do getDay)
+      // 2) Dias da semana permitidos
       if (template && template.allowedWeekdays) {
         const rawWeekdays = template.allowedWeekdays as any;
 
-        // garantimos um array de números entre 0 e 6
         const allowedNumbers: number[] = (
           Array.isArray(rawWeekdays) ? rawWeekdays : []
         )
@@ -159,7 +155,7 @@ export class AppointmentsService {
           .filter((v) => Number.isInteger(v) && v >= 0 && v <= 6);
 
         if (allowedNumbers.length > 0) {
-          const weekdayIndex = startAt.getDay(); // 0 = domingo ... 6 = sábado
+          const weekdayIndex = startAt.getDay();
 
           if (!allowedNumbers.includes(weekdayIndex)) {
             const weekdayLabel: Record<number, string> = {
@@ -184,9 +180,7 @@ export class AppointmentsService {
         }
       }
 
-      // ----------------------------------------------------------------
-      // 3) ANTECEDÊNCIA MÍNIMA (minAdvanceDays)
-      // ----------------------------------------------------------------
+      // 3) Antecedência mínima (minAdvanceDays)
       if (template?.minAdvanceDays && template.minAdvanceDays > 0) {
         const now = new Date();
 
@@ -221,9 +215,7 @@ export class AppointmentsService {
         }
       }
 
-      // ----------------------------------------------------------------
-      // 4) INTERVALO MÍNIMO ENTRE VISITAS (minDaysBetweenVisits)
-      // ----------------------------------------------------------------
+      // 4) Intervalo mínimo entre visitas (minDaysBetweenVisits)
       if (template?.minDaysBetweenVisits && template.minDaysBetweenVisits > 0) {
         const lastVisit = await this.prisma.appointment.findFirst({
           where: {
@@ -269,9 +261,7 @@ export class AppointmentsService {
         }
       }
 
-      // ----------------------------------------------------------------
-      // 5) CICLO DO PLANO + CONTROLE DE VISITAS (comparando por DIA)
-      // ----------------------------------------------------------------
+      // 5) Ciclo do plano + controle de visitas (comparando por DIA)
       const apptDateOnly = new Date(
         startAt.getFullYear(),
         startAt.getMonth(),
@@ -302,7 +292,6 @@ export class AppointmentsService {
         0,
       );
 
-      // Se a DATA do agendamento é DEPOIS do fim do ciclo, marca plano como atrasado
       if (apptDateOnly > cycleEndDateOnly) {
         await this.prisma.customerPlan.update({
           where: { id: customerPlan.id },
@@ -317,7 +306,6 @@ export class AppointmentsService {
         );
       }
 
-      // Se a DATA é ANTES do início do ciclo atual, também não pode usar o plano
       if (apptDateOnly < cycleStartDateOnly) {
         throw new BadRequestException(
           'Data do agendamento está fora do ciclo atual do plano do cliente.',
@@ -337,23 +325,16 @@ export class AppointmentsService {
 
       await this.prisma.customerPlan.update({
         where: { id: customerPlan.id },
-        data: {
-          visitsUsedInCycle: nextVisitsUsed,
-        },
+        data: { visitsUsedInCycle: nextVisitsUsed },
       });
 
-      // ----------------------------------------------------------------
-      // 6) AJUSTE DE DURAÇÃO / PREÇO PARA COMBOS (sameDayServiceIds)
-      // ----------------------------------------------------------------
+      // 6) Ajuste de duração / preço para combos
       if (template?.sameDayServiceIds) {
         const comboIds = template.sameDayServiceIds as unknown as string[];
 
         if (Array.isArray(comboIds) && comboIds.length > 0) {
           const comboServices = await this.prisma.service.findMany({
-            where: {
-              tenantId,
-              id: { in: comboIds },
-            },
+            where: { tenantId, id: { in: comboIds } },
           });
 
           if (comboServices.length > 0) {
@@ -367,15 +348,12 @@ export class AppointmentsService {
               0,
             );
 
-            // nome exibido na agenda / histórico
             effectiveServiceName = template.name ?? service.name;
           }
         }
       }
 
-      // ----------------------------------------------------------------
-      // 7) JANELA DE HORÁRIO DO PLANO (usa a duração EFETIVA da visita)
-      // ----------------------------------------------------------------
+      // 7) Janela de horário do plano (usa duração efetiva)
       if (
         template?.allowedStartTimeMinutes != null &&
         template.allowedEndTimeMinutes != null
@@ -396,21 +374,20 @@ export class AppointmentsService {
         }
       }
 
-      // endAt sempre baseado na duração efetiva da visita de plano
+      // endAt sempre baseado na duração efetiva do plano
       endAt = addMinutes(startAt, effectiveDurationMin);
     }
 
-    // Se endAt veio vazio ou inválido, normaliza
+    // normaliza endAt se inválido
     if (Number.isNaN(endAt.getTime())) {
       endAt = addMinutes(startAt, effectiveDurationMin);
     }
 
-    // Garante ordem cronológica
     if (isBefore(endAt, startAt)) {
       throw new BadRequestException('endAt deve ser após startAt.');
     }
 
-    // Para atendimentos AVULSOS (sem plano) garante que duração bate o serviço
+    // avulso: garante duração do serviço
     if (!dto.customerPlanId) {
       const expectedEnd = addMinutes(startAt, service.durationMin);
       if (expectedEnd.getTime() !== endAt.getTime()) {
@@ -419,6 +396,7 @@ export class AppointmentsService {
         );
       }
     }
+
     // ----------------------------------------------------------------
     // SETTINGS DO TENANT (buffer/overbooking)
     // ----------------------------------------------------------------
@@ -437,7 +415,6 @@ export class AppointmentsService {
 
     const allowOverbooking = !!tenantSettings?.allowOverbooking;
 
-    // janela “expandida” para validar buffer entre atendimentos
     const startAtBuffered =
       bufferMin > 0 ? addMinutes(startAt, -bufferMin) : startAt;
     const endAtBuffered = bufferMin > 0 ? addMinutes(endAt, bufferMin) : endAt;
@@ -488,10 +465,7 @@ export class AppointmentsService {
     let customerId: string;
 
     const existingCustomer = await this.prisma.customer.findFirst({
-      where: {
-        tenantId,
-        phone: normalizedPhone,
-      },
+      where: { tenantId, phone: normalizedPhone },
     });
 
     if (!existingCustomer) {
@@ -559,14 +533,9 @@ export class AppointmentsService {
         tenantId,
         providerId: dto.providerId,
         active: true,
-        OR: [
-          { serviceId: dto.serviceId }, // regra específica do serviço
-          { serviceId: null }, // regra padrão do profissional
-        ],
+        OR: [{ serviceId: dto.serviceId }, { serviceId: null }],
       },
-      orderBy: {
-        serviceId: 'desc',
-      },
+      orderBy: { serviceId: 'desc' },
     });
 
     const commissionPercentage =
@@ -587,6 +556,15 @@ export class AppointmentsService {
         providerEarningsCents,
         houseEarningsCents,
       },
+    });
+
+    // ------------------------------------------------------------------
+    // EMAIL: NOVO AGENDAMENTO (não quebra a criação se falhar)
+    // ------------------------------------------------------------------
+    this.notifyNewBooking(tenantId, appointment.id).catch((err) => {
+      this.logger.warn(
+        `Falha ao enviar emails de novo agendamento: ${err?.message ?? err}`,
+      );
     });
 
     return appointment;
@@ -630,155 +608,163 @@ export class AppointmentsService {
     dto: { startAt?: string; endAt?: string },
     actorRole: Role,
   ) {
-    return this.prisma.$transaction(async (tx) => {
-      const current = await tx.appointment.findFirst({
-        where: { id: appointmentId, tenantId },
-        include: {
-          service: { select: { id: true, durationMin: true } },
-          provider: { select: { id: true } },
-        },
-      });
-
-      if (!current) {
-        throw new NotFoundException('Appointment não encontrado no tenant');
-      }
-      await this.assertMinCancelNotice(
-        tenantId,
-        current.startAt,
-        actorRole,
-        'reschedule',
-      );
-
-      const startAt = dto.startAt ? new Date(dto.startAt) : current.startAt;
-      const endAt = dto.endAt
-        ? new Date(dto.endAt)
-        : new Date(startAt.getTime() + current.service.durationMin * 60_000);
-
-      if (isNaN(startAt.getTime())) {
-        throw new BadRequestException('startAt inválido');
-      }
-      if (isNaN(endAt.getTime())) {
-        throw new BadRequestException('endAt inválido');
-      }
-      if (endAt <= startAt) {
-        throw new BadRequestException('endAt deve ser maior que startAt');
-      }
-
-      // 🔒 SE TEM PLANO, GARANTIR QUE A NOVA DATA ESTÁ DENTRO DO CICLO ATUAL
-      if (current.customerPlanId) {
-        const customerPlan = await tx.customerPlan.findUnique({
-          where: { id: current.customerPlanId },
-          select: {
-            id: true,
-            status: true,
-            currentCycleStart: true,
-            currentCycleEnd: true,
+    const { updated, oldStartAt } = await this.prisma.$transaction(
+      async (tx: any) => {
+        const current = await tx.appointment.findFirst({
+          where: { id: appointmentId, tenantId },
+          include: {
+            service: { select: { id: true, durationMin: true } },
+            provider: { select: { id: true } },
           },
         });
 
-        if (!customerPlan) {
-          throw new BadRequestException(
-            'Plano do cliente não está mais ativo para reagendar este agendamento.',
-          );
+        if (!current) {
+          throw new NotFoundException('Appointment não encontrado no tenant');
         }
 
-        if (customerPlan.status !== CustomerPlanStatus.active) {
-          throw new BadRequestException(
-            'Plano do cliente não está mais ativo para reagendar este agendamento.',
-          );
-        }
+        await this.assertMinCancelNotice(
+          tenantId,
+          current.startAt,
+          actorRole,
+          'reschedule',
+        );
 
-        // se nova data for depois do fim do ciclo, bloqueia e marca como atrasado
-        if (startAt > customerPlan.currentCycleEnd) {
-          await tx.customerPlan.update({
-            where: { id: customerPlan.id },
-            data: {
-              status: CustomerPlanStatus.late,
-              lastPaymentStatus: CustomerPlanPaymentStatus.late,
+        const startAt = dto.startAt ? new Date(dto.startAt) : current.startAt;
+        const endAt = dto.endAt
+          ? new Date(dto.endAt)
+          : new Date(startAt.getTime() + current.service.durationMin * 60_000);
+
+        if (isNaN(startAt.getTime()))
+          throw new BadRequestException('startAt inválido');
+        if (isNaN(endAt.getTime()))
+          throw new BadRequestException('endAt inválido');
+        if (endAt <= startAt)
+          throw new BadRequestException('endAt deve ser maior que startAt');
+
+        // Se tem plano: garantir nova data dentro do ciclo atual
+        if (current.customerPlanId) {
+          const customerPlan = await tx.customerPlan.findUnique({
+            where: { id: current.customerPlanId },
+            select: {
+              id: true,
+              status: true,
+              currentCycleStart: true,
+              currentCycleEnd: true,
             },
           });
 
-          throw new BadRequestException(
-            'Plano do cliente está com pagamento em atraso e foi bloqueado. Não é possível reagendar até regularizar.',
-          );
+          if (
+            !customerPlan ||
+            customerPlan.status !== CustomerPlanStatus.active
+          ) {
+            throw new BadRequestException(
+              'Plano do cliente não está mais ativo para reagendar este agendamento.',
+            );
+          }
+
+          if (startAt > customerPlan.currentCycleEnd) {
+            await tx.customerPlan.update({
+              where: { id: customerPlan.id },
+              data: {
+                status: CustomerPlanStatus.late,
+                lastPaymentStatus: CustomerPlanPaymentStatus.late,
+              },
+            });
+
+            throw new BadRequestException(
+              'Plano do cliente está com pagamento em atraso e foi bloqueado. Não é possível reagendar até regularizar.',
+            );
+          }
+
+          if (
+            startAt < customerPlan.currentCycleStart ||
+            startAt > customerPlan.currentCycleEnd
+          ) {
+            throw new BadRequestException(
+              'Nova data do agendamento está fora do ciclo atual do plano do cliente.',
+            );
+          }
         }
 
-        if (
-          startAt < customerPlan.currentCycleStart ||
-          startAt > customerPlan.currentCycleEnd
-        ) {
-          throw new BadRequestException(
-            'Nova data do agendamento está fora do ciclo atual do plano do cliente.',
-          );
+        const tenantSettings = await tx.tenantSettings.findUnique({
+          where: { tenantId },
+          select: {
+            bufferBetweenAppointmentsMin: true,
+            allowOverbooking: true,
+          },
+        });
+
+        const bufferMinRaw = tenantSettings?.bufferBetweenAppointmentsMin ?? 0;
+        const bufferMin = Number.isFinite(bufferMinRaw)
+          ? Math.max(0, bufferMinRaw)
+          : 0;
+
+        const allowOverbooking = !!tenantSettings?.allowOverbooking;
+
+        const startAtBuffered =
+          bufferMin > 0 ? addMinutes(startAt, -bufferMin) : startAt;
+        const endAtBuffered =
+          bufferMin > 0 ? addMinutes(endAt, bufferMin) : endAt;
+
+        // conflito com OUTROS appointments (ignora cancelados e o próprio)
+        if (!allowOverbooking) {
+          const overlapAppointment = await tx.appointment.findFirst({
+            where: {
+              tenantId,
+              providerId: current.providerId,
+              id: { not: current.id },
+              status: { not: 'cancelled' as any },
+              startAt: { lt: endAtBuffered },
+              endAt: { gt: startAtBuffered },
+            },
+            select: { id: true },
+          });
+
+          if (overlapAppointment) {
+            throw new BadRequestException(
+              'Conflito com outro appointment no intervalo solicitado',
+            );
+          }
         }
-      }
-      const tenantSettings = await tx.tenantSettings.findUnique({
-        where: { tenantId },
-        select: {
-          bufferBetweenAppointmentsMin: true,
-          allowOverbooking: true,
-        },
-      });
 
-      const bufferMinRaw = tenantSettings?.bufferBetweenAppointmentsMin ?? 0;
-      const bufferMin = Number.isFinite(bufferMinRaw)
-        ? Math.max(0, bufferMinRaw)
-        : 0;
-
-      const allowOverbooking = !!tenantSettings?.allowOverbooking;
-
-      const startAtBuffered =
-        bufferMin > 0 ? addMinutes(startAt, -bufferMin) : startAt;
-      const endAtBuffered =
-        bufferMin > 0 ? addMinutes(endAt, bufferMin) : endAt;
-
-      // conflito com OUTROS appointments (ignora cancelados e o próprio)
-      if (!allowOverbooking) {
-        const overlapAppointment = await tx.appointment.findFirst({
+        // conflito com BLOCKS
+        const overlapBlock = await tx.block.findFirst({
           where: {
             tenantId,
             providerId: current.providerId,
-            id: { not: current.id },
-            status: { not: 'cancelled' as any },
             startAt: { lt: endAtBuffered },
             endAt: { gt: startAtBuffered },
           },
           select: { id: true },
         });
 
-        if (overlapAppointment) {
+        if (overlapBlock) {
           throw new BadRequestException(
-            'Conflito com outro appointment no intervalo solicitado',
+            'Conflito com um block do provider no intervalo solicitado',
           );
         }
-      }
 
-      // conflito com BLOCKS
-      const overlapBlock = await tx.block.findFirst({
-        where: {
-          tenantId,
-          providerId: current.providerId,
-          startAt: { lt: endAtBuffered },
-          endAt: { gt: startAtBuffered },
-        },
-        select: { id: true },
-      });
+        const updated = await tx.appointment.update({
+          where: { id: current.id },
+          data: { startAt, endAt },
+          include: {
+            service: { select: { id: true, name: true, durationMin: true } },
+            provider: { select: { id: true, name: true } },
+          },
+        });
 
-      if (overlapBlock) {
-        throw new BadRequestException(
-          'Conflito com um block do provider no intervalo solicitado',
-        );
-      }
+        return { updated, oldStartAt: current.startAt };
+      },
+    );
 
-      return tx.appointment.update({
-        where: { id: current.id },
-        data: { startAt, endAt },
-        include: {
-          service: { select: { id: true, name: true, durationMin: true } },
-          provider: { select: { id: true, name: true } },
-        },
-      });
+    // EMAIL (não quebra o reagendamento se falhar)
+    this.notifyReschedule(tenantId, appointmentId, oldStartAt).catch((err) => {
+      this.logger.warn(
+        `Falha ao enviar emails de reagendamento: ${err?.message ?? err}`,
+      );
     });
+
+    return updated;
   }
 
   // ATUALIZAR STATUS -----------------------------------------------------------
@@ -787,7 +773,7 @@ export class AppointmentsService {
     appointmentId: string,
     status: AppointmentStateEnum,
   ) {
-    return this.prisma.$transaction(async (tx) => {
+    return this.prisma.$transaction(async (tx: any) => {
       const found = await tx.appointment.findFirst({
         where: { id: appointmentId, tenantId },
         include: {
@@ -818,7 +804,7 @@ export class AppointmentsService {
 
       const updated = await tx.appointment.update({
         where: { id: found.id },
-        data: { status },
+        data: { status: status as any },
         include: {
           service: {
             select: {
@@ -832,6 +818,7 @@ export class AppointmentsService {
         },
       });
 
+      // se virou DONE, garante earning existe
       if (status === AppointmentStateEnum.done) {
         const existing = await tx.appointmentEarning.findUnique({
           where: { appointmentId: updated.id },
@@ -865,13 +852,14 @@ export class AppointmentsService {
           });
         }
       }
+
       return updated;
     });
   }
 
   // CANCELAMENTO SEGURO (ajusta plano e financeiro) ---------------------------
   async remove(tenantId: string, id: string, actorRole: Role) {
-    return this.prisma.$transaction(async (tx) => {
+    const updated = await this.prisma.$transaction(async (tx: any) => {
       const appt = await tx.appointment.findFirst({
         where: { id, tenantId },
         select: {
@@ -885,6 +873,7 @@ export class AppointmentsService {
       if (!appt) {
         throw new NotFoundException('Appointment não encontrado no tenant');
       }
+
       await this.assertMinCancelNotice(
         tenantId,
         appt.startAt,
@@ -908,6 +897,7 @@ export class AppointmentsService {
         });
       }
 
+      // devolve visita do plano se aplicável
       if (appt.customerPlanId) {
         const plan = await tx.customerPlan.findUnique({
           where: { id: appt.customerPlanId },
@@ -917,13 +907,12 @@ export class AppointmentsService {
         if (plan && plan.visitsUsedInCycle > 0) {
           await tx.customerPlan.update({
             where: { id: plan.id },
-            data: {
-              visitsUsedInCycle: plan.visitsUsedInCycle - 1,
-            },
+            data: { visitsUsedInCycle: plan.visitsUsedInCycle - 1 },
           });
         }
       }
 
+      // remove earning se existir
       await tx.appointmentEarning.deleteMany({
         where: { appointmentId: appt.id },
       });
@@ -937,6 +926,15 @@ export class AppointmentsService {
         },
       });
     });
+
+    // EMAIL (não quebra o cancelamento se falhar)
+    this.notifyCancellation(tenantId, id).catch((err) => {
+      this.logger.warn(
+        `Falha ao enviar emails de cancelamento: ${err?.message ?? err}`,
+      );
+    });
+
+    return updated;
   }
 
   // DEBUG HELPERS --------------------------------------------------------------
@@ -1014,9 +1012,7 @@ export class AppointmentsService {
       },
     });
 
-    if (serviceRule) {
-      return serviceRule.percentage;
-    }
+    if (serviceRule) return serviceRule.percentage;
 
     const defaultRule = await tx.providerCommission.findFirst({
       where: {
@@ -1027,10 +1023,294 @@ export class AppointmentsService {
       },
     });
 
-    if (defaultRule) {
-      return defaultRule.percentage;
-    }
+    if (defaultRule) return defaultRule.percentage;
 
     return DEFAULT_COMMISSION_PERCENTAGE;
+  }
+
+  // ---------------------------------------------------------------------------
+  // EMAIL: NOVO AGENDAMENTO (gestão + provider), respeitando TenantSettings
+  // ---------------------------------------------------------------------------
+  private async notifyNewBooking(tenantId: string, appointmentId: string) {
+    const settings = await this.prisma.tenantSettings.findUnique({
+      where: { tenantId },
+      select: {
+        emailNewBooking: true,
+        notifyProvidersNewBooking: true,
+        timezone: true,
+      },
+    });
+
+    if (!settings) return;
+    if (!settings.emailNewBooking && !settings.notifyProvidersNewBooking)
+      return;
+
+    const appt = await this.prisma.appointment.findFirst({
+      where: { id: appointmentId, tenantId },
+      select: {
+        startAt: true,
+        clientName: true,
+        clientPhone: true,
+        serviceName: true,
+        provider: {
+          select: { name: true, user: { select: { email: true } } },
+        },
+        location: { select: { name: true } },
+      },
+    });
+
+    if (!appt) return;
+
+    const tz = settings.timezone ?? 'Europe/Lisbon';
+    const startLabel = appt.startAt.toLocaleString('pt-PT', {
+      timeZone: tz,
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
+    });
+
+    const subject = `Novo agendamento - ${appt.clientName} (${startLabel})`;
+
+    const html = `
+      <div style="font-family: Arial, sans-serif; line-height: 1.4;">
+        <h2>Novo agendamento</h2>
+        <p><b>Data/Hora:</b> ${startLabel}</p>
+        <p><b>Cliente:</b> ${appt.clientName}</p>
+        <p><b>Telefone:</b> ${appt.clientPhone}</p>
+        <p><b>Serviço:</b> ${appt.serviceName}</p>
+        <p><b>Profissional:</b> ${appt.provider?.name ?? '-'}</p>
+        <p><b>Unidade:</b> ${appt.location?.name ?? '-'}</p>
+        <hr />
+        <p style="color:#666; font-size: 12px;">Fluxo - Notificação automática</p>
+      </div>
+    `.trim();
+
+    const recipients = new Set<string>();
+
+    // 1) Gestão (owner/admin/attendant)
+    if (settings.emailNewBooking) {
+      const managers = await this.prisma.user.findMany({
+        where: {
+          tenantId,
+          active: true,
+          role: { in: ['owner', 'admin', 'attendant'] as any },
+        },
+        select: { email: true },
+      });
+
+      for (const u of managers) if (u.email) recipients.add(u.email);
+    }
+
+    // 2) Provider do agendamento
+    if (settings.notifyProvidersNewBooking) {
+      const providerEmail = appt.provider?.user?.email;
+      if (providerEmail) recipients.add(providerEmail);
+    }
+
+    if (recipients.size === 0) return;
+
+    await this.email.send({
+      to: Array.from(recipients),
+      subject,
+      html,
+      text: `Novo agendamento: ${appt.clientName} - ${startLabel} - ${appt.serviceName}`,
+    });
+  }
+
+  // ---------------------------------------------------------------------------
+  // EMAIL: CANCELAMENTO (gestão + provider), respeitando TenantSettings
+  // ---------------------------------------------------------------------------
+  private async notifyCancellation(tenantId: string, appointmentId: string) {
+    const settings = await this.prisma.tenantSettings.findUnique({
+      where: { tenantId },
+      select: {
+        emailCancellation: true,
+        notifyProvidersChanges: true,
+        timezone: true,
+      },
+    });
+
+    if (!settings) return;
+    if (!settings.emailCancellation && !settings.notifyProvidersChanges) return;
+
+    const appt = await this.prisma.appointment.findFirst({
+      where: { id: appointmentId, tenantId },
+      select: {
+        startAt: true,
+        clientName: true,
+        clientPhone: true,
+        serviceName: true,
+        provider: {
+          select: { name: true, user: { select: { email: true } } },
+        },
+        location: { select: { name: true } },
+      },
+    });
+
+    if (!appt) return;
+
+    const tz = settings.timezone ?? 'Europe/Lisbon';
+    const startLabel = appt.startAt.toLocaleString('pt-PT', {
+      timeZone: tz,
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
+    });
+
+    const subject = `Cancelamento - ${appt.clientName} (${startLabel})`;
+
+    const html = `
+      <div style="font-family: Arial, sans-serif; line-height: 1.4;">
+        <h2>Agendamento cancelado</h2>
+        <p><b>Data/Hora:</b> ${startLabel}</p>
+        <p><b>Cliente:</b> ${appt.clientName}</p>
+        <p><b>Telefone:</b> ${appt.clientPhone}</p>
+        <p><b>Serviço:</b> ${appt.serviceName}</p>
+        <p><b>Profissional:</b> ${appt.provider?.name ?? '-'}</p>
+        <p><b>Unidade:</b> ${appt.location?.name ?? '-'}</p>
+        <hr />
+        <p style="color:#666; font-size: 12px;">Fluxo - Notificação automática</p>
+      </div>
+    `.trim();
+
+    const recipients = new Set<string>();
+
+    // Gestão (owner/admin/attendant)
+    if (settings.emailCancellation) {
+      const managers = await this.prisma.user.findMany({
+        where: {
+          tenantId,
+          active: true,
+          role: { in: ['owner', 'admin', 'attendant'] as any },
+        },
+        select: { email: true },
+      });
+
+      for (const u of managers) if (u.email) recipients.add(u.email);
+    }
+
+    // Provider
+    if (settings.notifyProvidersChanges) {
+      const providerEmail = appt.provider?.user?.email;
+      if (providerEmail) recipients.add(providerEmail);
+    }
+
+    if (recipients.size === 0) return;
+
+    await this.email.send({
+      to: Array.from(recipients),
+      subject,
+      html,
+      text: `Cancelamento: ${appt.clientName} - ${startLabel} - ${appt.serviceName}`,
+    });
+  }
+
+  // ---------------------------------------------------------------------------
+  // EMAIL: REAGENDAMENTO (gestão + provider), respeitando TenantSettings
+  // ---------------------------------------------------------------------------
+  private async notifyReschedule(
+    tenantId: string,
+    appointmentId: string,
+    oldStartAt: Date,
+  ) {
+    const settings = await this.prisma.tenantSettings.findUnique({
+      where: { tenantId },
+      select: {
+        emailReschedule: true,
+        notifyProvidersChanges: true,
+        timezone: true,
+      },
+    });
+
+    if (!settings) return;
+    if (!settings.emailReschedule && !settings.notifyProvidersChanges) return;
+
+    const appt = await this.prisma.appointment.findFirst({
+      where: { id: appointmentId, tenantId },
+      select: {
+        startAt: true,
+        clientName: true,
+        clientPhone: true,
+        serviceName: true,
+        provider: {
+          select: { name: true, user: { select: { email: true } } },
+        },
+        location: { select: { name: true } },
+      },
+    });
+
+    if (!appt) return;
+
+    const tz = settings.timezone ?? 'Europe/Lisbon';
+
+    const oldLabel = oldStartAt.toLocaleString('pt-PT', {
+      timeZone: tz,
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
+    });
+
+    const newLabel = appt.startAt.toLocaleString('pt-PT', {
+      timeZone: tz,
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
+    });
+
+    const subject = `Reagendamento - ${appt.clientName} (${oldLabel} → ${newLabel})`;
+
+    const html = `
+      <div style="font-family: Arial, sans-serif; line-height: 1.4;">
+        <h2>Agendamento reagendado</h2>
+        <p><b>Antes:</b> ${oldLabel}</p>
+        <p><b>Novo:</b> ${newLabel}</p>
+        <p><b>Cliente:</b> ${appt.clientName}</p>
+        <p><b>Telefone:</b> ${appt.clientPhone}</p>
+        <p><b>Serviço:</b> ${appt.serviceName}</p>
+        <p><b>Profissional:</b> ${appt.provider?.name ?? '-'}</p>
+        <p><b>Unidade:</b> ${appt.location?.name ?? '-'}</p>
+        <hr />
+        <p style="color:#666; font-size: 12px;">Fluxo - Notificação automática</p>
+      </div>
+    `.trim();
+
+    const recipients = new Set<string>();
+
+    // Gestão (owner/admin/attendant)
+    if (settings.emailReschedule) {
+      const managers = await this.prisma.user.findMany({
+        where: {
+          tenantId,
+          active: true,
+          role: { in: ['owner', 'admin', 'attendant'] as any },
+        },
+        select: { email: true },
+      });
+
+      for (const u of managers) if (u.email) recipients.add(u.email);
+    }
+
+    // Provider
+    if (settings.notifyProvidersChanges) {
+      const providerEmail = appt.provider?.user?.email;
+      if (providerEmail) recipients.add(providerEmail);
+    }
+
+    if (recipients.size === 0) return;
+
+    await this.email.send({
+      to: Array.from(recipients),
+      subject,
+      html,
+      text: `Reagendamento: ${appt.clientName} - ${oldLabel} -> ${newLabel} - ${appt.serviceName}`,
+    });
   }
 }

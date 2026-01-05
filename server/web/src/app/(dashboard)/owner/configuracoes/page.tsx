@@ -293,10 +293,30 @@ export default function OwnerConfiguracoesPage() {
         );
         return;
       }
+      // valida "Aviso mínimo cancel." (0..720h) e garante inteiro
+      if (
+        !Number.isFinite(draftPrefs.minCancelNoticeHours) ||
+        draftPrefs.minCancelNoticeHours < 0 ||
+        draftPrefs.minCancelNoticeHours > 720
+      ) {
+        setPrefsError(
+          "Aviso mínimo de cancelamento inválido. Use um valor entre 0 e 720 horas."
+        );
+        return;
+      }
+
+      const payload = {
+        ...draftPrefs,
+        minCancelNoticeHours: Math.trunc(draftPrefs.minCancelNoticeHours),
+        bufferBetweenAppointmentsMin: Math.trunc(
+          draftPrefs.bufferBetweenAppointmentsMin
+        ),
+        bookingIntervalMin: Math.trunc(draftPrefs.bookingIntervalMin),
+      };
 
       const updated = await apiClient<TenantSettingsDTO>("/tenants/settings", {
         method: "PATCH",
-        body: draftPrefs,
+        body: payload,
       });
 
       setSettings(updated);

@@ -1,5 +1,6 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
+import { UpdateTenantSettingsDto } from './dto/update-tenant-settings.dto';
 
 @Injectable()
 export class TenantsService {
@@ -34,10 +35,15 @@ export class TenantsService {
     });
   }
 
-  async updateSettings(tenantId: string, dto: any) {
+  async updateSettings(tenantId: string, dto: UpdateTenantSettingsDto) {
+    // Remove undefined + protege contra NaN (que quebra Prisma em campos Int)
     const data = Object.fromEntries(
-      Object.entries(dto).filter(([, v]) => v !== undefined),
-    );
+      Object.entries(dto).filter(([, v]) => {
+        if (v === undefined) return false;
+        if (typeof v === 'number' && Number.isNaN(v)) return false;
+        return true;
+      }),
+    ) as Partial<UpdateTenantSettingsDto>;
 
     return this.prisma.tenantSettings.upsert({
       where: { tenantId },

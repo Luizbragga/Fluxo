@@ -132,7 +132,7 @@ export class UpdateTenantSettingsDto {
   @ApiPropertyOptional({ enum: PaymentMethod })
   @IsOptional()
   @IsEnum(PaymentMethod)
-  defaultPaymentMethod?: PaymentMethod | null;
+  defaultPaymentMethod?: PaymentMethod;
 
   // ---------------- Intervalo de agendamento (fixo) ----------------
   @ApiPropertyOptional({ enum: [5, 10, 15, 20, 30, 45, 60] })
