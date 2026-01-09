@@ -16,6 +16,7 @@ import {
   Role,
 } from '@prisma/client';
 import { EmailService } from '../notifications/email.service';
+import { SmsService } from '../notifications/sms.service';
 
 const DEFAULT_COMMISSION_PERCENTAGE = 50; // 50% por padrão (ajustável)
 
@@ -26,6 +27,7 @@ export class AppointmentsService {
   constructor(
     private prisma: PrismaService,
     private email: EmailService,
+    private readonly smsService: SmsService,
   ) {}
 
   private async assertMinCancelNotice(
@@ -60,10 +62,38 @@ export class AppointmentsService {
       });
     }
   }
+  private toE164Pt(raw: string) {
+    const digits = (raw ?? '').replace(/\D+/g, '');
+
+    // já veio com código do país PT
+    if (digits.startsWith('351')) return `+${digits}`;
+
+    // veio só 9 dígitos (número PT normal)
+    if (digits.length === 9) return `+351${digits}`;
+
+    // fallback: tenta mandar como veio
+    return `+${digits}`;
+  }
 
   async create(tenantId: string, userId: string, dto: CreateAppointmentDto) {
     const startAt = new Date(dto.startAt);
     let endAt = new Date(dto.endAt);
+    // ----------------------------------------------------------------
+    // TELEFONE: normaliza 1 vez (PT -> 351 + E.164)
+    // ----------------------------------------------------------------
+    const phoneDigitsRaw = (dto.clientPhone ?? '').replace(/\D+/g, '');
+    if (!phoneDigitsRaw) {
+      throw new BadRequestException('Telefone do cliente é obrigatório.');
+    }
+
+    // padroniza SEMPRE com código PT (351) para evitar duplicados
+    const phoneDigitsPt = phoneDigitsRaw.startsWith('351')
+      ? phoneDigitsRaw
+      : phoneDigitsRaw.length === 9
+        ? `351${phoneDigitsRaw}`
+        : phoneDigitsRaw; // fallback
+
+    const clientPhoneE164 = `+${phoneDigitsPt}`;
 
     // ----------------------------------------------------------------
     // Provider válido e do tenant
@@ -459,7 +489,7 @@ export class AppointmentsService {
     // ----------------------------------------------------------------
     // CLIENTE: 1 registro por telefone por tenant
     // ----------------------------------------------------------------
-    const normalizedPhone = dto.clientPhone.replace(/\D+/g, '');
+    const normalizedPhone = phoneDigitsPt;
     const newNameNorm = dto.clientName.trim().toLowerCase();
 
     let customerId: string;
@@ -509,7 +539,7 @@ export class AppointmentsService {
         startAt,
         endAt,
         clientName: dto.clientName,
-        clientPhone: dto.clientPhone,
+        clientPhone: clientPhoneE164,
         createdById: userId,
 
         serviceName: effectiveServiceName,
@@ -524,6 +554,25 @@ export class AppointmentsService {
         provider: { select: { id: true, name: true } },
       },
     });
+    //  SMS de confirmação (não pode quebrar o agendamento se falhar)
+    // SMS de confirmação (não pode quebrar o agendamento se falhar)
+    try {
+      const to = appointment.clientPhone; // já está em E.164
+
+      const when = new Date(appointment.startAt).toLocaleString('pt-PT');
+      const msg =
+        `Fluxo ✅ Agendamento confirmado!\n` +
+        `Cliente: ${appointment.clientName}\n` +
+        `Serviço: ${appointment.serviceName}\n` +
+        `Profissional: ${appointment.provider?.name ?? '—'}\n` +
+        `Data/Hora: ${when}`;
+
+      await this.smsService.sendSms(to, msg);
+    } catch (e) {
+      this.logger.warn(
+        `[SMS] Falha ao enviar confirmação: ${(e as any)?.message ?? e}`,
+      );
+    }
 
     // ------------------------------------------------------------------
     // FINANCEIRO / EARNING
@@ -763,6 +812,55 @@ export class AppointmentsService {
         `Falha ao enviar emails de reagendamento: ${err?.message ?? err}`,
       );
     });
+    // SMS (não quebra o reagendamento se falhar)
+    try {
+      const to = (updated.clientPhone ?? '').trim();
+
+      if (/^\+\d{8,15}$/.test(to)) {
+        const tz =
+          (
+            await this.prisma.tenantSettings.findUnique({
+              where: { tenantId },
+              select: { timezone: true },
+            })
+          )?.timezone ?? 'Europe/Lisbon';
+
+        const oldLabel = oldStartAt.toLocaleString('pt-PT', {
+          timeZone: tz,
+          year: 'numeric',
+          month: '2-digit',
+          day: '2-digit',
+          hour: '2-digit',
+          minute: '2-digit',
+        });
+
+        const newLabel = updated.startAt.toLocaleString('pt-PT', {
+          timeZone: tz,
+          year: 'numeric',
+          month: '2-digit',
+          day: '2-digit',
+          hour: '2-digit',
+          minute: '2-digit',
+        });
+
+        const msg =
+          `Fluxo 🔁 Agendamento reagendado!\n` +
+          `Cliente: ${updated.clientName}\n` +
+          `Serviço: ${updated.serviceName}\n` +
+          `Antes: ${oldLabel}\n` +
+          `Novo: ${newLabel}`;
+
+        await this.smsService.sendSms(to, msg);
+      } else {
+        this.logger.warn(
+          `[SMS] Telefone inválido (não E.164): "${updated.clientPhone}"`,
+        );
+      }
+    } catch (e) {
+      this.logger.warn(
+        `[SMS] Falha ao enviar reagendamento: ${(e as any)?.message ?? e}`,
+      );
+    }
 
     return updated;
   }
@@ -791,6 +889,11 @@ export class AppointmentsService {
 
       if (!found) {
         throw new NotFoundException('Appointment não encontrado no tenant');
+      }
+      if (status === AppointmentStateEnum.cancelled) {
+        throw new BadRequestException(
+          'Para cancelar use o endpoint de cancelamento (remove). Isso ajusta plano/financeiro e dispara notificações.',
+        );
       }
 
       if (
@@ -933,6 +1036,46 @@ export class AppointmentsService {
         `Falha ao enviar emails de cancelamento: ${err?.message ?? err}`,
       );
     });
+    // SMS (não quebra o cancelamento se falhar)
+    try {
+      const to = (updated.clientPhone ?? '').trim();
+
+      if (/^\+\d{8,15}$/.test(to)) {
+        const tz =
+          (
+            await this.prisma.tenantSettings.findUnique({
+              where: { tenantId },
+              select: { timezone: true },
+            })
+          )?.timezone ?? 'Europe/Lisbon';
+
+        const when = updated.startAt.toLocaleString('pt-PT', {
+          timeZone: tz,
+          year: 'numeric',
+          month: '2-digit',
+          day: '2-digit',
+          hour: '2-digit',
+          minute: '2-digit',
+        });
+
+        const msg =
+          `Fluxo ❌ Agendamento cancelado.\n` +
+          `Cliente: ${updated.clientName}\n` +
+          `Serviço: ${updated.serviceName}\n` +
+          `Profissional: ${updated.provider?.name ?? '—'}\n` +
+          `Data/Hora: ${when}`;
+
+        await this.smsService.sendSms(to, msg);
+      } else {
+        this.logger.warn(
+          `[SMS] Telefone inválido (não E.164): "${updated.clientPhone}"`,
+        );
+      }
+    } catch (e) {
+      this.logger.warn(
+        `[SMS] Falha ao enviar cancelamento: ${(e as any)?.message ?? e}`,
+      );
+    }
 
     return updated;
   }

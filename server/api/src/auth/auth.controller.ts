@@ -13,6 +13,7 @@ import { RegisterTenantDto } from './dto/register-tenant.dto';
 import { LoginDto } from './dto/login.dto';
 import { JwtAuthGuard } from './guards/jwt-auth.guard';
 import { RefreshDto } from './dto/refresh.dto';
+import { ReauthDto } from './dto/reauth.dto';
 
 @ApiTags('Auth')
 @Controller('auth')
@@ -29,7 +30,6 @@ export class AuthController {
     return this.auth.login(dto);
   }
 
-  // ---- REFRESH ----
   @Post('refresh')
   @HttpCode(200)
   @ApiBearerAuth()
@@ -45,7 +45,6 @@ export class AuthController {
     return this.auth.refreshFromToken(token);
   }
 
-  // ---- LOGOUT (revogar refresh) ----
   @Post('logout')
   @HttpCode(204)
   @ApiBearerAuth()
@@ -57,9 +56,20 @@ export class AuthController {
       : '';
     const bodyToken = body?.refreshToken ?? '';
     const token = headerToken || bodyToken;
-    if (!token) return; // 204 vazio
+    if (!token) return;
     await this.auth.revokeRefresh(token);
   }
+
+  // ✅ REAUTH
+  @Post('reauth')
+  @HttpCode(200)
+  @ApiBearerAuth()
+  @UseGuards(JwtAuthGuard)
+  async reauth(@Req() req: any, @Body() dto: ReauthDto) {
+    const userId = req.user?.id as string;
+    return this.auth.reauth(userId, dto.password);
+  }
+
   @ApiBearerAuth()
   @UseGuards(JwtAuthGuard)
   @Post('me')

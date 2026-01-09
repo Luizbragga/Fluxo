@@ -5,4 +5,5 @@ export interface AuthUser {
   tenantId: string;
   role: Role;
   locationId?: string | null;
+  reauthNonce?: number;
 }

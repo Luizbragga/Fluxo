@@ -8,10 +8,12 @@ import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { RolesGuard } from '../auth/guards/roles.guard';
 import { Roles } from '../auth/decorators/roles.decorator';
 import { UpdateTenantSettingsDto } from './dto/update-tenant-settings.dto';
+import { Sensitive } from '../auth/decorators/sensitive.decorator';
+import { ReauthGuard } from '../auth/guards/reauth.guard';
 
 @ApiTags('Tenants')
 @ApiBearerAuth()
-@UseGuards(JwtAuthGuard, RolesGuard)
+@UseGuards(JwtAuthGuard, RolesGuard, ReauthGuard)
 @Controller('tenants')
 export class TenantsController {
   constructor(private readonly tenants: TenantsService) {}
@@ -28,6 +30,7 @@ export class TenantsController {
     return this.tenants.getSettings(tenantId);
   }
 
+  @Sensitive()
   @Patch('settings')
   async updateSettings(@Req() req: any, @Body() dto: UpdateTenantSettingsDto) {
     const tenantId = req.user?.tenantId as string;

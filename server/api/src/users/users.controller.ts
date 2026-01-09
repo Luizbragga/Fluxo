@@ -2,8 +2,8 @@ import {
   Body,
   Controller,
   Get,
-  Post,
   Patch,
+  Post,
   Param,
   Req,
   UseGuards,
@@ -16,18 +16,20 @@ import { Roles } from '../auth/decorators/roles.decorator';
 import { Role } from '@prisma/client';
 import { CreateUserDto } from './dto/create-user.dto';
 import { UpdateUserDto } from './dto/update-user.dto';
+import { Sensitive } from '../auth/decorators/sensitive.decorator';
+import { ReauthGuard } from '../auth/guards/reauth.guard';
 
 @ApiTags('Users')
 @ApiBearerAuth()
-@UseGuards(JwtAuthGuard) // todas exigem JWT
+@UseGuards(JwtAuthGuard, ReauthGuard)
 @Controller('users')
 export class UsersController {
   constructor(private readonly users: UsersService) {}
 
   @Get('me')
   async me(@Req() req: any) {
-    const user = req.user as { sub: string };
-    return this.users.me(user.sub);
+    const user = req.user as { id: string };
+    return this.users.me(user.id);
   }
 
   @Get()
@@ -38,6 +40,7 @@ export class UsersController {
     return this.users.listByTenant(user.tenantId);
   }
 
+  @Sensitive()
   @Post()
   @UseGuards(RolesGuard)
   @Roles(Role.owner, Role.admin)
@@ -52,6 +55,7 @@ export class UsersController {
     });
   }
 
+  @Sensitive()
   @Patch(':id')
   @UseGuards(RolesGuard)
   @Roles(Role.owner, Role.admin)

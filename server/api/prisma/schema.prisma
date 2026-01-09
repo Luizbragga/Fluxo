@@ -139,7 +139,9 @@ model Location {
   active    Boolean  @default(true)
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
- bookingIntervalMin Int?
+
+  bookingIntervalMin Int? 
+
   tenant        Tenant         @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   providers     Provider[]
   appointments  Appointment[]
@@ -178,6 +180,7 @@ model User {
   provider     Provider?
   active       Boolean   @default(true)
   createdAt    DateTime  @default(now())
+  reauthNonce Int @default(0)
 
   tenant       Tenant         @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   location     Location?      @relation(fields: [locationId], references: [id])
@@ -315,8 +318,9 @@ model Appointment {
   clientName         String
   clientPhone        String
   status             AppointmentState @default(scheduled)
+  reminderSmsSentAt  DateTime? 
   customerPlanId     String?
-  customerId         String?  // <-- novo campo, ligação com Customer
+  customerId         String?  
 
   createdById String?
   createdBy   User?   @relation(fields: [createdById], references: [id], onDelete: SetNull)
@@ -335,6 +339,7 @@ model Appointment {
 
   @@index([tenantId])
   @@index([tenantId, providerId, startAt, endAt])
+  @@index([tenantId, status, startAt, reminderSmsSentAt])
 }
 
 

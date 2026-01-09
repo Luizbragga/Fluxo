@@ -16,6 +16,7 @@ import { OverviewModule } from './overview/overview.module';
 import { CustomersModule } from './customers/customers.module';
 import { ScheduleModule } from '@nestjs/schedule';
 import { TenantsModule } from './tenants/tenants.module';
+import { NotificationsModule } from './notifications/notifications.module';
 
 @Module({
   imports: [
@@ -34,6 +35,7 @@ import { TenantsModule } from './tenants/tenants.module';
     PlansModule,
     OverviewModule,
     CustomersModule,
+    NotificationsModule,
     ScheduleModule.forRoot(),
   ],
 })

@@ -10,11 +10,23 @@ import { Role } from '@prisma/client';
 import * as bcrypt from 'bcrypt';
 import { JwtService } from '@nestjs/jwt';
 
-const ACCESS_TTL_SEC = 60 * 15; // 15 min
+const DEFAULT_ACCESS_TTL_MIN = 240; // bate com teu UI (4h)
 const REFRESH_TTL_SEC = 60 * 60 * 24 * 7; // 7 dias
 
-type AccessPayload = { sub: string; tenantId: string; role: Role };
-type RefreshPayload = { sub: string; tenantId: string };
+type AccessPayload = {
+  sub: string;
+  tenantId: string;
+  role: Role;
+  locationId?: string | null;
+  reauthNonce: number;
+  isReauth: boolean;
+};
+
+type RefreshPayload = {
+  sub: string;
+  tenantId: string;
+  reauthNonce: number;
+};
 
 function makeSlug(name: string): string {
   return name
@@ -32,21 +44,50 @@ export class AuthService {
     private jwt: JwtService,
   ) {}
 
-  // ---------- helpers ----------
+  // ======================
+  // Helpers
+  // ======================
 
-  private signAccess(user: AccessPayload) {
+  private async getAccessTtlSecForTenant(tenantId: string): Promise<number> {
+    const settings = await this.prisma.tenantSettings.upsert({
+      where: { tenantId },
+      create: { tenantId },
+      update: {},
+      select: { sessionIdleTimeoutMin: true },
+    });
+
+    const raw = settings?.sessionIdleTimeoutMin ?? DEFAULT_ACCESS_TTL_MIN;
+    const min = Number.isFinite(raw)
+      ? Math.min(1440, Math.max(5, raw))
+      : DEFAULT_ACCESS_TTL_MIN;
+
+    return min * 60;
+  }
+
+  private signAccess(payload: AccessPayload, ttlSec: number) {
     return this.jwt.sign(
-      { sub: user.sub, tenantId: user.tenantId, role: user.role },
+      {
+        sub: payload.sub,
+        tenantId: payload.tenantId,
+        role: payload.role,
+        locationId: payload.locationId ?? null,
+        reauthNonce: payload.reauthNonce ?? 0,
+        isReauth: payload.isReauth ?? false,
+      },
       {
         secret: process.env.JWT_SECRET || 'changeme',
-        expiresIn: ACCESS_TTL_SEC,
+        expiresIn: ttlSec,
       },
     );
   }
 
-  private signRefresh(user: RefreshPayload) {
+  private signRefresh(payload: RefreshPayload) {
     return this.jwt.sign(
-      { sub: user.sub, tenantId: user.tenantId },
+      {
+        sub: payload.sub,
+        tenantId: payload.tenantId,
+        reauthNonce: payload.reauthNonce ?? 0,
+      },
       {
         secret: process.env.JWT_REFRESH_SECRET || 'changeme',
         expiresIn: REFRESH_TTL_SEC,
@@ -58,6 +99,7 @@ export class AuthService {
     const decoded = this.jwt.decode(refresh) as { exp?: number } | null;
     const expSec =
       decoded?.exp ?? Math.floor(Date.now() / 1000) + REFRESH_TTL_SEC;
+
     const expiresAt = new Date(expSec * 1000);
     const tokenHash = await bcrypt.hash(refresh, 10);
 
@@ -66,28 +108,32 @@ export class AuthService {
     });
   }
 
-  // Gera um slug único para tenants com nomes repetidos
   private async generateUniqueTenantSlug(baseName: string): Promise<string> {
     let base = makeSlug(baseName);
     if (!base) base = `tenant-${Date.now()}`;
 
     let slug = base;
     let n = 1;
-    // findUnique exige a constraint/índice único em slug (está no schema)
+
     while (await this.prisma.tenant.findUnique({ where: { slug } })) {
       slug = `${base}-${n++}`;
     }
+
     return slug;
   }
 
-  // ---------- cadastro ----------
+  // ======================
+  // Register
+  // ======================
+
   async registerTenant(dto: RegisterTenantDto) {
     const role = dto.ownerRole ?? Role.owner;
 
-    // email não pode existir em nenhum tenant (decisão atual)
     const exists = await this.prisma.user.findFirst({
       where: { email: dto.ownerEmail },
+      select: { id: true },
     });
+
     if (exists) {
       throw new BadRequestException('Email já cadastrado em algum tenant');
     }
@@ -112,19 +158,40 @@ export class AuthService {
           email: dto.ownerEmail,
           phone: dto.ownerPhone ?? null,
           passwordHash,
-          active: true, // padrão: dono ativo
+          active: true,
+        },
+        select: {
+          id: true,
+          tenantId: true,
+          role: true,
+          locationId: true,
+          reauthNonce: true,
         },
       });
 
       return { tenant, user };
     });
 
-    const access = this.signAccess({
+    const ttlSec = await this.getAccessTtlSecForTenant(user.tenantId);
+
+    const access = this.signAccess(
+      {
+        sub: user.id,
+        tenantId: tenant.id,
+        role: user.role,
+        locationId: user.locationId ?? null,
+        reauthNonce: user.reauthNonce ?? 0,
+        isReauth: false,
+      },
+      ttlSec,
+    );
+
+    const refresh = this.signRefresh({
       sub: user.id,
       tenantId: tenant.id,
-      role: user.role,
+      reauthNonce: user.reauthNonce ?? 0,
     });
-    const refresh = this.signRefresh({ sub: user.id, tenantId: tenant.id });
+
     await this.saveRefresh(user.id, refresh);
 
     return {
@@ -134,35 +201,48 @@ export class AuthService {
     };
   }
 
-  // ---------- login ----------
-  async login(dto: LoginDto) {
-    console.log('LOGIN DTO =>', dto);
+  // ======================
+  // Login
+  // ======================
 
+  async login(dto: LoginDto) {
     const user = await this.prisma.user.findFirst({
       where: { email: dto.email, active: true },
+      select: {
+        id: true,
+        tenantId: true,
+        role: true,
+        locationId: true,
+        passwordHash: true,
+        reauthNonce: true,
+      },
     });
 
-    console.log('USER ENCONTRADO =>', user);
-
-    if (!user) {
-      console.log('Nenhum usuário encontrado com esse email/active');
-      throw new UnauthorizedException('Credenciais inválidas');
-    }
+    if (!user) throw new UnauthorizedException('Credenciais inválidas');
 
     const ok = await bcrypt.compare(dto.password, user.passwordHash);
-    console.log('RESULTADO BCRYPT =>', ok);
+    if (!ok) throw new UnauthorizedException('Credenciais inválidas');
 
-    if (!ok) {
-      console.log('Senha não bateu com o hash do banco');
-      throw new UnauthorizedException('Credenciais inválidas');
-    }
+    const ttlSec = await this.getAccessTtlSecForTenant(user.tenantId);
 
-    const access = this.signAccess({
+    const access = this.signAccess(
+      {
+        sub: user.id,
+        tenantId: user.tenantId,
+        role: user.role,
+        locationId: user.locationId ?? null,
+        reauthNonce: user.reauthNonce ?? 0,
+        isReauth: false, // ✅ login não conta como reauth
+      },
+      ttlSec,
+    );
+
+    const refresh = this.signRefresh({
       sub: user.id,
       tenantId: user.tenantId,
-      role: user.role,
+      reauthNonce: user.reauthNonce ?? 0,
     });
-    const refresh = this.signRefresh({ sub: user.id, tenantId: user.tenantId });
+
     await this.saveRefresh(user.id, refresh);
 
     return {
@@ -171,10 +251,13 @@ export class AuthService {
     };
   }
 
-  // ---------- refresh (com rotação) ----------
+  // ======================
+  // Refresh (rotation)
+  // ======================
+
   async refreshFromToken(refreshToken: string) {
-    // 1) Verifica assinatura/expiração
     let decoded: any;
+
     try {
       decoded = this.jwt.verify(refreshToken, {
         secret: process.env.JWT_REFRESH_SECRET || 'changeme',
@@ -184,12 +267,19 @@ export class AuthService {
     }
 
     const userId = decoded?.sub as string | undefined;
-    if (!userId) throw new UnauthorizedException('Refresh inválido');
+    const tenantId = decoded?.tenantId as string | undefined;
 
-    // 2) Busca o hash correspondente e confere expiração
-    const rows = await this.prisma.refreshToken.findMany({ where: { userId } });
+    if (!userId || !tenantId)
+      throw new UnauthorizedException('Refresh inválido');
+
+    // valida se este refresh existe no banco (hash + expiração)
+    const rows = await this.prisma.refreshToken.findMany({
+      where: { userId },
+      select: { id: true, tokenHash: true, expiresAt: true },
+    });
 
     let usedRowId: string | null = null;
+
     for (const r of rows) {
       const ok = await bcrypt.compare(refreshToken, r.tokenHash);
       if (ok && r.expiresAt > new Date()) {
@@ -197,30 +287,51 @@ export class AuthService {
         break;
       }
     }
+
     if (!usedRowId) throw new UnauthorizedException('Refresh inválido');
 
-    // 3) Carrega usuário
-    const user = await this.prisma.user.findUnique({ where: { id: userId } });
+    // pega usuário (e o nonce atual do banco)
+    const user = await this.prisma.user.findUnique({
+      where: { id: userId },
+      select: {
+        id: true,
+        tenantId: true,
+        role: true,
+        locationId: true,
+        reauthNonce: true,
+      },
+    });
+
     if (!user) throw new UnauthorizedException('Usuário não encontrado');
 
-    // 4) Emite novo access e novo refresh
-    const access = this.signAccess({
-      sub: user.id,
-      tenantId: user.tenantId,
-      role: user.role,
-    });
+    const ttlSec = await this.getAccessTtlSecForTenant(user.tenantId);
+
+    const access = this.signAccess(
+      {
+        sub: user.id,
+        tenantId: user.tenantId,
+        role: user.role,
+        locationId: user.locationId ?? null,
+        reauthNonce: user.reauthNonce ?? 0,
+        isReauth: false, // ✅ refresh não conta como reauth
+      },
+      ttlSec,
+    );
+
     const newRefresh = this.signRefresh({
       sub: user.id,
       tenantId: user.tenantId,
+      reauthNonce: user.reauthNonce ?? 0,
     });
 
-    // 5) Rotação dos refresh tokens
+    // rotação: apaga o refresh usado e grava o novo
     await this.prisma.$transaction(async (tx) => {
       await tx.refreshToken.delete({ where: { id: usedRowId! } });
 
-      const decoded = this.jwt.decode(newRefresh) as { exp?: number } | null;
+      const decodedNew = this.jwt.decode(newRefresh) as { exp?: number } | null;
       const expSec =
-        decoded?.exp ?? Math.floor(Date.now() / 1000) + REFRESH_TTL_SEC;
+        decodedNew?.exp ?? Math.floor(Date.now() / 1000) + REFRESH_TTL_SEC;
+
       const expiresAt = new Date(expSec * 1000);
       const tokenHash = await bcrypt.hash(newRefresh, 10);
 
@@ -232,13 +343,17 @@ export class AuthService {
     return { tokens: { access, refresh: newRefresh } };
   }
 
-  // ---------- revogação (logout) ----------
+  // ======================
+  // Logout
+  // ======================
+
   async revokeRefresh(refreshToken: string) {
     const decoded = this.jwt.decode(refreshToken) as { sub?: string } | null;
     if (!decoded?.sub) return;
 
     const rows = await this.prisma.refreshToken.findMany({
       where: { userId: decoded.sub },
+      select: { id: true, tokenHash: true },
     });
 
     for (const r of rows) {
@@ -248,5 +363,72 @@ export class AuthService {
         break;
       }
     }
+  }
+
+  // ======================
+  // REAUTH (confirmar senha)
+  // ======================
+
+  async reauth(userId: string, password: string) {
+    const user = await this.prisma.user.findUnique({
+      where: { id: userId },
+      select: {
+        id: true,
+        tenantId: true,
+        role: true,
+        locationId: true,
+        passwordHash: true,
+      },
+    });
+
+    if (!user) throw new UnauthorizedException('Usuário não encontrado');
+
+    const ok = await bcrypt.compare(password, user.passwordHash);
+    if (!ok) throw new UnauthorizedException('Senha inválida');
+
+    // ✅ incrementa nonce (este token reauth será “um evento novo”)
+    const updated = await this.prisma.user.update({
+      where: { id: user.id },
+      data: { reauthNonce: { increment: 1 } },
+      select: { reauthNonce: true },
+    });
+
+    const ttlSec = await this.getAccessTtlSecForTenant(user.tenantId);
+
+    const access = this.signAccess(
+      {
+        sub: user.id,
+        tenantId: user.tenantId,
+        role: user.role,
+        locationId: user.locationId ?? null,
+        reauthNonce: updated.reauthNonce,
+        isReauth: true, // ✅ este token passa no guard
+      },
+      ttlSec,
+    );
+
+    const refresh = this.signRefresh({
+      sub: user.id,
+      tenantId: user.tenantId,
+      reauthNonce: updated.reauthNonce,
+    });
+
+    // política: revoga todos os refresh e grava só o novo
+    await this.prisma.$transaction(async (tx) => {
+      await tx.refreshToken.deleteMany({ where: { userId: user.id } });
+
+      const tokenHash = await bcrypt.hash(refresh, 10);
+      const decodedNew = this.jwt.decode(refresh) as { exp?: number } | null;
+      const expSec =
+        decodedNew?.exp ?? Math.floor(Date.now() / 1000) + REFRESH_TTL_SEC;
+
+      const expiresAt = new Date(expSec * 1000);
+
+      await tx.refreshToken.create({
+        data: { userId: user.id, tokenHash, expiresAt },
+      });
+    });
+
+    return { tokens: { access, refresh } };
   }
 }
