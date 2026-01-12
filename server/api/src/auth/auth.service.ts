@@ -10,7 +10,7 @@ import { Role } from '@prisma/client';
 import * as bcrypt from 'bcrypt';
 import { JwtService } from '@nestjs/jwt';
 
-const DEFAULT_ACCESS_TTL_MIN = 240; // bate com teu UI (4h)
+const DEFAULT_ACCESS_TTL_MIN = 240;
 const REFRESH_TTL_SEC = 60 * 60 * 24 * 7; // 7 dias
 
 type AccessPayload = {
@@ -144,7 +144,8 @@ export class AuthService {
     const { tenant, user } = await this.prisma.$transaction(async (tx) => {
       const tenant = await tx.tenant.create({
         data: {
-          name: dto.tenantName,
+          brandName: dto.tenantName,
+          legalName: dto.tenantName,
           slug,
           nif: dto.tenantNif ?? null,
         },
@@ -195,7 +196,13 @@ export class AuthService {
     await this.saveRefresh(user.id, refresh);
 
     return {
-      tenant: { id: tenant.id, name: tenant.name, slug: tenant.slug },
+      tenant: {
+        id: tenant.id,
+        brandName: tenant.brandName,
+        legalName: tenant.legalName,
+        slug: tenant.slug,
+      },
+
       user: { id: user.id, role: user.role },
       tokens: { access, refresh },
     };

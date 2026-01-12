@@ -35,7 +35,9 @@ async function ensureTenantWithLocation(opts: {
     tenant = await prisma.tenant.create({
       data: {
         slug: tenantSlug,
-        name: tenantName,
+        brandName: tenantName,
+        legalName: tenantName,
+
         nif: tenantNif ?? null,
       },
     });

@@ -11,7 +11,8 @@ export class TenantsService {
       where: { id: tenantId },
       select: {
         id: true,
-        name: true,
+        legalName: true,
+        brandName: true,
         slug: true,
         nif: true,
         createdAt: true,
@@ -53,6 +54,52 @@ export class TenantsService {
       },
       update: {
         ...data,
+      },
+    });
+  }
+  async updateMe(
+    tenantId: string,
+    dto: {
+      brandName?: string | null;
+      legalName?: string | null;
+      nif?: string | null;
+    },
+  ) {
+    const data = Object.fromEntries(
+      Object.entries(dto).filter(([, v]) => v !== undefined),
+    ) as {
+      legalName?: string | null;
+      brandName?: string | null;
+      nif?: string | null;
+    };
+
+    const exists = await this.prisma.tenant.findUnique({
+      where: { id: tenantId },
+      select: { id: true },
+    });
+
+    if (!exists) throw new NotFoundException('Tenant não encontrado');
+
+    return this.prisma.tenant.update({
+      where: { id: tenantId },
+      data: {
+        ...(data.legalName !== undefined
+          ? { legalName: data.legalName ? data.legalName.trim() : null }
+          : {}),
+        ...(data.brandName !== undefined
+          ? { brandName: data.brandName ? data.brandName.trim() : null }
+          : {}),
+        ...(data.nif !== undefined ? { nif: data.nif } : {}),
+      },
+
+      select: {
+        id: true,
+        legalName: true,
+        brandName: true,
+        slug: true,
+        nif: true,
+        createdAt: true,
+        updatedAt: true,
       },
     });
   }

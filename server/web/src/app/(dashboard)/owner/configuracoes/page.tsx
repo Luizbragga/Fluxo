@@ -10,15 +10,14 @@ import {
   type OwnerLocation,
 } from "../_api/owner-locations";
 import { fetchOwnerUsers, type OwnerUser } from "../_api/owner-users";
-import { fetchOwnerTenantMe } from "../_api/owner-tenant";
+import { fetchOwnerTenantMe, updateOwnerTenantMe } from "../_api/owner-tenant";
 import {
   fetchOwnerTenantSettings,
   updateOwnerTenantSettings,
   type TenantSettings,
 } from "../_api/owner-tenant-settings";
-
-import { apiClient } from "@/lib/api-client";
-
+import { apiClient, ApiError } from "@/lib/api-client";
+import { createOwnerInvite, CreateInviteInput } from "../_api/owner-invites";
 /**
  * Tipagem local alinhada com o que o backend devolve em /v1/tenants/settings
  * (inclui Preferências + Notificações + Segurança + extras opcionais)
@@ -64,6 +63,7 @@ type TenantSettingsUI = {
   contactEmail: string;
   contactPhone: string;
   tenantId: string | null;
+  nif: string | null;
 };
 
 type UserRole = "owner" | "admin" | "attendant" | "provider" | "unknown";
@@ -113,6 +113,7 @@ export default function OwnerConfiguracoesPage() {
     contactEmail: "—",
     contactPhone: "—",
     tenantId: null,
+    nif: null,
   });
 
   const [locations, setLocations] = useState<OwnerLocation[]>([]);
@@ -122,6 +123,17 @@ export default function OwnerConfiguracoesPage() {
 
   const [isLoading, setIsLoading] = useState(true);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+
+  // ===== Dados da marca (edição) =====
+  const [isEditingBrand, setIsEditingBrand] = useState(false);
+  const [isSavingBrand, setIsSavingBrand] = useState(false);
+  const [brandError, setBrandError] = useState<string | null>(null);
+
+  const [draftBrand, setDraftBrand] = useState<{
+    legalName: string;
+    brandName: string;
+    nif: string;
+  } | null>(null);
 
   // Tabs (por padrão: NADA aberto)
   const [activeTab, setActiveTab] = useState<SettingsTab | null>(null);
@@ -168,9 +180,125 @@ export default function OwnerConfiguracoesPage() {
   const [securityError, setSecurityError] = useState<string | null>(null);
   const [isSavingSecurity, setIsSavingSecurity] = useState(false);
 
-  const locationNameById = useMemo(() => {
-    return new Map(locations.map((l) => [l.id, l.name]));
+  // =========================
+  // REAUTH (modal + retry)
+  // =========================
+  type ReauthArea = "prefs" | "notifications" | "security" | "brand";
+
+  const [reauthOpen, setReauthOpen] = useState(false);
+  const [reauthPassword, setReauthPassword] = useState("");
+  const [reauthError, setReauthError] = useState<string | null>(null);
+  const [reauthLoading, setReauthLoading] = useState(false);
+  const [reauthArea, setReauthArea] = useState<ReauthArea | null>(null);
+
+  const [pendingAction, setPendingAction] = useState<
+    null | (() => Promise<void>)
+  >(null);
+
+  function isReauthRequired(err: any): boolean {
+    // ApiError agora vem tipado do api-client.ts (passo 1)
+    return (
+      (err instanceof ApiError || err?.name === "ApiError") &&
+      err?.code === "REAUTH_REQUIRED"
+    );
+  }
+  const [inviteOpen, setInviteOpen] = useState(false);
+  const [inviteLoading, setInviteLoading] = useState(false);
+  const [inviteError, setInviteError] = useState<string | null>(null);
+  const [inviteUrl, setInviteUrl] = useState<string | null>(null);
+
+  const [inviteForm, setInviteForm] = useState<CreateInviteInput>({
+    role: "provider",
+    specialty: "barber",
+    locationId: undefined,
+    email: "",
+    phone: "",
+    expiresInHours: 72,
+  });
+
+  const locationOptions = useMemo(() => {
+    return locations.map((l) => ({ id: l.id, name: l.name }));
   }, [locations]);
+
+  const locationNameById = useMemo(() => {
+    return new Map(locations.map((l) => [l.id, l.name] as const));
+  }, [locations]);
+
+  function setAreaError(area: ReauthArea, message: string) {
+    if (area === "prefs") setPrefsError(message);
+    if (area === "notifications") setNotifsError(message);
+    if (area === "security") setSecurityError(message);
+    if (area === "brand") setBrandError(message);
+  }
+
+  function openReauth(area: ReauthArea, retryFn: () => Promise<void>) {
+    setReauthArea(area);
+    setPendingAction(() => retryFn);
+    setReauthPassword("");
+    setReauthError(null);
+    setReauthOpen(true);
+  }
+
+  function cancelReauth() {
+    if (reauthArea) {
+      setAreaError(
+        reauthArea,
+        "Para salvar esta alteração, é necessário reautenticar com a sua senha."
+      );
+    }
+    setReauthOpen(false);
+    setReauthPassword("");
+    setReauthError(null);
+    setReauthArea(null);
+    setPendingAction(null);
+  }
+
+  async function confirmReauth() {
+    if (!reauthPassword.trim()) {
+      setReauthError("Digite sua senha.");
+      return;
+    }
+
+    try {
+      setReauthLoading(true);
+      setReauthError(null);
+
+      const res = await apiClient<{
+        tokens: { access: string; refresh: string };
+      }>("/auth/reauth", {
+        method: "POST",
+        body: { password: reauthPassword },
+      });
+
+      if (typeof window !== "undefined") {
+        localStorage.setItem("fluxo_token", res.tokens.access);
+        localStorage.setItem("fluxo_refresh_token", res.tokens.refresh);
+      }
+
+      setReauthOpen(false);
+
+      const action = pendingAction;
+      const area = reauthArea;
+
+      setPendingAction(null);
+      setReauthArea(null);
+      setReauthPassword("");
+
+      if (action) {
+        await action();
+      } else if (area) {
+        setAreaError(area, "Ação pendente não encontrada para repetir o save.");
+      }
+    } catch (err: any) {
+      // senha errada -> backend manda 401 Unauthorized
+      setReauthError(
+        err?.message ?? "Falha ao reautenticar. Verifique a senha."
+      );
+    } finally {
+      setReauthLoading(false);
+    }
+  }
+
   const timezoneOptions = useMemo(() => {
     // Preferência: pegar a lista oficial do runtime (Chrome moderno suporta)
     const intlAny = Intl as any;
@@ -203,20 +331,23 @@ export default function OwnerConfiguracoesPage() {
           fetchOwnerLocations({ page: 1, pageSize: 200 }),
           fetchOwnerUsers(),
         ]);
+        setTenant((prev) => ({
+          ...prev,
+          tenantId,
+          legalName: tenantRes.legalName ?? "—",
+          brandName: tenantRes.brandName ?? "—",
+
+          nif: tenantRes.nif ?? null,
+          timezone: (settingsRes as any)?.timezone ?? prev.timezone,
+          defaultCurrency:
+            (settingsRes as any)?.defaultCurrency ?? prev.defaultCurrency,
+        }));
 
         if (cancelled) return;
 
         setLocations(locRes.data);
         setUsers(userRes);
         setSettings(settingsRes as TenantSettingsDTO);
-
-        setTenant((prev) => ({
-          ...prev,
-          tenantId,
-          legalName: tenantRes.name ?? "—",
-          brandName: tenantRes.name ?? "—",
-          timezone: (settingsRes as any)?.timezone ?? prev.timezone,
-        }));
 
         // email/phone do user logado (se existir)
         try {
@@ -275,9 +406,7 @@ export default function OwnerConfiguracoesPage() {
   async function savePrefs() {
     if (!draftPrefs) return;
 
-    try {
-      setIsSavingPrefs(true);
-      setPrefsError(null);
+    const doSave = async () => {
       // valida timezone antes de salvar
       if (!timezoneOptions.includes(draftPrefs.timezone)) {
         setPrefsError("Timezone inválido. Selecione um timezone da lista.");
@@ -293,7 +422,6 @@ export default function OwnerConfiguracoesPage() {
         );
         return;
       }
-      // valida "Aviso mínimo cancel." (0..720h) e garante inteiro
       if (
         !Number.isFinite(draftPrefs.minCancelNoticeHours) ||
         draftPrefs.minCancelNoticeHours < 0 ||
@@ -322,8 +450,28 @@ export default function OwnerConfiguracoesPage() {
       setSettings(updated);
       setDraftPrefs(null);
       setIsEditingPrefs(false);
-    } catch (e) {
+    };
+
+    try {
+      setIsSavingPrefs(true);
+      setPrefsError(null);
+      await doSave();
+    } catch (e: any) {
       console.error(e);
+
+      if (isReauthRequired(e)) {
+        openReauth("prefs", async () => {
+          setIsSavingPrefs(true);
+          setPrefsError(null);
+          try {
+            await doSave();
+          } finally {
+            setIsSavingPrefs(false);
+          }
+        });
+        return;
+      }
+
       setPrefsError("Não foi possível salvar as preferências gerais.");
     } finally {
       setIsSavingPrefs(false);
@@ -355,10 +503,7 @@ export default function OwnerConfiguracoesPage() {
   async function saveNotifs() {
     if (!draftNotifs) return;
 
-    try {
-      setIsSavingNotifs(true);
-      setNotifsError(null);
-
+    const doSave = async () => {
       const updated = await apiClient<TenantSettingsDTO>("/tenants/settings", {
         method: "PATCH",
         body: draftNotifs,
@@ -367,8 +512,29 @@ export default function OwnerConfiguracoesPage() {
       setSettings(updated);
       setDraftNotifs(null);
       setIsEditingNotifs(false);
-    } catch (e) {
+    };
+
+    try {
+      setIsSavingNotifs(true);
+      setNotifsError(null);
+
+      await doSave();
+    } catch (e: any) {
       console.error(e);
+
+      if (isReauthRequired(e)) {
+        openReauth("notifications", async () => {
+          setIsSavingNotifs(true);
+          setNotifsError(null);
+          try {
+            await doSave();
+          } finally {
+            setIsSavingNotifs(false);
+          }
+        });
+        return;
+      }
+
       setNotifsError("Não foi possível salvar as notificações.");
     } finally {
       setIsSavingNotifs(false);
@@ -397,10 +563,7 @@ export default function OwnerConfiguracoesPage() {
   async function saveSecurity() {
     if (!draftSecurity) return;
 
-    try {
-      setIsSavingSecurity(true);
-      setSecurityError(null);
-
+    const doSave = async () => {
       const updated = await apiClient<TenantSettingsDTO>("/tenants/settings", {
         method: "PATCH",
         body: draftSecurity,
@@ -409,13 +572,107 @@ export default function OwnerConfiguracoesPage() {
       setSettings(updated);
       setDraftSecurity(null);
       setIsEditingSecurity(false);
-    } catch (e) {
+    };
+
+    try {
+      setIsSavingSecurity(true);
+      setSecurityError(null);
+
+      await doSave();
+    } catch (e: any) {
       console.error(e);
+
+      if (isReauthRequired(e)) {
+        openReauth("security", async () => {
+          setIsSavingSecurity(true);
+          setSecurityError(null);
+          try {
+            await doSave();
+          } finally {
+            setIsSavingSecurity(false);
+          }
+        });
+        return;
+      }
+
       setSecurityError(
         "Não foi possível salvar as configurações de segurança."
       );
     } finally {
       setIsSavingSecurity(false);
+    }
+  }
+  function startEditBrand() {
+    setBrandError(null);
+    setDraftBrand({
+      legalName: tenant.legalName === "—" ? "" : tenant.legalName,
+      brandName: tenant.brandName === "—" ? "" : tenant.brandName,
+      nif: tenant.nif ?? "",
+    });
+
+    setIsEditingBrand(true);
+  }
+
+  function cancelEditBrand() {
+    setBrandError(null);
+    setDraftBrand(null);
+    setIsEditingBrand(false);
+  }
+
+  async function saveBrand() {
+    if (!draftBrand) return;
+
+    const doSave = async () => {
+      const payload = {
+        legalName: draftBrand.legalName.trim() || null,
+        brandName: draftBrand.brandName.trim() || null,
+        nif: draftBrand.nif.trim() ? draftBrand.nif.trim() : null,
+      };
+
+      const updated = await updateOwnerTenantMe(payload);
+
+      setTenant((prev) => ({
+        ...prev,
+        legalName: updated.legalName ?? prev.legalName,
+        brandName: updated.brandName ?? prev.brandName,
+        nif: updated.nif ?? prev.nif,
+      }));
+
+      setBrandError(null);
+      setDraftBrand(null);
+      setIsEditingBrand(false);
+    };
+
+    try {
+      setIsSavingBrand(true);
+      setBrandError(null);
+
+      if (!draftBrand.brandName.trim()) {
+        setBrandError("O nome da marca não pode ficar vazio.");
+        return;
+      }
+
+      await doSave();
+    } catch (e: any) {
+      console.error(e);
+
+      // reaproveita o reauth que você já tem
+      if (isReauthRequired(e)) {
+        openReauth("brand", async () => {
+          setIsSavingBrand(true);
+          setBrandError(null);
+          try {
+            await doSave();
+          } finally {
+            setIsSavingBrand(false);
+          }
+        });
+        return;
+      }
+
+      setBrandError("Não foi possível salvar os dados da marca.");
+    } finally {
+      setIsSavingBrand(false);
     }
   }
 
@@ -969,26 +1226,79 @@ export default function OwnerConfiguracoesPage() {
         <div className="xl:col-span-1 rounded-2xl border border-slate-800 bg-slate-900/60 p-4 text-xs">
           <div className="flex items-center justify-between mb-3">
             <p className="text-slate-400">Dados da marca</p>
-            <button className="text-[11px] text-emerald-400 hover:underline">
-              Editar
-            </button>
+            {!isEditingBrand ? (
+              <button
+                onClick={startEditBrand}
+                className="text-[11px] text-emerald-400 hover:underline"
+              >
+                Editar
+              </button>
+            ) : (
+              <div className="flex gap-2">
+                <button
+                  onClick={cancelEditBrand}
+                  className="text-[11px] text-slate-300 hover:underline"
+                  disabled={isSavingBrand}
+                >
+                  Cancelar
+                </button>
+                <button
+                  onClick={saveBrand}
+                  className="text-[11px] text-emerald-400 hover:underline"
+                  disabled={isSavingBrand}
+                >
+                  {isSavingBrand ? "Salvando..." : "Salvar"}
+                </button>
+              </div>
+            )}
           </div>
 
           <div className="space-y-3">
             <div>
               <p className="text-[11px] text-slate-400">Nome legal</p>
-              <p className="text-sm font-semibold">{tenant.legalName}</p>
+              {!isEditingBrand ? (
+                <p className="text-sm font-semibold">{tenant.legalName}</p>
+              ) : (
+                <input
+                  className="mt-1 w-full rounded-lg border border-slate-800 bg-slate-950 px-2 py-1 text-sm text-slate-100 outline-none"
+                  value={draftBrand?.legalName ?? ""}
+                  onChange={(e) =>
+                    setDraftBrand((p) =>
+                      p ? { ...p, legalName: e.target.value } : p
+                    )
+                  }
+                />
+              )}
             </div>
 
             <div>
               <p className="text-[11px] text-slate-400">Nome da marca</p>
-              <p className="text-sm font-semibold">{tenant.brandName}</p>
+              {!isEditingBrand ? (
+                <p className="text-sm font-semibold">{tenant.brandName}</p>
+              ) : (
+                <input
+                  className="mt-1 w-full rounded-lg border border-slate-800 bg-slate-950 px-2 py-1 text-sm text-slate-100 outline-none"
+                  value={draftBrand?.brandName ?? ""}
+                  onChange={(e) =>
+                    setDraftBrand((p) =>
+                      p ? { ...p, brandName: e.target.value } : p
+                    )
+                  }
+                />
+              )}
             </div>
 
             <div className="grid grid-cols-2 gap-3">
               <div>
                 <p className="text-[11px] text-slate-400">Moeda padrão</p>
                 <p className="text-sm font-semibold">
+                  <button
+                    type="button"
+                    onClick={() => setActiveTab("prefs")}
+                    className="mt-1 text-[10px] text-emerald-400 hover:underline"
+                  >
+                    Editado em “Preferências gerais”
+                  </button>
                   {tenant.defaultCurrency}
                 </p>
               </div>
@@ -1002,6 +1312,13 @@ export default function OwnerConfiguracoesPage() {
               <div>
                 <p className="text-[11px] text-slate-400">Timezone</p>
                 <p className="text-sm font-semibold">{tenant.timezone}</p>
+                <button
+                  type="button"
+                  onClick={() => setActiveTab("prefs")}
+                  className="mt-1 text-[10px] text-emerald-400 hover:underline"
+                >
+                  Editado em “Preferências gerais”
+                </button>
               </div>
               <div>
                 <p className="text-[11px] text-slate-400">Telefone</p>
@@ -1012,6 +1329,24 @@ export default function OwnerConfiguracoesPage() {
             <div>
               <p className="text-[11px] text-slate-400">Email de contacto</p>
               <p className="text-sm font-semibold">{tenant.contactEmail}</p>
+            </div>
+            <div>
+              <p className="text-[11px] text-slate-400">NIF</p>
+
+              {!isEditingBrand ? (
+                <p className="text-sm font-semibold">{tenant.nif ?? "—"}</p>
+              ) : (
+                <input
+                  className="mt-1 w-full rounded-lg border border-slate-800 bg-slate-950 px-2 py-1 text-sm text-slate-100 outline-none"
+                  value={draftBrand?.nif ?? ""}
+                  onChange={(e) =>
+                    setDraftBrand((p) =>
+                      p ? { ...p, nif: e.target.value } : p
+                    )
+                  }
+                  placeholder="Ex: 123456789"
+                />
+              )}
             </div>
 
             <div>
@@ -1026,15 +1361,23 @@ export default function OwnerConfiguracoesPage() {
               backend (modelo Tenant ainda não expõe esses campos).
             </p>
           </div>
+          {brandError && (
+            <div className="mt-3 rounded-xl border border-rose-900/40 bg-rose-950/30 px-3 py-2 text-[11px] text-rose-200">
+              {brandError}
+            </div>
+          )}
         </div>
 
         {/* Unidades */}
         <div className="xl:col-span-1 rounded-2xl border border-slate-800 bg-slate-900/60 p-4 text-xs">
           <div className="flex items-center justify-between mb-3">
             <p className="text-slate-400">Unidades</p>
-            <button className="px-3 py-1 rounded-lg border border-emerald-600 bg-emerald-600/20 text-emerald-200 text-[11px]">
+            <Link
+              href="/owner/unidades"
+              className="px-3 py-1 rounded-lg border border-emerald-600 bg-emerald-600/20 text-emerald-200 text-[11px]"
+            >
               + Adicionar unidade
-            </button>
+            </Link>
           </div>
 
           {isLoading ? (
@@ -1097,7 +1440,14 @@ export default function OwnerConfiguracoesPage() {
         <div className="xl:col-span-1 rounded-2xl border border-slate-800 bg-slate-900/60 p-4 text-xs">
           <div className="flex items-center justify-between mb-3">
             <p className="text-slate-400">Utilizadores & permissões</p>
-            <button className="px-3 py-1 rounded-lg border border-emerald-600 bg-emerald-600/20 text-emerald-200 text-[11px]">
+            <button
+              onClick={() => {
+                setInviteError(null);
+                setInviteUrl(null);
+                setInviteOpen(true);
+              }}
+              className="px-3 py-1 rounded-lg border border-emerald-600 bg-emerald-600/20 text-emerald-200 text-[11px]"
+            >
               + Convidar utilizador
             </button>
           </div>
@@ -1182,6 +1532,250 @@ export default function OwnerConfiguracoesPage() {
           </p>
         </div>
       </section>
+      {inviteOpen ? (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 px-4">
+          <div className="w-full max-w-lg rounded-2xl border border-slate-800 bg-slate-950 p-4">
+            <div className="flex items-center justify-between mb-3">
+              <p className="text-slate-200 text-sm font-semibold">
+                Convidar utilizador
+              </p>
+              <button
+                className="text-slate-400 hover:text-slate-200 text-sm"
+                onClick={() => setInviteOpen(false)}
+              >
+                ✕
+              </button>
+            </div>
+
+            {inviteError ? (
+              <div className="mb-3 rounded-xl border border-red-800 bg-red-900/20 p-3">
+                <p className="text-red-200 text-xs">{inviteError}</p>
+              </div>
+            ) : null}
+
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+              <div>
+                <label className="block text-[11px] text-slate-400 mb-1">
+                  Role
+                </label>
+                <select
+                  className="w-full rounded-xl border border-slate-800 bg-slate-900/40 px-3 py-2 text-sm"
+                  value={inviteForm.role}
+                  onChange={(e) =>
+                    setInviteForm((s) => ({
+                      ...s,
+                      role: e.target.value as any,
+                    }))
+                  }
+                >
+                  <option value="provider">provider</option>
+                  <option value="attendant">attendant</option>
+                  <option value="admin">admin</option>
+                </select>
+              </div>
+
+              <div>
+                <label className="block text-[11px] text-slate-400 mb-1">
+                  Unidade
+                </label>
+                <select
+                  className="w-full rounded-xl border border-slate-800 bg-slate-900/40 px-3 py-2 text-sm"
+                  value={inviteForm.locationId ?? ""}
+                  onChange={(e) =>
+                    setInviteForm((s) => ({
+                      ...s,
+                      locationId: e.target.value || undefined,
+                    }))
+                  }
+                >
+                  <option value="">(Opcional)</option>
+                  {locationOptions.map((l) => (
+                    <option key={l.id} value={l.id}>
+                      {l.name}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              {inviteForm.role === "provider" ? (
+                <div className="md:col-span-2">
+                  <label className="block text-[11px] text-slate-400 mb-1">
+                    Especialidade
+                  </label>
+                  <select
+                    className="w-full rounded-xl border border-slate-800 bg-slate-900/40 px-3 py-2 text-sm"
+                    value={inviteForm.specialty ?? "barber"}
+                    onChange={(e) =>
+                      setInviteForm((s) => ({
+                        ...s,
+                        specialty: e.target.value as any,
+                      }))
+                    }
+                  >
+                    <option value="barber">barber</option>
+                    <option value="hairdresser">hairdresser</option>
+                    <option value="nail">nail</option>
+                    <option value="esthetic">esthetic</option>
+                    <option value="makeup">makeup</option>
+                    <option value="tattoo">tattoo</option>
+                    <option value="other">other</option>
+                  </select>
+                </div>
+              ) : null}
+
+              <div className="md:col-span-2">
+                <label className="block text-[11px] text-slate-400 mb-1">
+                  Expira em (horas)
+                </label>
+                <input
+                  type="number"
+                  min={1}
+                  max={720}
+                  className="w-full rounded-xl border border-slate-800 bg-slate-900/40 px-3 py-2 text-sm"
+                  value={inviteForm.expiresInHours ?? 72}
+                  onChange={(e) =>
+                    setInviteForm((s) => ({
+                      ...s,
+                      expiresInHours: Number(e.target.value || 72),
+                    }))
+                  }
+                />
+              </div>
+            </div>
+
+            <div className="flex gap-2 mt-4">
+              <button
+                onClick={() => setInviteOpen(false)}
+                className="flex-1 rounded-xl border border-slate-700 bg-slate-900/30 px-3 py-2 text-sm text-slate-200"
+              >
+                Cancelar
+              </button>
+
+              <button
+                disabled={inviteLoading}
+                onClick={async () => {
+                  try {
+                    setInviteLoading(true);
+                    setInviteError(null);
+                    setInviteUrl(null);
+
+                    const payload: CreateInviteInput = {
+                      role: inviteForm.role,
+                      specialty:
+                        inviteForm.role === "provider"
+                          ? inviteForm.specialty
+                          : undefined,
+                      locationId: inviteForm.locationId,
+                      expiresInHours: inviteForm.expiresInHours,
+                    };
+
+                    const res = await createOwnerInvite(payload);
+                    setInviteUrl(res.inviteUrl);
+                  } catch (e) {
+                    const msg =
+                      e instanceof ApiError
+                        ? e.message
+                        : "Falha ao criar convite.";
+                    setInviteError(msg);
+                  } finally {
+                    setInviteLoading(false);
+                  }
+                }}
+                className="flex-1 rounded-xl border border-emerald-600 bg-emerald-600/20 px-3 py-2 text-sm text-emerald-200 disabled:opacity-50"
+              >
+                {inviteLoading ? "Gerando..." : "Gerar link"}
+              </button>
+            </div>
+
+            {inviteUrl ? (
+              <div className="mt-4 rounded-xl border border-slate-800 bg-slate-900/40 p-3">
+                <p className="text-[11px] text-slate-400 mb-2">
+                  Link do convite
+                </p>
+                <div className="flex gap-2">
+                  <input
+                    className="flex-1 rounded-lg border border-slate-800 bg-slate-950/60 px-3 py-2 text-[11px]"
+                    value={inviteUrl}
+                    readOnly
+                  />
+                  <button
+                    className="rounded-lg border border-slate-700 bg-slate-900/40 px-3 py-2 text-[11px] text-slate-200"
+                    onClick={async () => {
+                      try {
+                        await navigator.clipboard.writeText(inviteUrl);
+                      } catch {}
+                    }}
+                  >
+                    Copiar
+                  </button>
+                </div>
+                <p className="text-[10px] text-slate-500 mt-2">
+                  Envia esse link pra pessoa. Ela abre, cria senha e entra.
+                </p>
+              </div>
+            ) : null}
+          </div>
+        </div>
+      ) : null}
+
+      {/* =========================
+          MODAL REAUTH
+         ========================= */}
+      {reauthOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center">
+          <div
+            className="absolute inset-0 bg-black/60"
+            onClick={cancelReauth}
+          />
+          <div className="relative w-[92%] max-w-md rounded-2xl border border-slate-800 bg-slate-950 p-5 text-xs shadow-xl">
+            <p className="text-slate-100 text-sm font-semibold">
+              Reautenticação necessária
+            </p>
+            <p className="mt-1 text-[11px] text-slate-400">
+              Para salvar esta alteração, confirme sua senha.
+            </p>
+
+            <div className="mt-4 rounded-xl border border-slate-800 bg-slate-900/50 p-3">
+              <p className="text-[10px] text-slate-400">Senha</p>
+              <input
+                type="password"
+                className="mt-2 w-full rounded-lg border border-slate-800 bg-slate-900/70 px-2 py-2 text-sm text-slate-100 outline-none"
+                value={reauthPassword}
+                onChange={(e) => setReauthPassword(e.target.value)}
+                placeholder="Digite sua senha"
+                autoFocus
+              />
+              {reauthError && (
+                <div className="mt-3 rounded-xl border border-rose-900/40 bg-rose-950/30 px-3 py-2 text-[11px] text-rose-200">
+                  {reauthError}
+                </div>
+              )}
+            </div>
+
+            <div className="mt-4 flex items-center justify-end gap-2">
+              <button
+                onClick={cancelReauth}
+                className="px-3 py-2 rounded-lg border border-slate-800 bg-slate-900/80 text-[11px] text-slate-200"
+                disabled={reauthLoading}
+              >
+                Cancelar
+              </button>
+              <button
+                onClick={confirmReauth}
+                className="px-3 py-2 rounded-lg border border-emerald-600 bg-emerald-600/20 text-emerald-200 text-[11px]"
+                disabled={reauthLoading}
+              >
+                {reauthLoading ? "Confirmando..." : "Confirmar"}
+              </button>
+            </div>
+
+            <p className="mt-3 text-[10px] text-slate-500">
+              Nota: por segurança, essa reautenticação pode ser solicitada de
+              novo em ações sensíveis seguintes (token one-time).
+            </p>
+          </div>
+        </div>
+      )}
     </>
   );
 }

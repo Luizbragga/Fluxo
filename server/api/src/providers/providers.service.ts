@@ -302,6 +302,21 @@ export class ProvidersService {
     return this.toViewModel(provider as ProviderWithUserAndLocation);
   }
 
+  async getMe(tenantId: string, userId: string) {
+    const provider = await this.prisma.provider.findFirst({
+      where: { tenantId, userId },
+      include: { user: true, location: true },
+    });
+
+    if (!provider) {
+      throw new NotFoundException(
+        'Usuário autenticado não está vinculado a um provider neste tenant',
+      );
+    }
+
+    return this.toViewModel(provider as ProviderWithUserAndLocation);
+  }
+
   async update(tenantId: string, id: string, dto: UpdateProviderDto) {
     // garante pertença ao tenant e já carrega user para validar email
     const exists = await this.prisma.provider.findFirst({
@@ -402,7 +417,7 @@ export class ProvidersService {
           },
         });
 
-        // ✅ recomendado: invalida sessões antigas quando muda senha
+        // invalida sessões antigas quando muda senha
         if (dto.newPassword) {
           await tx.refreshToken.deleteMany({
             where: { userId: exists.userId },

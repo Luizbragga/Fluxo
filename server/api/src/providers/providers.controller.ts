@@ -87,6 +87,17 @@ export class ProvidersController {
     return this.providersService.findAvailableUsersForProvider(tenantId);
   }
 
+  // provider autenticado pega o próprio profile (para o painel /provider)
+  @Roles(Role.provider)
+  @Get('me')
+  me(@Req() req: any) {
+    const { tenantId, id: userId } = req.user as {
+      tenantId: string;
+      id: string;
+    };
+    return this.providersService.getMe(tenantId, userId);
+  }
+
   // qualquer autenticado do tenant pode ler um provider
   @Get(':id')
   findOne(@Req() req: any, @Param('id') id: string) {

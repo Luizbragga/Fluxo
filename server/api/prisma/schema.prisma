@@ -59,11 +59,12 @@ enum PaymentMethod {
 }
 
 model Tenant {
-  id        String   @id @default(cuid())
-  name      String
-  slug      String   @unique
+  id        String  @id @default(cuid())
+  brandName String?
+  slug      String  @unique
+  legalName String?
   nif       String?
-  
+
   settings TenantSettings?
 
   createdAt DateTime @default(now())
@@ -80,6 +81,7 @@ model Tenant {
   customerPlans        CustomerPlan[]
   customerPlanPayments CustomerPlanPayment[]
   customers            Customer[]
+  invites              Invite[]
 }
 
 model TenantSettings {
@@ -94,33 +96,33 @@ model TenantSettings {
   defaultCurrency String  @default("EUR") // por enquanto EUR fixo, mas já deixa campo
   dateFormat      String  @default("dd/MM/yyyy")
   use24hClock     Boolean @default(true)
-  
+
   // Notificações
-  emailNewBooking              Boolean @default(true)
-  emailCancellation            Boolean @default(true)
-  emailReschedule              Boolean @default(true)
+  emailNewBooking   Boolean @default(true)
+  emailCancellation Boolean @default(true)
+  emailReschedule   Boolean @default(true)
 
-  notifyProvidersNewBooking    Boolean @default(true)
-  notifyProvidersChanges       Boolean @default(true)
+  notifyProvidersNewBooking Boolean @default(true)
+  notifyProvidersChanges    Boolean @default(true)
 
-  clientRemindersEnabled       Boolean @default(false)
-  reminderHoursBefore          Int     @default(24)
+  clientRemindersEnabled Boolean @default(false)
+  reminderHoursBefore    Int     @default(24)
 
   // Segurança (MVP)
-  sessionIdleTimeoutMin          Int     @default(240) // 4h (depois tu escolhe no front)
+  sessionIdleTimeoutMin            Int     @default(240) // 4h (depois tu escolhe no front)
   requireReauthForSensitiveActions Boolean @default(true)
-  twoFactorEnabled               Boolean @default(false)
+  twoFactorEnabled                 Boolean @default(false)
 
   // Agenda
-  defaultAppointmentDurationMin Int  @default(30)
-  bufferBetweenAppointmentsMin  Int  @default(0)
+  defaultAppointmentDurationMin Int     @default(30)
+  bufferBetweenAppointmentsMin  Int     @default(0)
   allowOverbooking              Boolean @default(false)
-  bookingIntervalMin Int @default(15)
+  bookingIntervalMin            Int     @default(15)
 
   // Cancelamento / no-show
-  minCancelNoticeHours Int  @default(0)     // 0 = sem regra
+  minCancelNoticeHours Int     @default(0) // 0 = sem regra
   autoNoShowEnabled    Boolean @default(false)
-  noShowAfterMin       Int?                // ex.: 15
+  noShowAfterMin       Int? // ex.: 15
 
   // Financeiro
   defaultPaymentMethod PaymentMethod @default(cash)
@@ -140,7 +142,7 @@ model Location {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  bookingIntervalMin Int? 
+  bookingIntervalMin Int?
 
   tenant        Tenant         @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   providers     Provider[]
@@ -150,6 +152,7 @@ model Location {
   planTemplates PlanTemplate[]
   customerPlans CustomerPlan[]
   services      Service[]
+  invites       Invite[]
 
   // Profissional responsável pela unidade (opcional)
   managerProviderId String?
@@ -167,7 +170,6 @@ model Location {
   @@index([tenantId])
 }
 
-
 model User {
   id           String    @id @default(cuid())
   tenantId     String
@@ -180,12 +182,13 @@ model User {
   provider     Provider?
   active       Boolean   @default(true)
   createdAt    DateTime  @default(now())
-  reauthNonce Int @default(0)
+  reauthNonce  Int       @default(0)
 
-  tenant       Tenant         @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  location     Location?      @relation(fields: [locationId], references: [id])
-  tokens       RefreshToken[]
-  appointments Appointment[]
+  tenant         Tenant         @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  location       Location?      @relation(fields: [locationId], references: [id])
+  tokens         RefreshToken[]
+  appointments   Appointment[]
+  createdInvites Invite[]       @relation("InviteCreatedBy")
 
   @@index([tenantId])
 }
@@ -202,8 +205,8 @@ model Customer {
   tenant       Tenant        @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   appointments Appointment[]
 
-  @@index([tenantId])
   @@unique([tenantId, phone], name: "tenant_phone_unique")
+  @@index([tenantId])
 }
 
 model RefreshToken {
@@ -219,18 +222,18 @@ model RefreshToken {
 }
 
 model Service {
-  id          String    @id @default(cuid())
-  tenantId    String
-  name        String
-  durationMin Int // duração em minutos
-  priceCents  Int // preço em centavos
-  category    String?
-  active      Boolean   @default(true)
-  createdAt   DateTime  @default(now())
-  updatedAt   DateTime  @updatedAt
-  locationId  String?
-  location    Location? @relation(fields: [locationId], references: [id])
-  notes       String?
+  id           String               @id @default(cuid())
+  tenantId     String
+  name         String
+  durationMin  Int // duração em minutos
+  priceCents   Int // preço em centavos
+  category     String?
+  active       Boolean              @default(true)
+  createdAt    DateTime             @default(now())
+  updatedAt    DateTime             @updatedAt
+  locationId   String?
+  location     Location?            @relation(fields: [locationId], references: [id])
+  notes        String?
   tenant       Tenant               @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   appointments Appointment[]
   commissions  ProviderCommission[]
@@ -256,7 +259,7 @@ model Provider {
 
   // Unidades em que ele é responsável
   managedLocations Location[] @relation("LocationManager")
-  
+
   createdAt    DateTime             @default(now())
   updatedAt    DateTime             @updatedAt
   blocks       Block[]
@@ -318,9 +321,9 @@ model Appointment {
   clientName         String
   clientPhone        String
   status             AppointmentState @default(scheduled)
-  reminderSmsSentAt  DateTime? 
+  reminderSmsSentAt  DateTime?
   customerPlanId     String?
-  customerId         String?  
+  customerId         String?
 
   createdById String?
   createdBy   User?   @relation(fields: [createdById], references: [id], onDelete: SetNull)
@@ -341,7 +344,6 @@ model Appointment {
   @@index([tenantId, providerId, startAt, endAt])
   @@index([tenantId, status, startAt, reminderSmsSentAt])
 }
-
 
 model AppointmentEarning {
   id                    String @id @default(cuid())
@@ -364,27 +366,27 @@ model AppointmentEarning {
 }
 
 model PlanTemplate {
-  id                String   @id @default(cuid())
-  tenantId          String
-  locationId        String? // opcional: plano pode ser global ou de uma filial
-  name              String
-  description       String?
-  priceCents        Int
-  intervalDays      Int // 15, 30, etc.
-  visitsPerInterval Int // nº de visitas por ciclo
-  minDaysBetweenVisits Int?
-  sameDayServiceIds Json // array de serviceId
-  allowedWeekdays   Json // ex.: ["mon","wed","fri"]
-  minAdvanceDays    Int      @default(0)
-  isAccumulative    Boolean  @default(false)
-  active            Boolean  @default(true)
-  createdAt         DateTime @default(now())
-  updatedAt         DateTime @updatedAt
+  id                      String         @id @default(cuid())
+  tenantId                String
+  locationId              String? // opcional: plano pode ser global ou de uma filial
+  name                    String
+  description             String?
+  priceCents              Int
+  intervalDays            Int // 15, 30, etc.
+  visitsPerInterval       Int // nº de visitas por ciclo
+  minDaysBetweenVisits    Int?
+  sameDayServiceIds       Json // array de serviceId
+  allowedWeekdays         Json // ex.: ["mon","wed","fri"]
+  minAdvanceDays          Int            @default(0)
+  isAccumulative          Boolean        @default(false)
+  active                  Boolean        @default(true)
+  createdAt               DateTime       @default(now())
+  updatedAt               DateTime       @updatedAt
   allowedStartTimeMinutes Int? // minutos a partir da meia-noite (ex: 15:00 = 900)
   allowedEndTimeMinutes   Int? // idem, horário final
-  tenant        Tenant         @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  location      Location?      @relation(fields: [locationId], references: [id])
-  customerPlans CustomerPlan[]
+  tenant                  Tenant         @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  location                Location?      @relation(fields: [locationId], references: [id])
+  customerPlans           CustomerPlan[]
 
   @@index([tenantId])
   @@index([tenantId, active])
@@ -435,4 +437,33 @@ model CustomerPlanPayment {
 
   @@index([tenantId])
   @@index([tenantId, status, dueDate])
+}
+
+model Invite {
+  id       String @id @default(cuid())
+  tenantId String
+  role     Role
+
+  // Para provider (e opcional p/ attendant/admin se você quiser amarrar unidade)
+  locationId String?
+  specialty  Specialty?
+
+  // Opcional: pra você já preencher/validar
+  email String?
+  phone String?
+
+  tokenHash  String    @unique
+  expiresAt  DateTime
+  acceptedAt DateTime?
+
+  createdAt   DateTime @default(now())
+  createdById String
+
+  tenant    Tenant    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  location  Location? @relation(fields: [locationId], references: [id])
+  createdBy User      @relation(fields: [createdById], references: [id], onDelete: Cascade, name: "InviteCreatedBy")
+
+  @@index([tenantId])
+  @@index([tenantId, role])
+  @@index([locationId])
 }

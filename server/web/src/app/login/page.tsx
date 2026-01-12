@@ -3,6 +3,7 @@
 import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { apiClient } from "@/lib/api-client";
+import { LoginForm } from "./LoginForm";
 
 type LoginResponse = {
   user: {
@@ -53,7 +54,25 @@ export default function LoginPage() {
         localStorage.setItem("fluxo_tenant", res.user.tenantId);
       }
 
-      router.push("/owner");
+      const role = res.user.role;
+
+      if (role === "owner" || role === "admin") {
+        router.push("/owner");
+        return;
+      }
+
+      if (role === "provider") {
+        router.push("/provider");
+        return;
+      }
+
+      if (role === "attendant") {
+        router.push("/attendant");
+        return;
+      }
+
+      // fallback seguro
+      router.push("/login");
     } catch (err: any) {
       console.error(err);
       setErrorMessage(

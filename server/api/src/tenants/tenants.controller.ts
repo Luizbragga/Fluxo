@@ -10,6 +10,7 @@ import { Roles } from '../auth/decorators/roles.decorator';
 import { UpdateTenantSettingsDto } from './dto/update-tenant-settings.dto';
 import { Sensitive } from '../auth/decorators/sensitive.decorator';
 import { ReauthGuard } from '../auth/guards/reauth.guard';
+import { UpdateTenantDto } from './dto/update-tenant.dto';
 
 @ApiTags('Tenants')
 @ApiBearerAuth()
@@ -24,6 +25,15 @@ export class TenantsController {
     const tenantId = req.user?.tenantId as string;
     return this.tenants.getMe(tenantId);
   }
+
+  @Roles(Role.owner, Role.admin)
+  @Sensitive()
+  @Patch('me')
+  async updateMe(@Req() req: any, @Body() dto: UpdateTenantDto) {
+    const tenantId = req.user?.tenantId as string;
+    return this.tenants.updateMe(tenantId, dto);
+  }
+
   @Get('settings')
   async getSettings(@Req() req: any) {
     const tenantId = req.user?.tenantId as string;

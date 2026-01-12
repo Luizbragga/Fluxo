@@ -12,6 +12,6 @@ import { ReauthGuard } from './guards/reauth.guard';
   imports: [PrismaModule, PassportModule, JwtModule.register({})],
   controllers: [AuthController],
   providers: [AuthService, JwtAccessStrategy, JwtRefreshStrategy, ReauthGuard],
-  exports: [ReauthGuard],
+  exports: [ReauthGuard, AuthService],
 })
 export class AuthModule {}
