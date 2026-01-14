@@ -82,6 +82,7 @@ model Tenant {
   customerPlanPayments CustomerPlanPayment[]
   customers            Customer[]
   invites              Invite[]
+  notifications        Notification[]
 }
 
 model TenantSettings {
@@ -189,6 +190,7 @@ model User {
   tokens         RefreshToken[]
   appointments   Appointment[]
   createdInvites Invite[]       @relation("InviteCreatedBy")
+  notifications  Notification[]
 
   @@index([tenantId])
 }
@@ -466,4 +468,25 @@ model Invite {
   @@index([tenantId])
   @@index([tenantId, role])
   @@index([locationId])
+}
+
+model Notification {
+  id       String @id @default(cuid())
+  tenantId String
+  userId   String
+
+  type    String?
+  title   String?
+  message String?
+  data    Json?
+
+  readAt    DateTime?
+  createdAt DateTime  @default(now())
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId])
+  @@index([userId, createdAt])
+  @@index([tenantId, userId, createdAt])
 }

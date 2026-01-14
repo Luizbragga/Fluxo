@@ -70,3 +70,6 @@ export async function markNotificationAsRead(id: string) {
     });
   }
 }
+export async function markAllNotificationsAsRead() {
+  await apiClient(`/notifications/me/read-all`, { method: "PATCH" });
+}

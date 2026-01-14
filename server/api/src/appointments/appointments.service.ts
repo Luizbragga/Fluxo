@@ -17,6 +17,7 @@ import {
 } from '@prisma/client';
 import { EmailService } from '../notifications/email.service';
 import { SmsService } from '../notifications/sms.service';
+import { NotificationsService } from '../notifications/notifications.service';
 
 const DEFAULT_COMMISSION_PERCENTAGE = 50; // 50% por padrão (ajustável)
 
@@ -28,6 +29,7 @@ export class AppointmentsService {
     private prisma: PrismaService,
     private email: EmailService,
     private readonly smsService: SmsService,
+    private readonly notifications: NotificationsService,
   ) {}
 
   private async assertMinCancelNotice(
@@ -62,22 +64,33 @@ export class AppointmentsService {
       });
     }
   }
-  private toE164Pt(raw: string) {
-    const digits = (raw ?? '').replace(/\D+/g, '');
 
-    // já veio com código do país PT
-    if (digits.startsWith('351')) return `+${digits}`;
+  private async getTenantTimezone(tenantId: string) {
+    return (
+      (
+        await this.prisma.tenantSettings.findUnique({
+          where: { tenantId },
+          select: { timezone: true },
+        })
+      )?.timezone ?? 'Europe/Lisbon'
+    );
+  }
 
-    // veio só 9 dígitos (número PT normal)
-    if (digits.length === 9) return `+351${digits}`;
-
-    // fallback: tenta mandar como veio
-    return `+${digits}`;
+  private formatPtDateTime(date: Date, tz: string) {
+    return date.toLocaleString('pt-PT', {
+      timeZone: tz,
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
+    });
   }
 
   async create(tenantId: string, userId: string, dto: CreateAppointmentDto) {
     const startAt = new Date(dto.startAt);
     let endAt = new Date(dto.endAt);
+
     // ----------------------------------------------------------------
     // TELEFONE: normaliza 1 vez (PT -> 351 + E.164)
     // ----------------------------------------------------------------
@@ -489,7 +502,7 @@ export class AppointmentsService {
     // ----------------------------------------------------------------
     // CLIENTE: 1 registro por telefone por tenant
     // ----------------------------------------------------------------
-    const normalizedPhone = phoneDigitsPt;
+    const normalizedPhone = phoneDigitsPt; // sem "+"
     const newNameNorm = dto.clientName.trim().toLowerCase();
 
     let customerId: string;
@@ -554,12 +567,30 @@ export class AppointmentsService {
         provider: { select: { id: true, name: true } },
       },
     });
-    //  SMS de confirmação (não pode quebrar o agendamento se falhar)
-    // SMS de confirmação (não pode quebrar o agendamento se falhar)
+
+    // ✅ Notificação IN-APP para o provider (novo agendamento)
+    try {
+      const tz = await this.getTenantTimezone(tenantId);
+      const when = this.formatPtDateTime(appointment.startAt, tz);
+
+      await this.notifyProviderInApp(tenantId, appointment.providerId, {
+        type: 'appointment_created',
+        title: 'Novo agendamento',
+        message: `${appointment.clientName} • ${appointment.serviceName} • ${when}`,
+        data: { appointmentId: appointment.id },
+      });
+    } catch (e) {
+      this.logger.warn(
+        `[NOTIF] Falha ao criar notificação: ${(e as any)?.message ?? e}`,
+      );
+    }
+
+    // ✅ SMS de confirmação (não pode quebrar o agendamento se falhar)
     try {
       const to = appointment.clientPhone; // já está em E.164
+      const tz = await this.getTenantTimezone(tenantId);
+      const when = this.formatPtDateTime(appointment.startAt, tz);
 
-      const when = new Date(appointment.startAt).toLocaleString('pt-PT');
       const msg =
         `Fluxo ✅ Agendamento confirmado!\n` +
         `Cliente: ${appointment.clientName}\n` +
@@ -617,6 +648,51 @@ export class AppointmentsService {
     });
 
     return appointment;
+  }
+
+  private async notifyProviderInApp(
+    tenantId: string,
+    providerId: string,
+    payload: {
+      type: string;
+      title: string;
+      message: string;
+      data?: any;
+    },
+  ) {
+    const settings = await this.prisma.tenantSettings.findUnique({
+      where: { tenantId },
+      select: {
+        notifyProvidersNewBooking: true,
+        notifyProvidersChanges: true,
+      },
+    });
+
+    if (!settings) return;
+
+    const isNewBooking = payload.type === 'appointment_created';
+    const allow = isNewBooking
+      ? settings.notifyProvidersNewBooking
+      : settings.notifyProvidersChanges;
+
+    if (!allow) return;
+
+    // provider -> userId (destinatário real)
+    const provider = await this.prisma.provider.findFirst({
+      where: { id: providerId, tenantId },
+      select: { userId: true },
+    });
+
+    if (!provider?.userId) return;
+
+    await this.notifications.create({
+      tenantId,
+      userId: provider.userId,
+      type: payload.type,
+      title: payload.title,
+      message: payload.message,
+      data: payload.data ?? undefined,
+    });
   }
 
   // LISTA DO DIA ---------------------------------------------------------------
@@ -812,36 +888,16 @@ export class AppointmentsService {
         `Falha ao enviar emails de reagendamento: ${err?.message ?? err}`,
       );
     });
+
     // SMS (não quebra o reagendamento se falhar)
     try {
       const to = (updated.clientPhone ?? '').trim();
 
       if (/^\+\d{8,15}$/.test(to)) {
-        const tz =
-          (
-            await this.prisma.tenantSettings.findUnique({
-              where: { tenantId },
-              select: { timezone: true },
-            })
-          )?.timezone ?? 'Europe/Lisbon';
+        const tz = await this.getTenantTimezone(tenantId);
 
-        const oldLabel = oldStartAt.toLocaleString('pt-PT', {
-          timeZone: tz,
-          year: 'numeric',
-          month: '2-digit',
-          day: '2-digit',
-          hour: '2-digit',
-          minute: '2-digit',
-        });
-
-        const newLabel = updated.startAt.toLocaleString('pt-PT', {
-          timeZone: tz,
-          year: 'numeric',
-          month: '2-digit',
-          day: '2-digit',
-          hour: '2-digit',
-          minute: '2-digit',
-        });
+        const oldLabel = this.formatPtDateTime(oldStartAt, tz);
+        const newLabel = this.formatPtDateTime(updated.startAt, tz);
 
         const msg =
           `Fluxo 🔁 Agendamento reagendado!\n` +
@@ -859,6 +915,27 @@ export class AppointmentsService {
     } catch (e) {
       this.logger.warn(
         `[SMS] Falha ao enviar reagendamento: ${(e as any)?.message ?? e}`,
+      );
+    }
+
+    // ✅ Notificação IN-APP para o provider (reagendado)
+    try {
+      const tz = await this.getTenantTimezone(tenantId);
+      const oldLabel = this.formatPtDateTime(oldStartAt, tz);
+      const newLabel = this.formatPtDateTime(updated.startAt, tz);
+
+      await this.notifyProviderInApp(tenantId, updated.providerId, {
+        type: 'appointment_rescheduled',
+        title: 'Agendamento reagendado',
+        message: `${updated.clientName} • ${updated.serviceName} • ${oldLabel} → ${newLabel}`,
+        data: {
+          appointmentId: updated.id,
+          oldStartAt: oldStartAt.toISOString(),
+        },
+      });
+    } catch (e) {
+      this.logger.warn(
+        `[NOTIF] Falha ao criar notificação (reagendamento): ${(e as any)?.message ?? e}`,
       );
     }
 
@@ -1036,27 +1113,14 @@ export class AppointmentsService {
         `Falha ao enviar emails de cancelamento: ${err?.message ?? err}`,
       );
     });
+
     // SMS (não quebra o cancelamento se falhar)
     try {
       const to = (updated.clientPhone ?? '').trim();
 
       if (/^\+\d{8,15}$/.test(to)) {
-        const tz =
-          (
-            await this.prisma.tenantSettings.findUnique({
-              where: { tenantId },
-              select: { timezone: true },
-            })
-          )?.timezone ?? 'Europe/Lisbon';
-
-        const when = updated.startAt.toLocaleString('pt-PT', {
-          timeZone: tz,
-          year: 'numeric',
-          month: '2-digit',
-          day: '2-digit',
-          hour: '2-digit',
-          minute: '2-digit',
-        });
+        const tz = await this.getTenantTimezone(tenantId);
+        const when = this.formatPtDateTime(updated.startAt, tz);
 
         const msg =
           `Fluxo ❌ Agendamento cancelado.\n` +
@@ -1074,6 +1138,23 @@ export class AppointmentsService {
     } catch (e) {
       this.logger.warn(
         `[SMS] Falha ao enviar cancelamento: ${(e as any)?.message ?? e}`,
+      );
+    }
+
+    // ✅ Notificação IN-APP para o provider (cancelado)
+    try {
+      const tz = await this.getTenantTimezone(tenantId);
+      const when = this.formatPtDateTime(updated.startAt, tz);
+
+      await this.notifyProviderInApp(tenantId, updated.providerId, {
+        type: 'appointment_cancelled',
+        title: 'Agendamento cancelado',
+        message: `${updated.clientName} • ${updated.serviceName} • ${when}`,
+        data: { appointmentId: updated.id },
+      });
+    } catch (e) {
+      this.logger.warn(
+        `[NOTIF] Falha ao criar notificação (cancelamento): ${(e as any)?.message ?? e}`,
       );
     }
 
@@ -1205,14 +1286,7 @@ export class AppointmentsService {
     if (!appt) return;
 
     const tz = settings.timezone ?? 'Europe/Lisbon';
-    const startLabel = appt.startAt.toLocaleString('pt-PT', {
-      timeZone: tz,
-      year: 'numeric',
-      month: '2-digit',
-      day: '2-digit',
-      hour: '2-digit',
-      minute: '2-digit',
-    });
+    const startLabel = this.formatPtDateTime(appt.startAt, tz);
 
     const subject = `Novo agendamento - ${appt.clientName} (${startLabel})`;
 
@@ -1295,14 +1369,7 @@ export class AppointmentsService {
     if (!appt) return;
 
     const tz = settings.timezone ?? 'Europe/Lisbon';
-    const startLabel = appt.startAt.toLocaleString('pt-PT', {
-      timeZone: tz,
-      year: 'numeric',
-      month: '2-digit',
-      day: '2-digit',
-      hour: '2-digit',
-      minute: '2-digit',
-    });
+    const startLabel = this.formatPtDateTime(appt.startAt, tz);
 
     const subject = `Cancelamento - ${appt.clientName} (${startLabel})`;
 
@@ -1390,23 +1457,8 @@ export class AppointmentsService {
 
     const tz = settings.timezone ?? 'Europe/Lisbon';
 
-    const oldLabel = oldStartAt.toLocaleString('pt-PT', {
-      timeZone: tz,
-      year: 'numeric',
-      month: '2-digit',
-      day: '2-digit',
-      hour: '2-digit',
-      minute: '2-digit',
-    });
-
-    const newLabel = appt.startAt.toLocaleString('pt-PT', {
-      timeZone: tz,
-      year: 'numeric',
-      month: '2-digit',
-      day: '2-digit',
-      hour: '2-digit',
-      minute: '2-digit',
-    });
+    const oldLabel = this.formatPtDateTime(oldStartAt, tz);
+    const newLabel = this.formatPtDateTime(appt.startAt, tz);
 
     const subject = `Reagendamento - ${appt.clientName} (${oldLabel} → ${newLabel})`;
 

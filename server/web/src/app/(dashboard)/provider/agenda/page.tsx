@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import { useRequireAuth } from "@/lib/use-auth";
 import { apiClient, ApiError } from "@/lib/api-client";
 
@@ -8,7 +8,6 @@ type ProviderMe = {
   id: string;
   name?: string;
   user?: { name?: string };
-  // se teu backend devolver locationId ou algo, pode manter aqui depois
 };
 
 type AppointmentStatus =
@@ -25,7 +24,7 @@ type ProviderAppointment = {
   customerName: string;
   status: AppointmentStatus;
   billingType?: "plan" | "single";
-  durationMin?: number; // ✅ novo: pra ocupar altura no slot
+  durationMin?: number;
 };
 
 const DEFAULT_TIME_SLOTS = [
@@ -67,6 +66,19 @@ export default function ProviderAgendaPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
+  const [selectedAppt, setSelectedAppt] = useState<ProviderAppointment | null>(
+    null
+  );
+  const [refreshTick, setRefreshTick] = useState(0);
+
+  function triggerReload() {
+    setRefreshTick((t) => t + 1);
+  }
+
+  function handleOpenDetails(appt: ProviderAppointment) {
+    setSelectedAppt(appt);
+  }
+
   const today = new Date();
   const todayStr = formatDateYYYYMMDD(today);
   const selectedDateStr = formatDateYYYYMMDD(selectedDate);
@@ -80,7 +92,6 @@ export default function ProviderAgendaPage() {
     ? `Hoje · ${weekdayLabel}`
     : `${selectedDate.toLocaleDateString("pt-PT")} · ${weekdayLabel}`;
 
-  // ✅ step fixo (MVP)
   const agendaStepMin = 30;
 
   const morningSlots = useMemo(
@@ -92,7 +103,6 @@ export default function ProviderAgendaPage() {
     []
   );
 
-  // Stats do dia
   const stats = useMemo(() => {
     const total = appointments.length;
 
@@ -224,7 +234,7 @@ export default function ProviderAgendaPage() {
     return () => {
       alive = false;
     };
-  }, [authLoading, user, provider?.id, selectedDate]);
+  }, [authLoading, user, provider?.id, selectedDate, refreshTick]);
 
   function handlePrevDay() {
     setSelectedDate((prev) => addDays(prev, -1));
@@ -244,7 +254,6 @@ export default function ProviderAgendaPage() {
 
   const providerName = provider?.name ?? provider?.user?.name ?? "Profissional";
 
-  // para “desabilitar slots passados”
   const isPastDay = selectedDateStr < todayStr;
   const nowMinutes = today.getHours() * 60 + today.getMinutes();
 
@@ -297,7 +306,7 @@ export default function ProviderAgendaPage() {
         </div>
       </header>
 
-      {/* Resumo rápido */}
+      {/* Resumo */}
       <section className="mb-4 grid gap-2 text-xs md:grid-cols-4">
         <div className="rounded-2xl border border-slate-800 bg-slate-900/70 px-3 py-2">
           <p className="text-[11px] text-slate-400">Atendimentos</p>
@@ -344,7 +353,6 @@ export default function ProviderAgendaPage() {
         </div>
       </section>
 
-      {/* ✅ AGENDA EM SLOTS (igual estilo do owner, mas 1 profissional) */}
       <section className="rounded-2xl border border-slate-800 bg-slate-900/60 p-4">
         <div className="grid gap-6 md:grid-cols-2">
           {/* Manhã */}
@@ -372,6 +380,7 @@ export default function ProviderAgendaPage() {
                 isPastDay={isPastDay}
                 isToday={isToday}
                 nowMinutes={nowMinutes}
+                onOpenDetails={handleOpenDetails}
               />
             </div>
           </div>
@@ -403,16 +412,28 @@ export default function ProviderAgendaPage() {
                 isPastDay={isPastDay}
                 isToday={isToday}
                 nowMinutes={nowMinutes}
+                onOpenDetails={handleOpenDetails}
               />
             </div>
           </div>
         </div>
       </section>
+
+      {selectedAppt && (
+        <AppointmentDetailsModal
+          appt={selectedAppt}
+          onClose={() => setSelectedAppt(null)}
+          onChangeDone={() => {
+            setSelectedAppt(null);
+            triggerReload();
+          }}
+        />
+      )}
     </>
   );
 }
 
-/** Timeline simplificada: desenha slots + blocos de agendamento (read-only) */
+/** Timeline simplificada (mesma lógica do owner): slots + blocos clicáveis */
 function ProviderTimeline({
   periodLabel,
   periodStart,
@@ -422,6 +443,7 @@ function ProviderTimeline({
   isPastDay,
   isToday,
   nowMinutes,
+  onOpenDetails,
 }: {
   periodLabel: string;
   periodStart: string;
@@ -431,6 +453,7 @@ function ProviderTimeline({
   isPastDay: boolean;
   isToday: boolean;
   nowMinutes: number;
+  onOpenDetails: (appt: ProviderAppointment) => void;
 }) {
   const rowPx = 56;
 
@@ -449,7 +472,6 @@ function ProviderTimeline({
       })
       .sort((a, b) => a.startMin - b.startMin);
 
-    // agrupa por startMin (overbooking)
     const map = new Map<number, typeof list>();
     for (const item of list) {
       const arr = map.get(item.startMin) ?? [];
@@ -476,7 +498,6 @@ function ProviderTimeline({
 
     const nextGroup = groups.find((g) => g.startMin >= cursor);
 
-    // sem mais agendamentos: desenha slots até o fim
     if (!nextGroup) {
       while (cursor <= lastStartMin && guard < 2000) {
         guard++;
@@ -496,7 +517,6 @@ function ProviderTimeline({
       break;
     }
 
-    // slots livres até o próximo
     while (cursor + stepMin <= nextGroup.startMin && cursor <= lastStartMin) {
       nodes.push(
         renderSlot(
@@ -519,7 +539,6 @@ function ProviderTimeline({
       (nextGroup.maxDurMin / stepMin) * rowPx
     );
 
-    // 1 item (normal) ou overbooking (2+)
     if (nextGroup.items.length === 1) {
       const one = nextGroup.items[0].appt;
       const st = getStatusClasses(one.status);
@@ -531,9 +550,11 @@ function ProviderTimeline({
           : "—";
 
       nodes.push(
-        <div
+        <button
+          type="button"
           key={`appt-${one.id}`}
-          className={`w-full rounded-xl border px-2 py-2 text-left ${st.container}`}
+          onClick={() => onOpenDetails(one)}
+          className={`w-full rounded-xl border px-2 py-2 text-left transition hover:brightness-110 ${st.container}`}
           style={{ height: blockHeightPx }}
           title={`${one.time} · ${one.serviceName} · ${one.customerName} · ${st.label}`}
         >
@@ -553,16 +574,18 @@ function ProviderTimeline({
               {st.label}
             </span>
           </div>
-        </div>
+        </button>
       );
     } else {
       const count = nextGroup.items.length;
       const slotTime = minutesToTimeStr(nextGroup.startMin);
 
       nodes.push(
-        <div
+        <button
+          type="button"
           key={`over-${nextGroup.startMin}`}
-          className="w-full rounded-xl border px-2 py-2 text-left border-amber-500/40 bg-amber-500/10"
+          onClick={() => onOpenDetails(nextGroup.items[0].appt)}
+          className="w-full rounded-xl border px-2 py-2 text-left border-amber-500/40 bg-amber-500/10 transition hover:brightness-110"
           style={{ height: blockHeightPx }}
           title={`${slotTime} · Overbooking (${count} agendamentos)`}
         >
@@ -581,7 +604,7 @@ function ProviderTimeline({
               +{count - 1}
             </span>
           </div>
-        </div>
+        </button>
       );
     }
 
@@ -589,6 +612,180 @@ function ProviderTimeline({
   }
 
   return <div className="flex flex-col gap-2">{nodes}</div>;
+}
+
+function AppointmentDetailsModal({
+  appt,
+  onClose,
+  onChangeDone,
+}: {
+  appt: ProviderAppointment;
+  onClose: () => void;
+  onChangeDone: () => void;
+}) {
+  const [busy, setBusy] = useState(false);
+
+  const statusStyles = getStatusClasses(appt.status);
+  const billingType = appt.billingType;
+
+  async function setStatus(status: AppointmentStatus) {
+    try {
+      setBusy(true);
+
+      await apiClient(`/appointments/${encodeURIComponent(appt.id)}`, {
+        method: "PATCH",
+        body: { status },
+      });
+
+      onChangeDone();
+    } catch (err) {
+      const msg =
+        err instanceof ApiError ? err.message : "Erro ao atualizar status.";
+      alert(msg);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function cancelAppointment() {
+    try {
+      setBusy(true);
+
+      await apiClient(`/appointments/${encodeURIComponent(appt.id)}`, {
+        method: "DELETE",
+      });
+
+      onChangeDone();
+    } catch (err) {
+      const msg =
+        err instanceof ApiError ? err.message : "Erro ao cancelar agendamento.";
+      alert(msg);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  function handleDetailsStatusChange(forceStatus?: AppointmentStatus) {
+    // replica o “clique muda status” do owner, mas aqui decide direto:
+    // scheduled -> in_service, in_service -> done
+    if (forceStatus) return setStatus(forceStatus);
+
+    if (appt.status === "scheduled") return setStatus("in_service");
+    if (appt.status === "in_service") return setStatus("done");
+  }
+
+  return (
+    <div className="fixed inset-0 z-40 flex items-center justify-center bg-black/60">
+      <div className="w-full max-w-md rounded-2xl border border-slate-800 bg-slate-950 p-4 text-xs shadow-xl">
+        <div className="flex items-start justify-between mb-3">
+          <div>
+            <p className="text-[11px] uppercase tracking-wide text-slate-400">
+              Detalhes do agendamento
+            </p>
+            <p className="text-sm font-semibold text-slate-100">
+              {appt.serviceName}
+            </p>
+            <p className="text-[11px] text-slate-300">
+              Cliente: {appt.customerName}
+            </p>
+            <p className="text-[11px] text-slate-400">Horário: {appt.time}</p>
+          </div>
+
+          <button
+            className="text-[11px] text-slate-400 hover:text-slate-100"
+            onClick={onClose}
+            disabled={busy}
+          >
+            Fechar
+          </button>
+        </div>
+
+        <div className="flex gap-2 mb-4">
+          <span
+            className={`text-[10px] px-2 py-0.5 rounded ${statusStyles.badge}`}
+          >
+            {statusStyles.label}
+          </span>
+
+          <span
+            className={`text-[10px] px-2 py-0.5 rounded border ${
+              billingType === "plan"
+                ? "bg-emerald-500/15 text-emerald-100 border-emerald-400/60"
+                : "bg-slate-700/40 text-slate-100 border-slate-500/60"
+            }`}
+          >
+            {billingType === "plan" ? "Plano" : "Avulso"}
+          </span>
+        </div>
+
+        <div className="space-y-2 mb-4">
+          {appt.status === "scheduled" && (
+            <button
+              type="button"
+              disabled={busy}
+              className="w-full px-3 py-1 rounded-lg border border-emerald-500 bg-emerald-500/10 text-[11px] text-emerald-100 disabled:opacity-60"
+              onClick={() => handleDetailsStatusChange()}
+            >
+              Iniciar atendimento
+            </button>
+          )}
+
+          {/* Se você ainda não quer encaixe no Provider, pode remover este botão,
+              mas deixei igual ao owner no visual. */}
+          <button
+            type="button"
+            disabled={busy}
+            className="w-full px-3 py-1 rounded-lg border border-amber-400 bg-amber-500/10 text-[11px] text-amber-200 disabled:opacity-60"
+            onClick={() =>
+              alert(
+                "Encaixe no Provider: se quiser, eu implemento igual ao owner."
+              )
+            }
+          >
+            + Encaixar outro cliente neste horário
+          </button>
+
+          {appt.status === "in_service" && (
+            <button
+              type="button"
+              disabled={busy}
+              className="w-full px-3 py-1 rounded-lg border border-sky-500 bg-sky-500/10 text-[11px] text-sky-100 disabled:opacity-60"
+              onClick={() => handleDetailsStatusChange()}
+            >
+              Marcar como concluído
+            </button>
+          )}
+
+          {(appt.status === "scheduled" || appt.status === "in_service") && (
+            <div className="flex gap-2">
+              <button
+                type="button"
+                disabled={busy}
+                className="flex-1 px-3 py-1 rounded-lg border border-amber-400 bg-amber-500/10 text-[11px] text-amber-200 disabled:opacity-60"
+                onClick={() => handleDetailsStatusChange("no_show")}
+              >
+                Marcar falta
+              </button>
+
+              <button
+                type="button"
+                disabled={busy}
+                className="flex-1 px-3 py-1 rounded-lg border border-rose-400 bg-rose-500/10 text-[11px] text-rose-200 disabled:opacity-60"
+                onClick={cancelAppointment}
+              >
+                Cancelar
+              </button>
+            </div>
+          )}
+        </div>
+
+        <p className="text-[10px] text-slate-500">
+          Dica: use este painel para controlar status, faltas e exceções de
+          forma segura, sem lotar o slot da agenda.
+        </p>
+      </div>
+    </div>
+  );
 }
 
 function renderSlot(
@@ -620,11 +817,12 @@ function renderSlot(
   );
 }
 
-/** Normaliza diferentes formatos de retorno do backend */
+/** Normaliza formatos do backend */
 function normalizeAppointments(list: any[]): ProviderAppointment[] {
   const items = list
     .map((raw) => {
       const id = String(raw?.id ?? "");
+      if (!id) return null;
 
       const time =
         typeof raw?.time === "string"
@@ -665,8 +863,6 @@ function normalizeAppointments(list: any[]): ProviderAppointment[] {
       const durationMin = Number(durationRaw);
       const durationSafe =
         Number.isFinite(durationMin) && durationMin > 0 ? durationMin : 30;
-
-      if (!id) return null;
 
       return {
         id,
