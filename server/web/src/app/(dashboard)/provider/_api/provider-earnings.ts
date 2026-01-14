@@ -11,13 +11,17 @@ export type ProviderEarningsResponse = {
   };
   appointments: Array<{
     id: string;
-    date: string; // ISO
-    status: string;
+    date: string; // ISO startAt
+    status: string; // done | cancelled | no_show | scheduled...
     serviceName: string;
+
+    // sempre existe no Appointment:
     servicePriceCents: number;
-    commissionPercentage: number;
-    providerEarningsCents: number;
-    houseEarningsCents: number;
+
+    // só existe em done (earning):
+    commissionPercentage?: number | null;
+    providerEarningsCents?: number | null;
+    houseEarningsCents?: number | null;
   }>;
 };
 

@@ -7,7 +7,7 @@ import { PrismaService } from '../prisma/prisma.service';
 import { CreateProviderDto } from './dto/create-provider.dto';
 import { UpdateProviderDto } from './dto/update-provider.dto';
 import { UpsertProviderCommissionDto } from './dto/upsert-provider-commission.dto';
-import { Prisma, Role, Specialty } from '@prisma/client';
+import { Prisma, Role, Specialty, AppointmentState } from '@prisma/client';
 import { CreateOwnerProviderDto } from './dto/create-owner-provider.dto';
 import * as bcrypt from 'bcrypt';
 
@@ -121,7 +121,7 @@ export class ProvidersService {
           name: location.name,
           slug: location.slug,
           address: location.address,
-          businessHoursTemplate: location.businessHoursTemplate ?? null, // ✅ ADD
+          businessHoursTemplate: location.businessHoursTemplate ?? null,
           createdAt: location.createdAt,
           updatedAt: location.updatedAt,
         }
@@ -549,7 +549,7 @@ export class ProvidersService {
       where: {
         tenantId,
         providerId,
-        status: { not: 'cancelled' as any },
+        status: { not: AppointmentState.cancelled },
         startAt: { lt: dayEnd },
         endAt: { gt: dayStart },
       },
@@ -746,7 +746,7 @@ export class ProvidersService {
         providerId,
         startAt: { lt: dayEnd },
         endAt: { gt: dayStart },
-        status: { not: 'cancelled' as any },
+        status: { not: AppointmentState.cancelled },
       },
       select: { startAt: true, endAt: true },
       orderBy: { startAt: 'asc' },
@@ -800,6 +800,7 @@ export class ProvidersService {
     };
   }
 
+  // ✅✅✅ ALTERADO: agora retorna TODOS os appointments do período (e totais só de DONE)
   async getMyEarnings(params: {
     tenantId: string;
     userId: string;
@@ -827,57 +828,60 @@ export class ProvidersService {
     // 2) Intervalo de datas
     const { fromDate, toDate } = this.resolveDateRange(from, to);
 
-    // 3) Buscar earnings + appointment
-    const earnings = await this.prisma.appointmentEarning.findMany({
+    // 3) Buscar TODOS appointments do período (done/cancelled/no_show/etc)
+    //    e trazer "earning" quando existir (normalmente só em DONE)
+    const appts = await this.prisma.appointment.findMany({
       where: {
-        appointment: {
-          tenantId,
-          providerId: provider.id,
-          startAt: {
-            gte: fromDate,
-            lt: toDate,
-          },
+        tenantId,
+        providerId: provider.id,
+        startAt: {
+          gte: fromDate,
+          lt: toDate,
         },
       },
-      include: {
-        appointment: {
+      select: {
+        id: true,
+        startAt: true,
+        status: true,
+        serviceName: true,
+        servicePriceCents: true,
+        earning: {
           select: {
-            id: true,
-            startAt: true,
-            status: true,
-            serviceName: true,
-            servicePriceCents: true,
+            commissionPercentage: true,
+            providerEarningsCents: true,
+            houseEarningsCents: true,
           },
         },
       },
       orderBy: {
-        appointment: {
-          startAt: 'asc',
-        },
+        startAt: 'asc',
       },
     });
 
-    // 4) Agregar totais
+    // 4) Totais financeiros SOMENTE em DONE
     let totalServicePriceCents = 0;
     let totalProviderEarningsCents = 0;
     let totalHouseEarningsCents = 0;
 
-    const appointments = earnings.map((e) => {
-      totalServicePriceCents += e.servicePriceCents;
-      totalProviderEarningsCents += e.providerEarningsCents;
-      totalHouseEarningsCents += e.houseEarningsCents;
+    for (const a of appts) {
+      if (a.status === AppointmentState.done && a.earning) {
+        totalServicePriceCents += a.servicePriceCents ?? 0;
+        totalProviderEarningsCents += a.earning.providerEarningsCents ?? 0;
+        totalHouseEarningsCents += a.earning.houseEarningsCents ?? 0;
+      }
+    }
 
-      return {
-        id: e.appointment.id,
-        date: e.appointment.startAt,
-        status: e.appointment.status,
-        serviceName: e.appointment.serviceName,
-        servicePriceCents: e.servicePriceCents,
-        commissionPercentage: e.commissionPercentage,
-        providerEarningsCents: e.providerEarningsCents,
-        houseEarningsCents: e.houseEarningsCents,
-      };
-    });
+    // 5) Payload no formato do teu FRONT
+    const appointments = appts.map((a) => ({
+      id: a.id,
+      date: a.startAt.toISOString(),
+      status: a.status,
+      serviceName: a.serviceName,
+      servicePriceCents: a.servicePriceCents ?? 0,
+      commissionPercentage: a.earning?.commissionPercentage ?? 0,
+      providerEarningsCents: a.earning?.providerEarningsCents ?? 0,
+      houseEarningsCents: a.earning?.houseEarningsCents ?? 0,
+    }));
 
     return {
       providerId: provider.id,
@@ -891,6 +895,7 @@ export class ProvidersService {
       appointments,
     };
   }
+
   async getProviderCommissions(tenantId: string, providerId: string) {
     // Garante que o provider pertence ao tenant
     const provider = await this.prisma.provider.findFirst({
@@ -1100,6 +1105,7 @@ export class ProvidersService {
 
     return { fromDate, toDate };
   }
+
   /**
    * Lista utilizadores disponíveis para serem vinculados a um provider:
    * - mesmo tenant
@@ -1126,6 +1132,7 @@ export class ProvidersService {
 
     return users;
   }
+
   /**
    * Fluxo simplificado para o dono:
    * - recebe nome, email, telefone, unidade, especialidade
