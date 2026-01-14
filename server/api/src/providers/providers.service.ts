@@ -121,6 +121,7 @@ export class ProvidersService {
           name: location.name,
           slug: location.slug,
           address: location.address,
+          businessHoursTemplate: location.businessHoursTemplate ?? null, // ✅ ADD
           createdAt: location.createdAt,
           updatedAt: location.updatedAt,
         }
@@ -225,10 +226,7 @@ export class ProvidersService {
         locationId: dto.locationId,
         name: dto.name,
         specialty: dto.specialty ?? 'other',
-        weekdayTemplate:
-          dto.weekdayTemplate ??
-          (location.businessHoursTemplate as any) ??
-          undefined,
+        weekdayTemplate: dto.weekdayTemplate ?? undefined,
         active: dto.active ?? true,
       },
       include: {
@@ -1185,10 +1183,7 @@ export class ProvidersService {
           locationId: dto.locationId,
           name: dto.name,
           specialty: dto.specialty ?? Specialty.other,
-          weekdayTemplate:
-            dto.weekdayTemplate ??
-            (location.businessHoursTemplate as any) ??
-            undefined,
+          weekdayTemplate: dto.weekdayTemplate ?? undefined,
           active: true,
         },
         include: {

@@ -60,11 +60,6 @@ export default function ProviderProfilePage() {
                 {data.active ? "Sim" : "Não"}
               </span>
             </div>
-
-            <div className="flex justify-between gap-4">
-              <span className="text-slate-400">Provider ID</span>
-              <span className="text-slate-100">{data.id}</span>
-            </div>
           </div>
         </div>
 
@@ -89,11 +84,6 @@ export default function ProviderProfilePage() {
               <span className="text-slate-100">
                 {data.location?.name ?? "-"}
               </span>
-            </div>
-
-            <div className="flex justify-between gap-4">
-              <span className="text-slate-400">Location ID</span>
-              <span className="text-slate-100">{data.locationId}</span>
             </div>
           </div>
         </div>

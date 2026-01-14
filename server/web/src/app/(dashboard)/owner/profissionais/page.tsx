@@ -50,6 +50,7 @@ type ProfessionalSummary = {
 };
 
 type PeriodFilter = "day" | "week" | "month";
+
 const eurNumber = new Intl.NumberFormat("pt-PT", {
   minimumFractionDigits: 2,
   maximumFractionDigits: 2,
@@ -68,6 +69,7 @@ export default function OwnerProfessionalsPage() {
   const [didAutoOpenCreate, setDidAutoOpenCreate] = useState(false);
 
   const [period, setPeriod] = useState<PeriodFilter>("month");
+
   // lista + seleção
   const [professionals, setProfessionals] = useState<OwnerProfessional[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
@@ -94,6 +96,11 @@ export default function OwnerProfessionalsPage() {
   // unidades (locations)
   const [locations, setLocations] = useState<OwnerLocation[]>([]);
 
+  // filtro de unidade (lista + detalhes)
+  const [selectedLocationFilter, setSelectedLocationFilter] = useState<string>(
+    locationIdFromUrl ?? "all"
+  );
+
   // modal de criação de profissional
   const [isCreateOpen, setIsCreateOpen] = useState(false);
   const [createName, setCreateName] = useState("");
@@ -115,9 +122,11 @@ export default function OwnerProfessionalsPage() {
     useState<SpecialtyLiteral>("barber");
   const [editLoading, setEditLoading] = useState(false);
   const [editError, setEditError] = useState<string | null>(null);
+
   // ---------------------------------------------------------------------------
   // Carga inicial (profissionais + earnings + locations)
   // ---------------------------------------------------------------------------
+
   function getRangeForPeriod(period: PeriodFilter): {
     from: string;
     to: string;
@@ -138,9 +147,8 @@ export default function OwnerProfessionalsPage() {
     if (period === "week") {
       // considerar semana corrente, começando na segunda-feira
       const today = new Date();
-
       const dayOfWeek = today.getUTCDay(); // 0=domingo ... 6=sábado
-      const diffFromMonday = (dayOfWeek + 6) % 7; // 0 se segunda, 1 se terça, ..., 6 se domingo
+      const diffFromMonday = (dayOfWeek + 6) % 7;
 
       const monday = new Date(
         Date.UTC(year, month, day - diffFromMonday, 0, 0, 0)
@@ -172,15 +180,6 @@ export default function OwnerProfessionalsPage() {
           fetchOwnerLocations(),
         ]);
 
-      // 1) descobrir o maior nº de atendimentos entre todos os providers
-      const maxAppointments = earningsData.reduce(
-        (max, item) =>
-          item.appointmentsCount > max ? item.appointmentsCount : max,
-        0
-      );
-
-      // 2) calcular a ocupação REAL (0–100) para cada profissional
-      // (vem do backend: occupationPercentage)
       const professionalsWithOccupation = professionalsData.map((pro) => {
         const providerEarning = earningsData.find(
           (e) => e.providerId === pro.id
@@ -203,6 +202,7 @@ export default function OwnerProfessionalsPage() {
       } else {
         setSelectedId(professionalsWithOccupation[0].id);
       }
+
       setError(null);
     } catch (err: any) {
       console.error("Erro ao carregar profissionais/earnings/locations:", err);
@@ -213,18 +213,74 @@ export default function OwnerProfessionalsPage() {
       setLoading(false);
     }
   }
+
   useEffect(() => {
     loadAll(undefined, period);
   }, [period]);
+
+  // se vier locationId pela URL (ex: navegação), sincroniza o filtro
+  useEffect(() => {
+    if (locationIdFromUrl) setSelectedLocationFilter(locationIdFromUrl);
+  }, [locationIdFromUrl]);
 
   useEffect(() => {
     if (didAutoOpenCreate) return;
     if (!openCreateFromUrl) return;
 
-    // se veio locationId, tenta usar ele (mesmo que locations ainda esteja carregando)
     openCreateModal(locationIdFromUrl ?? undefined);
     setDidAutoOpenCreate(true);
   }, [didAutoOpenCreate, openCreateFromUrl, locationIdFromUrl]);
+
+  // ---------------------------------------------------------------------------
+  // Derivados (filtro)
+  // ---------------------------------------------------------------------------
+
+  const filteredProfessionals =
+    selectedLocationFilter === "all"
+      ? professionals
+      : professionals.filter((p) => p.locationId === selectedLocationFilter);
+
+  // mantém selectedId consistente com o filtro
+  useEffect(() => {
+    if (loading) return;
+
+    if (filteredProfessionals.length === 0) {
+      if (selectedId !== null) setSelectedId(null);
+      return;
+    }
+
+    const stillExists = filteredProfessionals.some((p) => p.id === selectedId);
+    if (!stillExists) {
+      setSelectedId(filteredProfessionals[0].id);
+    }
+  }, [selectedLocationFilter, professionals, loading, selectedId]); // ✅ top-level, sem hook aninhado
+
+  const selectedProfessional =
+    filteredProfessionals.find((p) => p.id === selectedId) ?? null;
+
+  const selectedEarnings =
+    selectedProfessional &&
+    providerEarnings.find((e) => e.providerId === selectedProfessional.id);
+
+  const selectedSummary: ProfessionalSummary | null = selectedProfessional
+    ? selectedEarnings
+      ? {
+          id: selectedProfessional.id,
+          totalAppointmentsMonth: selectedEarnings.appointmentsCount,
+          totalRevenueCents: selectedEarnings.servicePriceCents,
+          professionalShareCents: selectedEarnings.providerEarningsCents,
+          spaceShareCents: selectedEarnings.houseEarningsCents,
+        }
+      : {
+          id: selectedProfessional.id,
+          totalAppointmentsMonth: 0,
+          totalRevenueCents: 0,
+          professionalShareCents: 0,
+          spaceShareCents: 0,
+        }
+    : null;
+
+  const selectedOccupation = selectedEarnings?.occupationPercentage ?? 0;
 
   // ---------------------------------------------------------------------------
   // Carrega comissões + repasses quando muda o selecionado
@@ -266,38 +322,6 @@ export default function OwnerProfessionalsPage() {
   }, [selectedId]);
 
   // ---------------------------------------------------------------------------
-  // Derivados
-  // ---------------------------------------------------------------------------
-
-  const selectedProfessional =
-    professionals.find((p) => p.id === selectedId) ?? null;
-
-  const selectedEarnings =
-    selectedProfessional &&
-    providerEarnings.find((e) => e.providerId === selectedProfessional.id);
-
-  const selectedSummary: ProfessionalSummary | null = selectedProfessional
-    ? selectedEarnings
-      ? {
-          id: selectedProfessional.id,
-          totalAppointmentsMonth: selectedEarnings.appointmentsCount,
-          totalRevenueCents: selectedEarnings.servicePriceCents,
-          professionalShareCents: selectedEarnings.providerEarningsCents,
-          spaceShareCents: selectedEarnings.houseEarningsCents,
-        }
-      : {
-          // sem earnings ainda -> tudo zerado
-          id: selectedProfessional.id,
-          totalAppointmentsMonth: 0,
-          totalRevenueCents: 0,
-          professionalShareCents: 0,
-          spaceShareCents: 0,
-        }
-    : null;
-
-  const selectedOccupation = selectedEarnings?.occupationPercentage ?? 0;
-
-  // ---------------------------------------------------------------------------
   // Comissão
   // ---------------------------------------------------------------------------
 
@@ -305,7 +329,6 @@ export default function OwnerProfessionalsPage() {
     if (!selectedProfessional) return;
 
     const defaultCommission = commissions.find((c) => !c.service);
-
     if (defaultCommission) {
       setCommissionPercentageInput(String(defaultCommission.percentage));
     } else {
@@ -327,7 +350,7 @@ export default function OwnerProfessionalsPage() {
 
     try {
       await upsertOwnerProviderCommission(selectedProfessional.id, {
-        serviceId: null, // regra padrão (todos os serviços)
+        serviceId: null,
         percentage,
         active: true,
       });
@@ -354,6 +377,9 @@ export default function OwnerProfessionalsPage() {
 
     if (forcedLocationId) {
       setCreateLocationId(forcedLocationId);
+    } else if (selectedLocationFilter !== "all") {
+      // se está filtrado numa unidade, já usa ela no create
+      setCreateLocationId(selectedLocationFilter);
     } else if (selectedProfessional?.locationId) {
       setCreateLocationId(selectedProfessional.locationId);
     } else if (locations[0]) {
@@ -403,9 +429,9 @@ export default function OwnerProfessionalsPage() {
         specialty: createSpecialty,
       });
 
-      // recarrega lista e já seleciona o novo
       await loadAll(newProfessional.id);
       closeCreateModal();
+
       if (returnToFromUrl) {
         router.push(returnToFromUrl);
       }
@@ -418,6 +444,11 @@ export default function OwnerProfessionalsPage() {
       setCreateLoading(false);
     }
   }
+
+  // ---------------------------------------------------------------------------
+  // Edição de profissional
+  // ---------------------------------------------------------------------------
+
   function openEditModal() {
     if (!selectedProfessional) return;
 
@@ -482,6 +513,7 @@ export default function OwnerProfessionalsPage() {
       setEditLoading(false);
     }
   }
+
   // ---------------------------------------------------------------------------
 
   return (
@@ -494,6 +526,7 @@ export default function OwnerProfessionalsPage() {
             Gestão da equipa, ocupação, comissões e repasses.
           </p>
         </div>
+
         <div className="flex flex-wrap gap-2 text-xs">
           <div className="inline-flex rounded-lg border border-slate-800 bg-slate-900/80 p-[2px]">
             {(["day", "week", "month"] as PeriodFilter[]).map((p) => (
@@ -513,19 +546,25 @@ export default function OwnerProfessionalsPage() {
             ))}
           </div>
 
-          <select className="px-3 py-1 rounded-lg border border-slate-800 bg-slate-900/80 text-slate-200">
-            <option>Unidade atual do tenant</option>
+          <select
+            className="px-3 py-1 rounded-lg border border-slate-800 bg-slate-900/80 text-slate-200"
+            value={selectedLocationFilter}
+            onChange={(e) => setSelectedLocationFilter(e.target.value)}
+          >
+            <option value="all">Todas as unidades</option>
+            {locations.map((loc) => (
+              <option key={loc.id} value={loc.id}>
+                {loc.name}
+              </option>
+            ))}
           </select>
         </div>
 
         <div className="flex flex-wrap gap-2 text-xs">
-          <select className="px-3 py-1 rounded-lg border border-slate-800 bg-slate-900/80 text-slate-200">
-            <option>Unidade atual do tenant</option>
-          </select>
           <button
             className="px-3 py-1 rounded-lg border border-emerald-600 bg-emerald-600/20 text-emerald-200 hover:bg-emerald-600/30"
             type="button"
-            onClick={openCreateModal}
+            onClick={() => openCreateModal()}
           >
             + Adicionar profissional
           </button>
@@ -560,13 +599,13 @@ export default function OwnerProfessionalsPage() {
             <p className="text-xs text-rose-400">
               Erro ao carregar profissionais: {error}
             </p>
-          ) : professionals.length === 0 ? (
+          ) : filteredProfessionals.length === 0 ? (
             <p className="text-xs text-slate-400">
-              Nenhum profissional cadastrado neste tenant ainda.
+              Nenhum profissional encontrado para esta unidade.
             </p>
           ) : (
             <div className="space-y-2 text-xs">
-              {professionals.map((pro) => {
+              {filteredProfessionals.map((pro) => {
                 const isSelected = pro.id === selectedId;
 
                 const proEarnings = providerEarnings.find(
@@ -981,6 +1020,7 @@ export default function OwnerProfessionalsPage() {
           </div>
         </div>
       )}
+
       {/* Modal de edição de profissional */}
       {isEditOpen && selectedProfessional && (
         <div className="fixed inset-0 z-40 flex items-center justify-center bg-black/60">
