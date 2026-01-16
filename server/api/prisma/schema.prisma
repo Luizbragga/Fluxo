@@ -104,7 +104,7 @@ model TenantSettings {
   emailReschedule   Boolean @default(true)
 
   notifyProvidersNewBooking Boolean @default(true)
-  notifyProvidersChanges    Boolean @default(true)
+  notifyProvidersChanges Boolean @default(true)
 
   clientRemindersEnabled Boolean @default(false)
   reminderHoursBefore    Int     @default(24)

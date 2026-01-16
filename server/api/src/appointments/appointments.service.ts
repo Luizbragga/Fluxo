@@ -26,8 +26,8 @@ export class AppointmentsService {
   private readonly logger = new Logger(AppointmentsService.name);
 
   constructor(
-    private prisma: PrismaService,
-    private email: EmailService,
+    private readonly prisma: PrismaService,
+    private readonly email: EmailService,
     private readonly smsService: SmsService,
     private readonly notifications: NotificationsService,
   ) {}
@@ -650,7 +650,82 @@ export class AppointmentsService {
     return appointment;
   }
 
-private async notifyProviderInApp(
+  private async notifyProviderInApp(
+    tenantId: string,
+    providerId: string,
+    payload: {
+      type: string;
+      title: string;
+      message: string;
+      data?: any;
+    },
+  ) {
+    const settings = await this.prisma.tenantSettings.findUnique({
+      where: { tenantId },
+      select: {
+        notifyProvidersNewBooking: true,
+        notifyProvidersChanges: true,
+      },
+    });
+
+    if (!settings) return;
+
+    const isNewBooking = payload.type === 'appointment_created';
+    const allow = isNewBooking
+      ? (settings.notifyProvidersNewBooking ?? true)
+      : (settings.notifyProvidersChanges ?? true);
+
+    if (!allow) return;
+
+    // provider -> userId (destinatário real)
+    const provider = await this.prisma.provider.findFirst({
+      where: { id: providerId, tenantId },
+      select: { userId: true },
+    });
+
+    if (!provider?.userId) return;
+
+    await this.notifications.create({
+      tenantId,
+      userId: provider.userId,
+      type: payload.type,
+      title: payload.title,
+      message: payload.message,
+      data: payload.data ?? undefined,
+    });
+  }
+
+  // LISTA DO DIA ---------------------------------------------------------------
+  async findByDay(
+    tenantId: string,
+    dateYYYYMMDD: string,
+    providerId?: string,
+    locationId?: string,
+  ) {
+    const [yStr, mStr, dStr] = dateYYYYMMDD.split('-');
+    const y = parseInt(yStr, 10);
+    const m = parseInt(mStr, 10);
+    const d = parseInt(dStr, 10);
+
+    const start = new Date(Date.UTC(y, m - 1, d, 0, 0, 0));
+    const end = new Date(Date.UTC(y, m - 1, d, 23, 59, 59));
+
+    return this.prisma.appointment.findMany({
+      where: {
+        tenantId,
+        startAt: { gte: start },
+        endAt: { lte: end },
+        ...(providerId ? { providerId } : {}),
+        ...(locationId ? { locationId } : {}),
+      },
+      orderBy: { startAt: 'asc' },
+      include: {
+        service: { select: { id: true, name: true, durationMin: true } },
+        provider: { select: { id: true, name: true } },
+      },
+    });
+  }
+
   // REAGENDAR ------------------------------------------------------------------
   async reschedule(
     tenantId: string,

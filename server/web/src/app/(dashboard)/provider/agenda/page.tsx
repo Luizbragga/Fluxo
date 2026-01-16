@@ -8,6 +8,11 @@ type ProviderMe = {
   id: string;
   name?: string;
   user?: { name?: string };
+  location?: {
+    id: string;
+    bookingIntervalMin: number | null;
+    businessHoursTemplate?: Record<string, [string, string][]>;
+  } | null;
 };
 
 type AppointmentStatus =
@@ -92,15 +97,35 @@ export default function ProviderAgendaPage() {
     ? `Hoje · ${weekdayLabel}`
     : `${selectedDate.toLocaleDateString("pt-PT")} · ${weekdayLabel}`;
 
-  const agendaStepMin = 30;
+  const agendaStepMin = useMemo(() => {
+    const raw = provider?.location?.bookingIntervalMin ?? 30;
+
+    const allowed = [5, 10, 15, 20, 30, 45, 60] as const;
+    return (allowed as readonly number[]).includes(raw) ? raw : 30;
+  }, [provider?.location?.bookingIntervalMin]);
+
+  const dayIntervals = useMemo(() => {
+    const template = provider?.location?.businessHoursTemplate;
+    if (!template) return null;
+
+    const weekdayKey = getWeekdayKeyLocal(selectedDate);
+    const raw = template[weekdayKey] ?? [];
+    return normalizeIntervals(raw);
+  }, [provider?.location?.businessHoursTemplate, selectedDate]);
+
+  const dayTimeSlots = useMemo(() => {
+    if (!dayIntervals) return DEFAULT_TIME_SLOTS; // fallback se não vier template
+    return buildSlotsFromIntervals(dayIntervals, agendaStepMin);
+  }, [dayIntervals, agendaStepMin]);
 
   const morningSlots = useMemo(
-    () => DEFAULT_TIME_SLOTS.filter((t) => t < "14:00"),
-    []
+    () => dayTimeSlots.filter((t) => t < "14:00"),
+    [dayTimeSlots]
   );
+
   const afternoonSlots = useMemo(
-    () => DEFAULT_TIME_SLOTS.filter((t) => t >= "14:00"),
-    []
+    () => dayTimeSlots.filter((t) => t >= "14:00"),
+    [dayTimeSlots]
   );
 
   const stats = useMemo(() => {
@@ -534,10 +559,7 @@ function ProviderTimeline({
 
     if (cursor > lastStartMin) break;
 
-    const blockHeightPx = Math.max(
-      rowPx,
-      (nextGroup.maxDurMin / stepMin) * rowPx
-    );
+    const blockHeightPx = rowPx;
 
     if (nextGroup.items.length === 1) {
       const one = nextGroup.items[0].appt;
@@ -554,25 +576,50 @@ function ProviderTimeline({
           type="button"
           key={`appt-${one.id}`}
           onClick={() => onOpenDetails(one)}
-          className={`w-full rounded-xl border px-2 py-2 text-left transition hover:brightness-110 ${st.container}`}
-          style={{ height: blockHeightPx }}
+          className={`w-full rounded-xl border px-3 py-2 text-left transition hover:brightness-110 ${st.container}`}
+          style={{ height: rowPx }}
           title={`${one.time} · ${one.serviceName} · ${one.customerName} · ${st.label}`}
         >
-          <div className="flex items-start justify-between gap-2">
+          <div className="flex items-start justify-between gap-3">
+            {/* ESQUERDA: hora / serviço / cliente */}
             <div className="min-w-0">
-              <p className="text-[10px] text-slate-300">{one.time}</p>
-              <p className="text-[12px] font-medium text-slate-100 truncate">
+              <p className="text-[10px] text-slate-300">
+                {one.time}
+                {typeof one.durationMin === "number" && one.durationMin > 0
+                  ? ` • ${one.durationMin}m`
+                  : ""}
+              </p>
+
+              <p className="text-[13px] font-semibold text-slate-100 truncate leading-5">
                 {one.serviceName}
               </p>
-              <p className="text-[10px] text-slate-300 truncate">
+
+              <p className="text-[11px] text-slate-200 truncate leading-4">
                 Cliente: {one.customerName}
               </p>
-              <p className="text-[10px] text-slate-500">Tipo: {billing}</p>
             </div>
 
-            <span className={`text-[9px] px-2 py-[2px] rounded ${st.badge}`}>
-              {st.label}
-            </span>
+            {/* DIREITA: badges (igual Owner) */}
+            <div className="flex flex-col items-end gap-1 shrink-0">
+              <span
+                className={`text-[10px] px-2 py-[2px] rounded-md ${st.badge}`}
+              >
+                {st.label}
+              </span>
+
+              {one.billingType && (
+                <span
+                  className={[
+                    "text-[10px] px-2 py-[2px] rounded-md border",
+                    one.billingType === "plan"
+                      ? "bg-emerald-500/15 text-emerald-100 border-emerald-400/60"
+                      : "bg-slate-700/40 text-slate-100 border-slate-500/60",
+                  ].join(" ")}
+                >
+                  {one.billingType === "plan" ? "Plano" : "Avulso"}
+                </span>
+              )}
+            </div>
           </div>
         </button>
       );
@@ -591,7 +638,9 @@ function ProviderTimeline({
         >
           <div className="flex items-start justify-between gap-2">
             <div className="min-w-0">
-              <p className="text-[10px] text-slate-300">{slotTime}</p>
+              <p className="text-[10px] text-slate-300">
+                {slotTime} · até {nextGroup.maxDurMin}m
+              </p>
               <p className="text-[12px] font-medium text-slate-100 truncate">
                 Overbooking
               </p>
@@ -918,6 +967,48 @@ function addDays(date: Date, amount: number): Date {
   const result = new Date(date);
   result.setDate(result.getDate() + amount);
   return result;
+}
+type DayInterval = { start: string; end: string };
+
+function getWeekdayKeyLocal(date: Date) {
+  const keyMap = ["sun", "mon", "tue", "wed", "thu", "fri", "sat"] as const;
+  return keyMap[date.getDay()];
+}
+
+function normalizeIntervals(raw: any): DayInterval[] {
+  if (!Array.isArray(raw)) return [];
+  return raw
+    .map((it) => {
+      if (!Array.isArray(it) || it.length < 2) return null;
+      const [start, end] = it;
+      if (typeof start !== "string" || typeof end !== "string") return null;
+      return { start, end };
+    })
+    .filter(Boolean) as DayInterval[];
+}
+
+function buildSlotsFromIntervals(
+  intervals: DayInterval[],
+  stepMin = 30
+): string[] {
+  const out: string[] = [];
+
+  for (const itv of intervals) {
+    const startMin = timeStrToMinutes(itv.start);
+    const endMin = timeStrToMinutes(itv.end);
+
+    if (!Number.isFinite(startMin) || !Number.isFinite(endMin)) continue;
+    if (endMin <= startMin) continue;
+
+    for (let m = startMin; m <= endMin; m += stepMin) {
+      const hh = String(Math.floor(m / 60)).padStart(2, "0");
+      const mm = String(m % 60).padStart(2, "0");
+      if (m > endMin) break;
+      out.push(`${hh}:${mm}`);
+    }
+  }
+
+  return Array.from(new Set(out)).sort();
 }
 
 function getStatusClasses(status: AppointmentStatus) {

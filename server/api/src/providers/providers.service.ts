@@ -121,6 +121,7 @@ export class ProvidersService {
           name: location.name,
           slug: location.slug,
           address: location.address,
+          bookingIntervalMin: (location as any).bookingIntervalMin ?? null,
           businessHoursTemplate: location.businessHoursTemplate ?? null,
           createdAt: location.createdAt,
           updatedAt: location.updatedAt,

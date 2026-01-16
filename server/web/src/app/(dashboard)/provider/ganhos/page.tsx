@@ -99,6 +99,14 @@ function normalizeStatus(raw: any) {
   )
     return "cancelled";
 
+  // em atendimento
+  if (s === "in_service" || s === "in-service" || s === "inservice")
+    return "in_service";
+
+  // agendado
+  if (s === "scheduled" || s === "agendado" || s === "agendada")
+    return "scheduled";
+
   return s;
 }
 
@@ -107,9 +115,7 @@ function MiniBar({ value, color }: { value: number; color: string }) {
 
   return (
     <div className="mt-2">
-      {/* trilho (fundo visível) */}
       <div className="h-2 rounded-full border border-slate-500/60 bg-slate-950/60 overflow-hidden">
-        {/* preenchimento */}
         <div
           className="h-full rounded-full transition-all"
           style={{
@@ -124,6 +130,22 @@ function MiniBar({ value, color }: { value: number; color: string }) {
 }
 
 type Preset = "this_month" | "last_month" | "last_7" | "custom";
+type StatusFilter =
+  | "done"
+  | "scheduled"
+  | "in_service"
+  | "no_show"
+  | "cancelled"
+  | "all";
+
+const STATUS_FILTERS: Array<{ key: StatusFilter; label: string }> = [
+  { key: "done", label: "Concluídos" },
+  { key: "scheduled", label: "Agendados" },
+  { key: "in_service", label: "Em atendimento" },
+  { key: "no_show", label: "Faltas" },
+  { key: "cancelled", label: "Cancelados" },
+  { key: "all", label: "Todos" },
+];
 
 export default function ProviderEarningsPage() {
   const [data, setData] = useState<ProviderEarningsResponse | null>(null);
@@ -131,6 +153,13 @@ export default function ProviderEarningsPage() {
   const [error, setError] = useState<string | null>(null);
 
   const [preset, setPreset] = useState<Preset>("this_month");
+
+  // ✅ padrão: mostrar só concluídos (faz mais sentido em "Ganhos")
+  const [statusFilter, setStatusFilter] = useState<StatusFilter>("done");
+
+  // paginação simples
+  const PAGE_SIZE = 20;
+  const [visibleCount, setVisibleCount] = useState(PAGE_SIZE);
 
   // from/to EXCLUSIVO em ISO
   const [fromISO, setFromISO] = useState<string>(() => {
@@ -199,6 +228,11 @@ export default function ProviderEarningsPage() {
     }
   }, [preset]);
 
+  // quando troca filtro ou período, volta a paginação
+  useEffect(() => {
+    setVisibleCount(PAGE_SIZE);
+  }, [statusFilter, fromISO, toISO]);
+
   // carrega dados sempre que from/to mudar
   useEffect(() => {
     let alive = true;
@@ -239,17 +273,23 @@ export default function ProviderEarningsPage() {
     setToISO(toExclusive.toISOString());
   }
 
-  // ---------------- DERIVADOS (aqui fica a correção real) ----------------
+  // ---------------- DERIVADOS (cálculos + filtros + lista) ----------------
   const derived = useMemo(() => {
     if (!data) return null;
 
     const all = data.appointments ?? [];
     const totalAll = all.length;
 
-    const withStatus = all.map((a) => ({
-      ...a,
-      _status: normalizeStatus(a.status),
-    }));
+    const withStatus = all
+      .map((a) => ({
+        ...a,
+        _status: normalizeStatus(a.status),
+      }))
+      .sort((a, b) => {
+        const ta = new Date(a.date).getTime();
+        const tb = new Date(b.date).getTime();
+        return tb - ta; // mais recente primeiro
+      });
 
     const done = withStatus.filter((a) => a._status === "done");
     const noShow = withStatus.filter((a) => a._status === "no_show");
@@ -263,6 +303,12 @@ export default function ProviderEarningsPage() {
     const failedRate = totalAll > 0 ? (noShowCount / totalAll) * 100 : 0;
     const cancelledRate = totalAll > 0 ? (cancelledCount / totalAll) * 100 : 0;
 
+    // ✅ lista filtrada por status
+    const filteredList =
+      statusFilter === "all"
+        ? withStatus
+        : withStatus.filter((a) => a._status === statusFilter);
+
     // ✅✅✅ TOTAIS 100% calculados SOMENTE em concluídos (done)
     const totalsDone = done.reduce(
       (acc, a) => {
@@ -272,7 +318,6 @@ export default function ProviderEarningsPage() {
         acc.servicePriceCents += service;
         acc.providerEarningsCents += provider;
 
-        // casa = preço - comissão (se der negativo, zera)
         const house = Math.max(0, service - provider);
         acc.houseEarningsCents += house;
 
@@ -297,11 +342,7 @@ export default function ProviderEarningsPage() {
     // top serviços (apenas concluídos; share do total concluído)
     const byService = new Map<
       string,
-      {
-        serviceName: string;
-        count: number;
-        revenueCents: number;
-      }
+      { serviceName: string; count: number; revenueCents: number }
     >();
 
     for (const a of done) {
@@ -335,6 +376,7 @@ export default function ProviderEarningsPage() {
 
     return {
       withStatus,
+      filteredList,
       done,
       noShow,
       cancelled,
@@ -353,7 +395,7 @@ export default function ProviderEarningsPage() {
       },
       topServices,
     };
-  }, [data]);
+  }, [data, statusFilter]);
 
   const totals = useMemo(() => {
     if (!derived) return null;
@@ -440,12 +482,14 @@ export default function ProviderEarningsPage() {
                   date: a.date,
                   service: a.serviceName,
                   status: normalizeStatus(a.status),
-                  servicePriceCents: a.servicePriceCents,
-                  providerEarningsCents: a.providerEarningsCents,
-                  commissionPercentage: a.commissionPercentage,
+                  servicePriceCents: a.servicePriceCents ?? 0,
+                  providerEarningsCents: a.providerEarningsCents ?? 0,
+                  commissionPercentage: a.commissionPercentage ?? "",
                 }));
 
-                const header = Object.keys(rows[0] ?? {}).join(",");
+                if (rows.length === 0) return;
+
+                const header = Object.keys(rows[0]).join(",");
                 const body = rows
                   .map((r) =>
                     Object.values(r)
@@ -635,7 +679,7 @@ export default function ProviderEarningsPage() {
               <MiniBar value={derived.kpis.doneRate} color="#10b981" />
             </div>
 
-            {/* Faltas / no-show (AGORA COM BARRA GARANTIDA) */}
+            {/* Faltas */}
             <div className="rounded-xl border border-slate-800 bg-slate-950/40 p-3">
               <div className="flex items-center justify-between">
                 <p className="text-xs text-slate-200">Faltas / no-show</p>
@@ -647,7 +691,7 @@ export default function ProviderEarningsPage() {
               <MiniBar value={derived.kpis.failedRate} color="#f59e0b" />
             </div>
 
-            {/* Cancelamentos (AGORA COM BARRA GARANTIDA) */}
+            {/* Cancelamentos */}
             <div className="rounded-xl border border-slate-800 bg-slate-950/40 p-3">
               <div className="flex items-center justify-between">
                 <p className="text-xs text-slate-200">Cancelamentos</p>
@@ -773,7 +817,6 @@ export default function ProviderEarningsPage() {
                       </p>
                     </div>
 
-                    {/* ✅ barra garantida */}
                     <MiniBar value={s.sharePct} color="#10b981" />
                   </div>
                 ))}
@@ -783,48 +826,94 @@ export default function ProviderEarningsPage() {
         </div>
       </div>
 
-      {/* Lista */}
+      {/* Lista (filtrada + paginada) */}
       <div className="rounded-2xl border border-slate-800 bg-slate-900/40">
+        {/* Header da lista */}
         <div className="px-4 py-3 border-b border-slate-800">
-          <p className="text-sm font-semibold text-slate-100">
-            Atendimentos ({derived.withStatus.length})
-          </p>
-          <p className="text-[11px] text-slate-400">
-            Totais acima consideram apenas{" "}
-            <span className="text-slate-200 font-medium">concluídos</span>. Aqui
-            você vê todos (concluídos, faltas e cancelamentos).
-          </p>
+          <div className="flex flex-col gap-2 md:flex-row md:items-center md:justify-between">
+            <div>
+              <p className="text-sm font-semibold text-slate-100">
+                Atendimentos ({derived.filteredList.length} de{" "}
+                {derived.withStatus.length})
+              </p>
+              <p className="text-[11px] text-slate-400">
+                Totais acima consideram apenas{" "}
+                <span className="text-slate-200 font-medium">concluídos</span>.
+                Aqui você pode filtrar o histórico.
+              </p>
+            </div>
+
+            {/* Filtro por status */}
+            <div className="inline-flex flex-wrap gap-2 text-[11px]">
+              {STATUS_FILTERS.map((b) => (
+                <button
+                  key={b.key}
+                  type="button"
+                  onClick={() => setStatusFilter(b.key)}
+                  className={[
+                    "px-3 py-1 rounded-full border",
+                    statusFilter === b.key
+                      ? "border-emerald-500/60 bg-emerald-600/15 text-emerald-200"
+                      : "border-slate-800 bg-slate-950/40 text-slate-300 hover:border-slate-600",
+                  ].join(" ")}
+                >
+                  {b.label}
+                </button>
+              ))}
+            </div>
+          </div>
         </div>
 
+        {/* Conteúdo */}
         <div className="divide-y divide-slate-800">
-          {derived.withStatus.length === 0 ? (
+          {derived.filteredList.length === 0 ? (
             <div className="p-4 text-sm text-slate-400">
-              Nenhum atendimento no período.
+              Nenhum atendimento para este filtro no período.
             </div>
           ) : (
-            derived.withStatus.map((a) => (
-              <div key={a.id} className="p-4 flex items-center justify-between">
-                <div className="min-w-0">
-                  <p className="text-sm text-slate-100 truncate">
-                    {a.serviceName}
-                  </p>
-                  <p className="text-xs text-slate-400">
-                    {new Date(a.date).toLocaleString("pt-PT")} •{" "}
-                    <span className="text-slate-200">{a._status}</span> •{" "}
-                    {a.commissionPercentage}%
-                  </p>
-                </div>
+            <>
+              {derived.filteredList.slice(0, visibleCount).map((a) => (
+                <div
+                  key={a.id}
+                  className="p-4 flex items-center justify-between"
+                >
+                  <div className="min-w-0">
+                    <p className="text-sm text-slate-100 truncate">
+                      {a.serviceName}
+                    </p>
+                    <p className="text-xs text-slate-400">
+                      {new Date(a.date).toLocaleString("pt-PT")} •{" "}
+                      <span className="text-slate-200">{a._status}</span>
+                      {typeof a.commissionPercentage === "number" && (
+                        <> • {a.commissionPercentage}%</>
+                      )}
+                    </p>
+                  </div>
 
-                <div className="text-right">
-                  <p className="text-sm text-slate-100">
-                    {formatEURFromCents(a.providerEarningsCents)}
-                  </p>
-                  <p className="text-xs text-slate-400">
-                    serviço: {formatEURFromCents(a.servicePriceCents)}
-                  </p>
+                  <div className="text-right">
+                    <p className="text-sm text-slate-100">
+                      {formatEURFromCents(a.providerEarningsCents ?? 0)}
+                    </p>
+                    <p className="text-xs text-slate-400">
+                      serviço: {formatEURFromCents(a.servicePriceCents ?? 0)}
+                    </p>
+                  </div>
                 </div>
-              </div>
-            ))
+              ))}
+
+              {/* ✅ botão fora do map */}
+              {derived.filteredList.length > visibleCount && (
+                <div className="p-4 flex justify-center">
+                  <button
+                    type="button"
+                    onClick={() => setVisibleCount((v) => v + PAGE_SIZE)}
+                    className="px-4 py-2 rounded-xl border border-slate-700 bg-slate-950/40 text-[11px] text-slate-200 hover:border-slate-500"
+                  >
+                    Carregar mais
+                  </button>
+                </div>
+              )}
+            </>
           )}
         </div>
       </div>

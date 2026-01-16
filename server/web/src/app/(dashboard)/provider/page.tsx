@@ -13,6 +13,7 @@ import {
   OverviewKpiCard,
   type OverviewKpi,
 } from "./_components/overview-kpi-card";
+import { BellIcon } from "@heroicons/react/24/solid";
 
 // ----------------- Tipos -----------------
 
@@ -85,6 +86,33 @@ const DEFAULT_TIME_SLOTS = [
 ];
 
 // ----------------- Helpers -----------------
+function buildDefaultSlots(stepMin: number) {
+  const startMin = 8 * 60; // 08:00
+  const endMin = 20 * 60; // 20:00
+  const out: string[] = [];
+  for (let m = startMin; m <= endMin; m += stepMin) {
+    const hh = String(Math.floor(m / 60)).padStart(2, "0");
+    const mm = String(m % 60).padStart(2, "0");
+    out.push(`${hh}:${mm}`);
+  }
+  return out;
+}
+
+function getAgendaStepMin(provider: ProviderMeResponse | null) {
+  // tenta pegar de onde existir no teu ProviderMeResponse
+  const maybe =
+    (provider as any)?.agendaStepMin ??
+    (provider as any)?.slotStepMin ??
+    (provider as any)?.bookingIntervalMin ??
+    (provider as any)?.location?.slotStepMin ??
+    (provider as any)?.location?.bookingIntervalMin ??
+    (provider as any)?.location?.appointmentStepMin;
+
+  const n = Number(maybe);
+  if (Number.isFinite(n) && n > 0) return n;
+
+  return 10; // fallback: teu cenário atual
+}
 
 function formatEURFromCents(cents: number) {
   const value = (cents ?? 0) / 100;
@@ -111,6 +139,9 @@ function getStatusChipClass(status: string) {
   if (status === "done") {
     return "bg-emerald-500/10 border-emerald-500/40 text-emerald-200";
   }
+  if (status === "in_service") {
+    return "bg-emerald-500/10 border-emerald-500/40 text-emerald-200";
+  }
   if (status === "cancelled") {
     return "bg-rose-500/10 border-rose-500/40 text-rose-200";
   }
@@ -122,9 +153,18 @@ function getStatusChipClass(status: string) {
 
 function getStatusDotClass(status: string) {
   if (status === "done") return "bg-emerald-400";
+  if (status === "in_service") return "bg-emerald-400";
   if (status === "cancelled") return "bg-rose-400";
   if (status === "no_show") return "bg-amber-400";
   return "bg-sky-400";
+}
+function getStatusLabelPT(status: string) {
+  if (status === "scheduled") return "Agendado";
+  if (status === "in_service") return "Em atendimento";
+  if (status === "done") return "Concluído";
+  if (status === "no_show") return "Falta";
+  if (status === "cancelled") return "Cancelado";
+  return status; // fallback
 }
 
 function getWeekdayCandidateKeys(date: Date): string[] {
@@ -196,12 +236,15 @@ function getProviderDayIntervals(
 function buildSlotsForToday(params: {
   provider: ProviderMeResponse | null;
   appointmentsByTime: Map<string, SlotAppt[]>;
+  stepMin: number;
 }): { slots: Slot[]; scheduleOk: boolean } {
-  const { provider, appointmentsByTime } = params;
+  const { provider, appointmentsByTime, stepMin } = params;
   const today = new Date();
 
+  const fallbackLabels = buildDefaultSlots(stepMin);
+
   if (!provider) {
-    const slots: Slot[] = DEFAULT_TIME_SLOTS.map((timeLabel) => ({
+    const slots: Slot[] = fallbackLabels.map((timeLabel) => ({
       timeLabel,
       appts: appointmentsByTime.get(timeLabel) ?? [],
     }));
@@ -211,14 +254,15 @@ function buildSlotsForToday(params: {
   const intervals = getProviderDayIntervals(provider, today);
 
   if (!intervals.length) {
-    const slots: Slot[] = DEFAULT_TIME_SLOTS.map((timeLabel) => ({
+    const slots: Slot[] = fallbackLabels.map((timeLabel) => ({
       timeLabel,
       appts: appointmentsByTime.get(timeLabel) ?? [],
     }));
     return { slots, scheduleOk: false };
   }
 
-  const labels = buildSlotsFromIntervals(intervals, 30);
+  const labels = buildSlotsFromIntervals(intervals, stepMin);
+
   return {
     slots: labels.map((timeLabel) => ({
       timeLabel,
@@ -283,6 +327,34 @@ function subtleCardClass(extra?: string) {
     extra ?? "",
   ].join(" ");
 }
+function isSameDay(a: Date, b: Date) {
+  return (
+    a.getFullYear() === b.getFullYear() &&
+    a.getMonth() === b.getMonth() &&
+    a.getDate() === b.getDate()
+  );
+}
+
+function addDays(d: Date, days: number) {
+  const x = new Date(d);
+  x.setDate(x.getDate() + days);
+  return x;
+}
+
+function formatWhenLabelPT(dateISO: string) {
+  const d = new Date(dateISO);
+  const now = new Date();
+
+  if (isSameDay(d, now)) return "Hoje";
+  if (isSameDay(d, addDays(now, 1))) return "Amanhã";
+
+  // Ex: 15/01/2026
+  return d.toLocaleDateString("pt-PT", {
+    day: "2-digit",
+    month: "2-digit",
+    year: "numeric",
+  });
+}
 
 // ----------------- Page -----------------
 
@@ -293,6 +365,10 @@ export default function ProviderHomePage() {
     useState<ProviderEarningsResponse | null>(null);
   const [earningsToday, setEarningsToday] =
     useState<ProviderEarningsResponse | null>(null);
+  const [unreadCount, setUnreadCount] = useState<number>(0);
+  const [nextAppointment, setNextAppointment] = useState<Appointment | null>(
+    null
+  );
 
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -304,6 +380,10 @@ export default function ProviderHomePage() {
     time: string;
     appts: SlotAppt[];
   } | null>(null);
+  const [apptMenuOpen, setApptMenuOpen] = useState(false);
+  const [toastMsg, setToastMsg] = useState<string | null>(null);
+  const [apptActionLoading, setApptActionLoading] = useState(false);
+  const apptMenuRef = useRef<HTMLDivElement | null>(null);
 
   function openSlotDetails(time: string, appts: SlotAppt[]) {
     if (!appts || appts.length === 0) return;
@@ -318,6 +398,18 @@ export default function ProviderHomePage() {
     const id = setInterval(() => setRefreshTick((t) => t + 1), 30000);
     return () => clearInterval(id);
   }, []);
+  useEffect(() => {
+    function onDocClick(e: MouseEvent) {
+      if (!apptMenuOpen) return;
+      const el = apptMenuRef.current;
+      if (!el) return;
+      if (el.contains(e.target as Node)) return;
+      setApptMenuOpen(false);
+    }
+
+    document.addEventListener("mousedown", onDocClick);
+    return () => document.removeEventListener("mousedown", onDocClick);
+  }, [apptMenuOpen]);
 
   useEffect(() => {
     let alive = true;
@@ -343,10 +435,29 @@ export default function ProviderHomePage() {
         qs.set("providerId", me.id);
         if (me.locationId) qs.set("locationId", me.locationId);
 
-        const [appts, month, day] = await Promise.all([
+        // janela grande pra achar o próximo agendamento (ex.: próximos 60 dias)
+        const nowISO = new Date().toISOString();
+        const toISO = new Date(
+          Date.now() + 60 * 24 * 60 * 60 * 1000
+        ).toISOString();
+
+        const qsNext = new URLSearchParams();
+        qsNext.set("from", nowISO);
+        qsNext.set("to", toISO);
+        qsNext.set("providerId", me.id);
+        if (me.locationId) qsNext.set("locationId", me.locationId);
+
+        // tenta usar from/to (se teu backend suportar). Se não suportar, cai no fallback abaixo.
+        const nextApptsWindowPromise = apiClient<Appointment[]>(
+          `/appointments?${qsNext.toString()}`
+        ).catch(() => null);
+
+        const [appts, month, day, notifs, nextApptsWindow] = await Promise.all([
           apiClient<Appointment[]>(`/appointments?${qs.toString()}`),
           fetchMyEarnings(),
           fetchMyEarnings({ from, to }),
+          apiClient<any[]>(`/notifications/me`),
+          nextApptsWindowPromise,
         ]);
 
         if (!alive) return;
@@ -355,6 +466,75 @@ export default function ProviderHomePage() {
         setTodayAppointments(appts ?? []);
         setEarningsMonth(month);
         setEarningsToday(day);
+        const list = Array.isArray(notifs) ? notifs : [];
+        // ----------- calcula "próximo agendamento real" (pode ser amanhã ou depois) -----------
+        const isPending = (a: Appointment) =>
+          a.status !== "cancelled" &&
+          a.status !== "no_show" &&
+          a.status !== "done";
+
+        const pickNextFromList = (list: Appointment[], now: Date) => {
+          const candidates = (list ?? [])
+            .filter(isPending)
+            .filter((a) => new Date(a.startAt).getTime() >= now.getTime())
+            .sort(
+              (a, b) =>
+                new Date(a.startAt).getTime() - new Date(b.startAt).getTime()
+            );
+
+          return candidates[0] ?? null;
+        };
+
+        let next = null as Appointment | null;
+        const now = new Date();
+
+        // 1) tenta pela janela (from/to)
+        if (Array.isArray(nextApptsWindow)) {
+          next = pickNextFromList(nextApptsWindow, now);
+        }
+
+        // 2) fallback: se o endpoint não suportar from/to, varre dia a dia (até 14 dias)
+        if (!next) {
+          for (let i = 0; i <= 14; i++) {
+            const d = addDays(new Date(), i);
+            const ymd = toYYYYMMDD_UTC(d);
+
+            const qsDay = new URLSearchParams();
+            qsDay.set("date", ymd);
+            qsDay.set("providerId", me.id);
+            if (me.locationId) qsDay.set("locationId", me.locationId);
+
+            try {
+              const dayAppts = await apiClient<Appointment[]>(
+                `/appointments?${qsDay.toString()}`
+              );
+
+              const found = pickNextFromList(dayAppts ?? [], now);
+              if (found) {
+                next = found;
+                break;
+              }
+            } catch {
+              // se falhar, só continua tentando os próximos dias
+            }
+          }
+        }
+
+        setNextAppointment(next);
+
+        // tenta cobrir os formatos mais comuns:
+        // - readAt: null => não lida
+        // - isRead: false
+        // - read: false
+        const count = list.filter((n: any) => {
+          if (n?.readAt === null) return true;
+          if (typeof n?.isRead === "boolean") return n.isRead === false;
+          if (typeof n?.read === "boolean") return n.read === false;
+          // fallback: se não tiver campo, não conta como não lida
+          return false;
+        }).length;
+
+        setUnreadCount(count);
 
         didInitialLoadRef.current = true;
       } catch (e: any) {
@@ -372,6 +552,24 @@ export default function ProviderHomePage() {
       alive = false;
     };
   }, [refreshTick]);
+  async function updateApptStatus(apptId: string, nextStatus: string) {
+    setApptActionLoading(true);
+    try {
+      await apiClient(`/appointments/${encodeURIComponent(apptId)}`, {
+        method: "PATCH",
+        body: { status: nextStatus }, // <- igual seu ProviderAgendaPage
+      } as any);
+
+      setRefreshTick((t) => t + 1);
+      setApptMenuOpen(false);
+      if (nextStatus === "done") {
+        setToastMsg("Atendimento concluído");
+        setTimeout(() => setToastMsg(null), 1800);
+      }
+    } finally {
+      setApptActionLoading(false);
+    }
+  }
 
   // ----------------- MEMOS -----------------
 
@@ -420,9 +618,15 @@ export default function ProviderHomePage() {
     return map;
   }, [appointmentsForView]);
 
+  const agendaStepMin = useMemo(() => getAgendaStepMin(provider), [provider]);
+
   const slotsBuild = useMemo(() => {
-    return buildSlotsForToday({ provider, appointmentsByTime });
-  }, [provider, appointmentsByTime]);
+    return buildSlotsForToday({
+      provider,
+      appointmentsByTime,
+      stepMin: agendaStepMin,
+    });
+  }, [provider, appointmentsByTime, agendaStepMin]);
 
   const daySummary = useMemo(() => {
     const list = appointmentsForView;
@@ -435,43 +639,55 @@ export default function ProviderHomePage() {
   }, [appointmentsForView]);
 
   // Próximo agendamento (hero)
+  // Próximo agendamento (real) — pode ser hoje, amanhã ou depois
   const nextAppointmentHero = useMemo(() => {
-    const now = new Date();
-    const nowMin = now.getHours() * 60 + now.getMinutes();
-
-    const valid = appointmentsForView
-      .filter(
-        (a) =>
-          a.status !== "cancelled" &&
-          a.status !== "no_show" &&
-          a.status !== "done"
-      )
-      .map((a) => ({ a, startMin: timeStrToMinutes(hhmmFromISO(a.startAt)) }))
-      .filter((x) => x.startMin >= nowMin)
-      .sort((x, y) => x.startMin - y.startMin)[0];
-
-    if (!valid) return null;
+    if (!nextAppointment) return null;
 
     return {
-      id: valid.a.id,
-      time: hhmmFromISO(valid.a.startAt),
-      range: `${hhmmFromISO(valid.a.startAt)} - ${hhmmFromISO(valid.a.endAt)}`,
-      serviceName: valid.a.serviceName ?? valid.a.service?.name ?? "Serviço",
-      customerName: valid.a.clientName ?? "Cliente",
-      phone: valid.a.clientPhone ?? null,
-      status: valid.a.status,
+      id: nextAppointment.id,
+      when: formatWhenLabelPT(nextAppointment.startAt),
+      time: hhmmFromISO(nextAppointment.startAt),
+      range: `${hhmmFromISO(nextAppointment.startAt)} - ${hhmmFromISO(
+        nextAppointment.endAt
+      )}`,
+      serviceName:
+        nextAppointment.serviceName ??
+        nextAppointment.service?.name ??
+        "Serviço",
+      customerName: nextAppointment.clientName ?? "Cliente",
+      phone: nextAppointment.clientPhone ?? null,
+      status: nextAppointment.status,
     };
-  }, [appointmentsForView, refreshTick]);
+  }, [nextAppointment, refreshTick]);
 
-  // ocupação do dia (simples, já dá cara de produto)
   const occupancy = useMemo(() => {
     const totalSlots = slotsBuild.slots.length || 1;
-    const slotsWithAppt = slotsBuild.slots.filter(
-      (s) => s.appts.length > 0
-    ).length;
-    const pct = Math.round((slotsWithAppt / totalSlots) * 100);
-    return { totalSlots, slotsWithAppt, pct };
-  }, [slotsBuild]);
+
+    // disponibilidade total em minutos (baseada no step real)
+    const availableMin = totalSlots * agendaStepMin;
+
+    // ocupa por tempo: soma duração real dos atendimentos do dia
+    const occupiedMin = (appointmentsForView ?? [])
+      .filter((a) => a.status !== "cancelled" && a.status !== "no_show")
+      .reduce((sum, a) => {
+        const start = new Date(a.startAt).getTime();
+        const end = new Date(a.endAt).getTime();
+        const diffMin = Math.max(0, Math.round((end - start) / 60000));
+        return sum + diffMin;
+      }, 0);
+
+    const pct = availableMin > 0 ? (occupiedMin / availableMin) * 100 : 0;
+
+    // pra manter “X/Y slots” coerente com step (aproximação)
+    const occupiedSlotsApprox =
+      agendaStepMin > 0 ? Math.round(occupiedMin / agendaStepMin) : 0;
+
+    return {
+      totalSlots,
+      occupiedSlots: Math.max(0, occupiedSlotsApprox),
+      pctStr: pct.toLocaleString("pt-PT", { maximumFractionDigits: 1 }),
+    };
+  }, [slotsBuild, appointmentsForView, agendaStepMin]);
 
   const kpis = useMemo<OverviewKpi[]>(() => {
     const serviceToday = earningsToday?.totals?.servicePriceCents ?? 0;
@@ -496,28 +712,43 @@ export default function ProviderHomePage() {
         title: "Agendamentos hoje",
         value: String(totalToday),
         helper:
-          totalToday > 0
-            ? `${daySummary.done} concluídos · ${daySummary.cancelled} cancelados · ${daySummary.noShow} faltas`
-            : "Nenhum agendamento por enquanto",
+          totalToday > 0 ? (
+            <span className="text-[11px]">
+              <span className="text-emerald-300">
+                {daySummary.done} concluídos
+              </span>
+              <span className="text-slate-500"> · </span>
+              <span className="text-rose-500">
+                {daySummary.cancelled} cancelados
+              </span>
+              <span className="text-slate-500"> · </span>
+              <span className="text-amber-300">{daySummary.noShow} faltas</span>
+            </span>
+          ) : (
+            "Nenhum agendamento por enquanto"
+          ),
+
         tone: totalToday > 0 ? "positive" : "neutral",
       },
       {
         id: "expected_revenue_today",
         title: "Previsto hoje",
         value: formatEURFromCents(serviceToday),
-        helper: `Faturado (done): ${formatEURFromCents(billedToday)}`,
-        tone: serviceToday > 0 ? "positive" : "neutral",
+        helper: null,
+        tone: billedToday > 0 ? "positive" : "neutral",
       },
+
       {
         id: "my_earnings_today",
-        title: "Meu ganho hoje",
+        title: "Faturamento (Hoje)",
         value: formatEURFromCents(myToday),
-        helper: `Faturado (done): ${formatEURFromCents(myBilledToday)}`,
-        tone: myToday > 0 ? "positive" : "neutral",
+        helper: null,
+        tone: "positive",
       },
+
       {
         id: "my_earnings_month",
-        title: "Meu ganho (mês)",
+        title: "Faturamento (mês)",
         value: formatEURFromCents(myMonth),
         helper: `Total em serviços: ${formatEURFromCents(serviceMonth)}`,
         tone: myMonth > 0 ? "positive" : "neutral",
@@ -592,8 +823,39 @@ export default function ProviderHomePage() {
           <a href="/provider/ganhos" className={pillBtnClass(true)}>
             Ver ganhos
           </a>
-          <a href="/provider/notificacoes" className={pillBtnClass(false)}>
-            Notificações
+          <a
+            href="/provider/notificacoes"
+            aria-label="Notificações"
+            title="Notificações"
+            className={[
+              "inline-flex items-center justify-center",
+              "h-10 w-10", // mantém alinhado com os botões ao lado
+              "rounded-xl",
+              "text-slate-200 hover:text-emerald-200",
+              "hover:bg-slate-900/35",
+              "transition-colors",
+              "outline-none focus:outline-none focus-visible:ring-0",
+            ].join(" ")}
+          >
+            {/* wrapper RELATIVE no ícone (badge se posiciona em cima do sino) */}
+            <span className="relative inline-flex">
+              <BellIcon className="h-7 w-7" />
+
+              {unreadCount > 0 ? (
+                <span
+                  className={[
+                    "absolute -top-2 -right-2", // gruda no canto do sino
+                    "flex items-center justify-center",
+                    "h-[18px] min-w-[18px] px-[5px]",
+                    "rounded-full bg-rose-500 text-white",
+                    "text-[10px] font-bold leading-none",
+                    "ring-2 ring-slate-950", // contorno escuro (igual badge destacado)
+                  ].join(" ")}
+                >
+                  {unreadCount > 99 ? "99+" : unreadCount}
+                </span>
+              ) : null}
+            </span>
           </a>
         </div>
       </div>
@@ -615,6 +877,10 @@ export default function ProviderHomePage() {
               <p className="mt-1 text-sm font-semibold text-slate-100">
                 {nextAppointmentHero ? (
                   <>
+                    <span className="text-slate-400">
+                      {nextAppointmentHero.when}
+                    </span>{" "}
+                    <span className="text-slate-400">•</span>{" "}
                     <span className="text-emerald-200">
                       {nextAppointmentHero.time}
                     </span>{" "}
@@ -622,17 +888,26 @@ export default function ProviderHomePage() {
                     {nextAppointmentHero.serviceName}
                   </>
                 ) : (
-                  "Sem próximos agendamentos hoje"
+                  "Sem próximos agendamentos"
                 )}
               </p>
             </div>
 
-            <a
-              href="/provider/agenda"
-              className="text-[11px] text-emerald-400 hover:underline"
-            >
-              Ver dia completo
-            </a>
+            <div className="flex items-center gap-3 shrink-0">
+              <span className="inline-flex items-center gap-2 rounded-xl border border-slate-800 bg-slate-950/40 px-3 py-2">
+                <span className="text-[11px] text-slate-400">Total hoje</span>
+                <span className="text-[12px] font-semibold text-slate-100">
+                  {daySummary.total}
+                </span>
+              </span>
+
+              <a
+                href="/provider/agenda"
+                className="text-[11px] text-emerald-400 hover:underline"
+              >
+                Ver dia completo
+              </a>
+            </div>
           </div>
 
           {nextAppointmentHero ? (
@@ -648,13 +923,65 @@ export default function ProviderHomePage() {
                     <span className="text-[11px] text-slate-400">
                       {nextAppointmentHero.range}
                     </span>
-                    <span
-                      className={`text-[10px] px-2 py-[2px] rounded-full border ${getStatusChipClass(
-                        nextAppointmentHero.status
-                      )}`}
-                    >
-                      {nextAppointmentHero.status}
-                    </span>
+                    <div className="relative" ref={apptMenuRef as any}>
+                      <button
+                        type="button"
+                        onClick={() => setApptMenuOpen((v) => !v)}
+                        className={`text-[10px] px-2 py-[2px] rounded-full border ${getStatusChipClass(
+                          nextAppointmentHero.status
+                        )} hover:opacity-90 transition-opacity`}
+                        title="Ações do atendimento"
+                      >
+                        {getStatusLabelPT(nextAppointmentHero.status)}
+                      </button>
+
+                      {apptMenuOpen ? (
+                        <div className="absolute z-50 mt-2 w-56 rounded-xl border border-slate-800 bg-slate-950 shadow-xl p-2">
+                          <p className="px-2 pb-2 text-[11px] text-slate-400">
+                            Ações do agendamento
+                          </p>
+
+                          {/* scheduled -> iniciar */}
+                          {nextAppointmentHero.status === "scheduled" ? (
+                            <button
+                              type="button"
+                              disabled={apptActionLoading}
+                              onClick={() =>
+                                updateApptStatus(
+                                  nextAppointmentHero.id,
+                                  "in_service"
+                                )
+                              }
+                              className="w-full text-left px-3 py-2 rounded-lg text-[12px] text-slate-100 hover:bg-slate-900/60 disabled:opacity-60"
+                            >
+                              Iniciar atendimento
+                            </button>
+                          ) : null}
+
+                          {/* in_progress -> concluir */}
+                          {nextAppointmentHero.status === "in_service" ? (
+                            <button
+                              type="button"
+                              disabled={apptActionLoading}
+                              onClick={() =>
+                                updateApptStatus(nextAppointmentHero.id, "done")
+                              }
+                              className="w-full text-left px-3 py-2 rounded-lg text-[12px] text-emerald-100 hover:bg-emerald-500/10 disabled:opacity-60"
+                            >
+                              Concluir atendimento
+                            </button>
+                          ) : null}
+
+                          {/* fallback */}
+                          {nextAppointmentHero.status !== "scheduled" &&
+                          nextAppointmentHero.status !== "in_service" ? (
+                            <div className="px-3 py-2 text-[11px] text-slate-500">
+                              Sem ações disponíveis para este status.
+                            </div>
+                          ) : null}
+                        </div>
+                      ) : null}
+                    </div>
                   </div>
 
                   <p className="mt-2 text-base font-semibold text-slate-100 truncate">
@@ -667,21 +994,6 @@ export default function ProviderHomePage() {
                       ? ` • ${nextAppointmentHero.phone}`
                       : ""}
                   </p>
-                </div>
-
-                <div className="flex items-center gap-2 shrink-0">
-                  <a
-                    href="/provider/agenda"
-                    className="px-3 py-2 rounded-xl border border-slate-800 bg-slate-900/40 text-[12px] text-slate-200 hover:border-slate-700"
-                  >
-                    Abrir na agenda
-                  </a>
-                  <a
-                    href="/provider/ganhos"
-                    className="px-3 py-2 rounded-xl border border-emerald-600 bg-emerald-600/15 text-[12px] text-emerald-100 hover:bg-emerald-600/20"
-                  >
-                    Ver ganhos do dia
-                  </a>
                 </div>
               </div>
             </div>
@@ -718,10 +1030,10 @@ export default function ProviderHomePage() {
             <div className="rounded-xl border border-slate-800 bg-slate-950/40 p-3">
               <p className="text-[11px] text-slate-400">Ocupação hoje</p>
               <p className="mt-1 text-lg font-semibold text-slate-100">
-                {occupancy.pct}%
+                {occupancy.pctStr}%
               </p>
               <p className="text-[11px] text-slate-500">
-                {occupancy.slotsWithAppt}/{occupancy.totalSlots} slots
+                {occupancy.occupiedSlots}/{occupancy.totalSlots} slots
               </p>
             </div>
 
@@ -965,7 +1277,7 @@ export default function ProviderHomePage() {
                   </p>
 
                   <p className="text-[10px] text-slate-500 truncate">
-                    Status: {a.status}
+                    Status: {getStatusLabelPT(a.status)}
                   </p>
                 </div>
               ))}
@@ -991,6 +1303,13 @@ export default function ProviderHomePage() {
           </div>
         </div>
       )}
+      {toastMsg ? (
+        <div className="fixed bottom-6 right-6 z-[9999]">
+          <div className="rounded-xl border border-slate-800 bg-slate-950/90 px-4 py-3 text-[12px] text-slate-100 shadow-xl">
+            {toastMsg}
+          </div>
+        </div>
+      ) : null}
     </>
   );
 }

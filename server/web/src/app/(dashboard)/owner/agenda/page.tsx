@@ -235,14 +235,37 @@ export default function OwnerAgendaPage() {
       alive = false;
     };
   }, [authLoading, user]);
-  const selectedLocation = useMemo(() => {
-    if (selectedLocationId === "all") return null;
-    return locations.find((l) => l.id === selectedLocationId) ?? null;
-  }, [locations, selectedLocationId]);
+  const selectedProfessional = useMemo(() => {
+    if (selectedProfessionalId === "all") return null;
+    return professionals.find((p) => p.id === selectedProfessionalId) ?? null;
+  }, [professionals, selectedProfessionalId]);
+
+  const effectiveLocation = useMemo(() => {
+    // 1) se o owner escolheu uma unidade específica, ela manda
+    if (selectedLocationId !== "all") {
+      return locations.find((l) => l.id === selectedLocationId) ?? null;
+    }
+
+    // 2) se está em "todas", mas escolheu um profissional,
+    // usa a unidade do profissional
+    if (selectedProfessional) {
+      const locId =
+        (selectedProfessional as any).locationId ??
+        (selectedProfessional as any).location?.id ??
+        null;
+
+      if (locId) {
+        return locations.find((l) => l.id === locId) ?? null;
+      }
+    }
+
+    // 3) "todas" + profissional = all → não dá pra inferir
+    return null;
+  }, [selectedLocationId, locations, selectedProfessional]);
 
   const agendaStepMin = useMemo(() => {
     const raw =
-      selectedLocation?.bookingIntervalMin ??
+      effectiveLocation?.bookingIntervalMin ??
       tenantSettings?.bookingIntervalMin;
 
     const allowed = [5, 10, 15, 20, 30, 45, 60] as const;
@@ -250,13 +273,13 @@ export default function OwnerAgendaPage() {
     if (!raw) return 30;
     return (allowed as readonly number[]).includes(raw) ? raw : 30;
   }, [
-    selectedLocation?.bookingIntervalMin,
+    effectiveLocation?.bookingIntervalMin,
     tenantSettings?.bookingIntervalMin,
   ]);
 
   const agendaBufferMin = useMemo(() => {
     const raw =
-      (selectedLocation as any)?.bookingBufferMin ??
+      (effectiveLocation as any)?.bookingBufferMin ??
       (tenantSettings as any)?.bookingBufferMin ??
       (tenantSettings as any)?.bufferMin; // fallback se teu backend tiver outro nome
 
@@ -265,7 +288,7 @@ export default function OwnerAgendaPage() {
 
     // evita maluquice
     return Math.min(v, 60);
-  }, [selectedLocation, tenantSettings]);
+  }, [effectiveLocation, tenantSettings]);
 
   const bufferBetweenAppointmentsMin = useMemo(() => {
     const raw = tenantSettings?.bufferBetweenAppointmentsMin;
@@ -299,14 +322,14 @@ export default function OwnerAgendaPage() {
   }>(null);
 
   useEffect(() => {
-    if (!selectedLocation) return;
-    console.log("selectedLocation:", selectedLocation);
-  }, [selectedLocation]);
+    if (!effectiveLocation) return;
+    console.log("effectiveLocation:", effectiveLocation);
+  }, [effectiveLocation]);
 
   const dayIntervals = useMemo(() => {
-    if (!selectedLocation) return null;
-    return getLocationDayIntervals(selectedLocation as any, selectedDate);
-  }, [selectedLocation, selectedDate]);
+    if (!effectiveLocation) return null;
+    return getLocationDayIntervals(effectiveLocation as any, selectedDate);
+  }, [effectiveLocation, selectedDate]);
 
   const dayTimeSlots = useMemo(() => {
     // se estiver em "todas", mantém o comportamento atual (por enquanto)
@@ -1098,18 +1121,19 @@ export default function OwnerAgendaPage() {
   const isPastDay = selectedDateStr < todayStr;
   const nowMinutes = today.getHours() * 60 + today.getMinutes();
   const overbookingEnabled = Boolean(
-    (selectedLocation as any)?.overbookingEnabled ??
+    (effectiveLocation as any)?.overbookingEnabled ??
       (tenantSettings as any)?.overbookingEnabled ??
-      true // fallback: se ainda não tiver settings no backend, deixa ligado pra testar
+      true
   );
 
   const overbookingMaxPerSlot = (() => {
     const raw =
-      (selectedLocation as any)?.overbookingMaxPerSlot ??
-      (selectedLocation as any)?.maxOverbookingPerSlot ??
+      (effectiveLocation as any)?.overbookingMaxPerSlot ??
+      (effectiveLocation as any)?.maxOverbookingPerSlot ??
       (tenantSettings as any)?.overbookingMaxPerSlot ??
       (tenantSettings as any)?.maxOverbookingPerSlot ??
-      2; // padrão: 2 no mesmo horário
+      2;
+
     const v = Number(raw);
     if (!Number.isFinite(v) || v < 1) return 1;
     return Math.min(v, 10);
@@ -2368,10 +2392,7 @@ function ProfessionalTimeline({
     if (cursor > lastStartMin) break;
 
     // ✅ 2) renderiza o bloco (normal OU overbooking)
-    const apptHeightPx = Math.max(
-      rowPx,
-      (nextGroup.maxDurMin / stepMin) * rowPx
-    );
+    const apptHeightPx = rowPx;
 
     if (nextGroup.items.length === 1) {
       const one = nextGroup.items[0];
@@ -2394,7 +2415,9 @@ function ProfessionalTimeline({
         >
           <div className="flex items-start justify-between gap-2">
             <div className="min-w-0">
-              <p className="text-[10px] text-slate-300">{one.appt.time}</p>
+              <p className="text-[10px] text-slate-300">
+                {one.appt.time} · {one.durMin}m
+              </p>
               <p className="text-[12px] font-medium truncate">
                 {one.appt.serviceName}
               </p>
@@ -2449,7 +2472,10 @@ function ProfessionalTimeline({
         >
           <div className="flex items-start justify-between gap-2">
             <div className="min-w-0">
-              <p className="text-[10px] text-slate-300">{slotTime}</p>
+              <p className="text-[10px] text-slate-300">
+                {slotTime} · até {nextGroup.maxDurMin}m
+              </p>
+
               <p className="text-[12px] font-medium truncate">Overbooking</p>
               <p className="text-[10px] text-slate-300 truncate">
                 {count} agendamentos neste horário
