@@ -87,9 +87,31 @@ export class AppointmentsService {
     });
   }
 
-  async create(tenantId: string, userId: string, dto: CreateAppointmentDto) {
+  async create(
+    tenantId: string,
+    userId: string,
+    actorRole: Role,
+    dto: CreateAppointmentDto,
+  ) {
     const startAt = new Date(dto.startAt);
     let endAt = new Date(dto.endAt);
+    // ----------------------------------------------------------------
+    // SECURITY: se for PROVIDER, força providerId = o próprio profissional logado
+    // ----------------------------------------------------------------
+    if (actorRole === Role.provider) {
+      const meProvider = await this.prisma.provider.findFirst({
+        where: { tenantId, userId },
+        select: { id: true },
+      });
+
+      if (!meProvider?.id) {
+        throw new ForbiddenException(
+          'Este usuário provider não está vinculado a um profissional.',
+        );
+      }
+
+      dto.providerId = meProvider.id; // força (ignora qualquer providerId vindo do front)
+    }
 
     // ----------------------------------------------------------------
     // TELEFONE: normaliza 1 vez (PT -> 351 + E.164)

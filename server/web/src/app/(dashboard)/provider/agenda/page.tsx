@@ -3,6 +3,11 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { useRequireAuth } from "@/lib/use-auth";
 import { apiClient, ApiError } from "@/lib/api-client";
+import {
+  createProviderAppointment,
+  fetchProviderServicesForAppointment,
+  ProviderServiceForAppointment,
+} from "../_api/provider-appointments";
 
 type ProviderMe = {
   id: string;
@@ -72,9 +77,21 @@ export default function ProviderAgendaPage() {
   const [error, setError] = useState<string | null>(null);
 
   const [selectedAppt, setSelectedAppt] = useState<ProviderAppointment | null>(
-    null
+    null,
   );
+
   const [refreshTick, setRefreshTick] = useState(0);
+
+  // ---- criação de agendamento (slot vazio) ----
+  const [createOpen, setCreateOpen] = useState(false);
+  const [createSlotTime, setCreateSlotTime] = useState<string | null>(null);
+  const [createBusy, setCreateBusy] = useState(false);
+
+  const [services, setServices] = useState<ProviderServiceForAppointment[]>([]);
+  const [serviceId, setServiceId] = useState<string>("");
+  const [clientName, setClientName] = useState("");
+  const [clientPhone, setClientPhone] = useState("");
+  const [createError, setCreateError] = useState<string | null>(null);
 
   function triggerReload() {
     setRefreshTick((t) => t + 1);
@@ -99,7 +116,6 @@ export default function ProviderAgendaPage() {
 
   const agendaStepMin = useMemo(() => {
     const raw = provider?.location?.bookingIntervalMin ?? 30;
-
     const allowed = [5, 10, 15, 20, 30, 45, 60] as const;
     return (allowed as readonly number[]).includes(raw) ? raw : 30;
   }, [provider?.location?.bookingIntervalMin]);
@@ -114,18 +130,18 @@ export default function ProviderAgendaPage() {
   }, [provider?.location?.businessHoursTemplate, selectedDate]);
 
   const dayTimeSlots = useMemo(() => {
-    if (!dayIntervals) return DEFAULT_TIME_SLOTS; // fallback se não vier template
+    if (!dayIntervals) return DEFAULT_TIME_SLOTS;
     return buildSlotsFromIntervals(dayIntervals, agendaStepMin);
   }, [dayIntervals, agendaStepMin]);
 
   const morningSlots = useMemo(
     () => dayTimeSlots.filter((t) => t < "14:00"),
-    [dayTimeSlots]
+    [dayTimeSlots],
   );
 
   const afternoonSlots = useMemo(
     () => dayTimeSlots.filter((t) => t >= "14:00"),
-    [dayTimeSlots]
+    [dayTimeSlots],
   );
 
   const stats = useMemo(() => {
@@ -208,6 +224,35 @@ export default function ProviderAgendaPage() {
     };
   }, [authLoading, user]);
 
+  // 1.1) carrega serviços para o modal de criação (por location)
+  useEffect(() => {
+    let alive = true;
+
+    async function loadServices() {
+      if (!provider?.location?.id) return;
+
+      try {
+        const srv = await fetchProviderServicesForAppointment({
+          locationId: provider.location.id,
+        });
+
+        if (!alive) return;
+        setServices(srv);
+
+        // seta padrão sem depender de serviceId nas deps
+        setServiceId((prev) => prev || (srv?.[0]?.id ?? ""));
+      } catch (err) {
+        console.error("Erro ao carregar serviços do provider:", err);
+      }
+    }
+
+    loadServices();
+
+    return () => {
+      alive = false;
+    };
+  }, [provider?.location?.id]);
+
   // 2) carrega appointments do dia com providerId
   useEffect(() => {
     let alive = true;
@@ -225,15 +270,15 @@ export default function ProviderAgendaPage() {
 
         const raw = await apiClient<any>(
           `/appointments?date=${encodeURIComponent(
-            dateStr
-          )}&providerId=${encodeURIComponent(provider.id)}`
+            dateStr,
+          )}&providerId=${encodeURIComponent(provider.id)}`,
         );
 
         const list = Array.isArray(raw)
           ? raw
           : Array.isArray(raw?.data)
-          ? raw.data
-          : [];
+            ? raw.data
+            : [];
 
         const normalized = normalizeAppointments(list);
 
@@ -269,6 +314,85 @@ export default function ProviderAgendaPage() {
     setSelectedDate((prev) => addDays(prev, 1));
   }
 
+  function openCreateAtSlot(slotTime: string) {
+    setCreateError(null);
+    setCreateSlotTime(slotTime);
+    setClientName("");
+    setClientPhone("");
+
+    if (!serviceId && services.length > 0) {
+      setServiceId(services[0].id);
+    }
+
+    setCreateOpen(true);
+  }
+
+  async function handleCreateAppointment() {
+    if (!provider?.id) return;
+    if (!createSlotTime) return;
+
+    if (!clientName.trim()) {
+      setCreateError("Nome do cliente é obrigatório.");
+      return;
+    }
+
+    if (!clientPhone.trim()) {
+      setCreateError("Telefone do cliente é obrigatório.");
+      return;
+    }
+
+    if (!serviceId) {
+      setCreateError("Selecione um serviço.");
+      return;
+    }
+
+    try {
+      setCreateBusy(true);
+      setCreateError(null);
+
+      const [hh, mm] = createSlotTime.split(":").map(Number);
+
+      const start = new Date(
+        selectedDate.getFullYear(),
+        selectedDate.getMonth(),
+        selectedDate.getDate(),
+        hh,
+        mm,
+        0,
+        0,
+      );
+
+      const service = services.find((s) => s.id === serviceId);
+      const durCandidate = Number(service?.durationMin ?? agendaStepMin);
+      const durMin =
+        Number.isFinite(durCandidate) && durCandidate > 0
+          ? durCandidate
+          : agendaStepMin;
+
+      const end = new Date(start.getTime() + durMin * 60_000);
+
+      await createProviderAppointment({
+        providerId: provider.id,
+        serviceId,
+        startAt: start.toISOString(),
+        endAt: end.toISOString(),
+        clientName: clientName.trim(),
+        clientPhone: clientPhone.trim(),
+      });
+
+      setCreateOpen(false);
+      setCreateSlotTime(null);
+
+      triggerReload();
+    } catch (err: any) {
+      const msg =
+        err instanceof ApiError ? err.message : "Erro ao criar agendamento.";
+      setCreateError(msg);
+    } finally {
+      setCreateBusy(false);
+    }
+  }
+
   if (authLoading || loading) {
     return <div className="text-sm text-slate-400">Carregando agenda...</div>;
   }
@@ -278,7 +402,6 @@ export default function ProviderAgendaPage() {
   }
 
   const providerName = provider?.name ?? provider?.user?.name ?? "Profissional";
-
   const isPastDay = selectedDateStr < todayStr;
   const nowMinutes = today.getHours() * 60 + today.getMinutes();
 
@@ -406,6 +529,7 @@ export default function ProviderAgendaPage() {
                 isToday={isToday}
                 nowMinutes={nowMinutes}
                 onOpenDetails={handleOpenDetails}
+                onCreateAtSlot={openCreateAtSlot}
               />
             </div>
           </div>
@@ -438,6 +562,7 @@ export default function ProviderAgendaPage() {
                 isToday={isToday}
                 nowMinutes={nowMinutes}
                 onOpenDetails={handleOpenDetails}
+                onCreateAtSlot={openCreateAtSlot}
               />
             </div>
           </div>
@@ -452,7 +577,130 @@ export default function ProviderAgendaPage() {
             setSelectedAppt(null);
             triggerReload();
           }}
+          onFitInThisTime={(time) => openCreateAtSlot(time)}
         />
+      )}
+
+      {/* Modal simples para criar agendamento (visual do Owner) */}
+      {createOpen && (
+        <div className="fixed inset-0 z-40 flex items-center justify-center bg-black/60">
+          <div className="w-full max-w-md rounded-2xl border border-slate-800 bg-slate-950 p-4 text-xs shadow-xl">
+            <div className="flex items-start justify-between mb-3">
+              <div>
+                <p className="text-[11px] uppercase tracking-wide text-slate-400">
+                  Criar agendamento
+                </p>
+
+                <p className="text-sm font-semibold text-slate-100">
+                  {clientName?.trim() ? clientName : "Cliente sem nome"}
+                </p>
+
+                {!!clientPhone?.trim() && (
+                  <p className="text-[11px] text-slate-400">{clientPhone}</p>
+                )}
+              </div>
+
+              <button
+                className="text-[11px] text-slate-400 hover:text-slate-100"
+                onClick={() => setCreateOpen(false)}
+                disabled={createBusy}
+              >
+                Fechar
+              </button>
+            </div>
+
+            {createError && (
+              <div className="mb-3 rounded-lg border border-rose-500/40 bg-rose-500/10 px-3 py-2 text-[11px] text-rose-200">
+                {createError}
+              </div>
+            )}
+
+            <div className="space-y-3 mb-3">
+              <div>
+                <p className="text-[11px] text-slate-400 mb-1">
+                  Nome do cliente
+                </p>
+                <input
+                  className="w-full rounded-md bg-slate-900/60 border border-slate-700 px-2 py-1 text-[12px] text-slate-100 outline-none focus:border-emerald-500"
+                  value={clientName}
+                  onChange={(e) => setClientName(e.target.value)}
+                  placeholder="Nome do cliente"
+                  disabled={createBusy}
+                />
+              </div>
+
+              <div>
+                <p className="text-[11px] text-slate-400 mb-1">Telefone</p>
+                <input
+                  className="w-full rounded-md bg-slate-900/60 border border-slate-700 px-2 py-1 text-[12px] text-slate-100 outline-none focus:border-emerald-500"
+                  value={clientPhone}
+                  onChange={(e) => setClientPhone(e.target.value)}
+                  placeholder="+351 9xx xxx xxx"
+                  disabled={createBusy}
+                />
+              </div>
+
+              <div>
+                <p className="text-[11px] text-slate-400 mb-1">Serviço</p>
+
+                {services.length === 0 ? (
+                  <p className="text-[11px] text-rose-400">
+                    Nenhum serviço disponível para agendamento.
+                  </p>
+                ) : (
+                  <select
+                    className="w-full rounded-md bg-slate-900/60 border border-slate-700 px-2 py-1 text-[12px] text-slate-100 outline-none focus:border-emerald-500"
+                    value={serviceId}
+                    onChange={(e) => setServiceId(e.target.value)}
+                    disabled={createBusy}
+                  >
+                    {services.map((service) => (
+                      <option key={service.id} value={service.id}>
+                        {service.name} ({service.durationMin} min)
+                      </option>
+                    ))}
+                  </select>
+                )}
+              </div>
+
+              <div>
+                <p className="text-[11px] text-slate-400">Profissional</p>
+                <p className="text-sm text-slate-100">{providerName}</p>
+              </div>
+
+              <div>
+                <p className="text-[11px] text-slate-400">Data</p>
+                <p className="text-sm text-slate-100">{dateLabel}</p>
+              </div>
+
+              <div>
+                <p className="text-[11px] text-slate-400">Horário</p>
+                <p className="text-sm text-slate-100">
+                  {createSlotTime ?? "--:--"}
+                </p>
+              </div>
+            </div>
+
+            <div className="mt-4 flex justify-end gap-2">
+              <button
+                className="px-3 py-1 rounded-lg border border-slate-700 bg-slate-900 text-[11px] disabled:opacity-60"
+                onClick={() => setCreateOpen(false)}
+                disabled={createBusy}
+              >
+                Cancelar
+              </button>
+
+              <button
+                className="px-3 py-1 rounded-lg border border-emerald-600 bg-emerald-600/20 text-[11px] text-emerald-100 disabled:opacity-60"
+                type="button"
+                onClick={handleCreateAppointment}
+                disabled={createBusy || services.length === 0}
+              >
+                {createBusy ? "Salvando..." : "Salvar"}
+              </button>
+            </div>
+          </div>
+        </div>
       )}
     </>
   );
@@ -469,6 +717,7 @@ function ProviderTimeline({
   isToday,
   nowMinutes,
   onOpenDetails,
+  onCreateAtSlot,
 }: {
   periodLabel: string;
   periodStart: string;
@@ -479,6 +728,7 @@ function ProviderTimeline({
   isToday: boolean;
   nowMinutes: number;
   onOpenDetails: (appt: ProviderAppointment) => void;
+  onCreateAtSlot: (time: string) => void;
 }) {
   const rowPx = 56;
 
@@ -534,8 +784,9 @@ function ProviderTimeline({
             rowPx,
             isPastDay,
             isToday,
-            nowMinutes
-          )
+            nowMinutes,
+            onCreateAtSlot,
+          ),
         );
         cursor += stepMin;
       }
@@ -551,77 +802,65 @@ function ProviderTimeline({
           rowPx,
           isPastDay,
           isToday,
-          nowMinutes
-        )
+          nowMinutes,
+          onCreateAtSlot,
+        ),
       );
       cursor += stepMin;
     }
 
     if (cursor > lastStartMin) break;
 
-    const blockHeightPx = rowPx;
-
     if (nextGroup.items.length === 1) {
-      const one = nextGroup.items[0].appt;
+      const oneWrap = nextGroup.items[0];
+      const one = oneWrap.appt;
+
       const st = getStatusClasses(one.status);
-      const billing =
-        one.billingType === "plan"
-          ? "Plano"
-          : one.billingType === "single"
-          ? "Avulso"
-          : "—";
+      const billingType = one.billingType;
 
       nodes.push(
         <button
-          type="button"
           key={`appt-${one.id}`}
-          onClick={() => onOpenDetails(one)}
-          className={`w-full rounded-xl border px-3 py-2 text-left transition hover:brightness-110 ${st.container}`}
+          type="button"
+          className={`w-full rounded-xl border px-2 py-2 text-left ${st.container}`}
           style={{ height: rowPx }}
+          onClick={() => onOpenDetails(one)}
           title={`${one.time} · ${one.serviceName} · ${one.customerName} · ${st.label}`}
         >
-          <div className="flex items-start justify-between gap-3">
-            {/* ESQUERDA: hora / serviço / cliente */}
+          <div className="flex items-start justify-between gap-2">
             <div className="min-w-0">
               <p className="text-[10px] text-slate-300">
-                {one.time}
-                {typeof one.durationMin === "number" && one.durationMin > 0
-                  ? ` • ${one.durationMin}m`
-                  : ""}
+                {one.time} · {oneWrap.durMin}m
               </p>
 
-              <p className="text-[13px] font-semibold text-slate-100 truncate leading-5">
+              <p className="text-[12px] font-medium text-slate-100 truncate">
                 {one.serviceName}
               </p>
 
-              <p className="text-[11px] text-slate-200 truncate leading-4">
+              <p className="text-[10px] text-slate-300 truncate">
                 Cliente: {one.customerName}
               </p>
             </div>
 
-            {/* DIREITA: badges (igual Owner) */}
-            <div className="flex flex-col items-end gap-1 shrink-0">
-              <span
-                className={`text-[10px] px-2 py-[2px] rounded-md ${st.badge}`}
-              >
+            <div className="flex flex-col items-end gap-1">
+              <span className={`text-[9px] px-1 rounded ${st.badge}`}>
                 {st.label}
               </span>
 
-              {one.billingType && (
+              {billingType && (
                 <span
-                  className={[
-                    "text-[10px] px-2 py-[2px] rounded-md border",
-                    one.billingType === "plan"
+                  className={`text-[9px] px-1 rounded border ${
+                    billingType === "plan"
                       ? "bg-emerald-500/15 text-emerald-100 border-emerald-400/60"
-                      : "bg-slate-700/40 text-slate-100 border-slate-500/60",
-                  ].join(" ")}
+                      : "bg-slate-700/40 text-slate-100 border-slate-500/60"
+                  }`}
                 >
-                  {one.billingType === "plan" ? "Plano" : "Avulso"}
+                  {billingType === "plan" ? "Plano" : "Avulso"}
                 </span>
               )}
             </div>
           </div>
-        </button>
+        </button>,
       );
     } else {
       const count = nextGroup.items.length;
@@ -629,11 +868,11 @@ function ProviderTimeline({
 
       nodes.push(
         <button
+          key={`overbook-${slotTime}-${nextGroup.startMin}`}
           type="button"
-          key={`over-${nextGroup.startMin}`}
+          className="w-full rounded-xl border px-2 py-2 text-left border-amber-500/40 bg-amber-500/10 hover:bg-amber-500/15 transition-colors"
+          style={{ height: rowPx }}
           onClick={() => onOpenDetails(nextGroup.items[0].appt)}
-          className="w-full rounded-xl border px-2 py-2 text-left border-amber-500/40 bg-amber-500/10 transition hover:brightness-110"
-          style={{ height: blockHeightPx }}
           title={`${slotTime} · Overbooking (${count} agendamentos)`}
         >
           <div className="flex items-start justify-between gap-2">
@@ -653,7 +892,7 @@ function ProviderTimeline({
               +{count - 1}
             </span>
           </div>
-        </button>
+        </button>,
       );
     }
 
@@ -667,10 +906,12 @@ function AppointmentDetailsModal({
   appt,
   onClose,
   onChangeDone,
+  onFitInThisTime,
 }: {
   appt: ProviderAppointment;
   onClose: () => void;
   onChangeDone: () => void;
+  onFitInThisTime: (time: string) => void;
 }) {
   const [busy, setBusy] = useState(false);
 
@@ -715,10 +956,7 @@ function AppointmentDetailsModal({
   }
 
   function handleDetailsStatusChange(forceStatus?: AppointmentStatus) {
-    // replica o “clique muda status” do owner, mas aqui decide direto:
-    // scheduled -> in_service, in_service -> done
     if (forceStatus) return setStatus(forceStatus);
-
     if (appt.status === "scheduled") return setStatus("in_service");
     if (appt.status === "in_service") return setStatus("done");
   }
@@ -779,21 +1017,6 @@ function AppointmentDetailsModal({
             </button>
           )}
 
-          {/* Se você ainda não quer encaixe no Provider, pode remover este botão,
-              mas deixei igual ao owner no visual. */}
-          <button
-            type="button"
-            disabled={busy}
-            className="w-full px-3 py-1 rounded-lg border border-amber-400 bg-amber-500/10 text-[11px] text-amber-200 disabled:opacity-60"
-            onClick={() =>
-              alert(
-                "Encaixe no Provider: se quiser, eu implemento igual ao owner."
-              )
-            }
-          >
-            + Encaixar outro cliente neste horário
-          </button>
-
           {appt.status === "in_service" && (
             <button
               type="button"
@@ -802,6 +1025,19 @@ function AppointmentDetailsModal({
               onClick={() => handleDetailsStatusChange()}
             >
               Marcar como concluído
+            </button>
+          )}
+          {(appt.status === "scheduled" || appt.status === "in_service") && (
+            <button
+              type="button"
+              disabled={busy}
+              className="w-full px-3 py-1 rounded-lg border border-amber-400 bg-amber-500/10 text-[11px] text-amber-200 disabled:opacity-60"
+              onClick={() => {
+                onClose(); // fecha detalhes
+                onFitInThisTime(appt.time); // abre criação no MESMO horário
+              }}
+            >
+              + Encaixar outro cliente neste horário
             </button>
           )}
 
@@ -844,25 +1080,38 @@ function renderSlot(
   rowPx: number,
   isPastDay: boolean,
   isToday: boolean,
-  nowMinutes: number
+  nowMinutes: number,
+  onCreateAtSlot: (time: string) => void,
 ) {
   const slotTime = minutesToTimeStr(cursorMin);
   const slotEnd = cursorMin + stepMin;
   const isPastSlot = isPastDay || (isToday && slotEnd <= nowMinutes);
 
+  if (isPastSlot) {
+    return (
+      <div
+        key={`past-${periodLabel}-${cursorMin}`}
+        className="rounded-xl border border-slate-900/60 bg-slate-950/40 opacity-40 cursor-not-allowed flex items-center justify-between px-2"
+        style={{ height: rowPx }}
+        title={`${periodLabel} · ${slotTime}`}
+      >
+        <span className="text-[10px] text-slate-500">{slotTime}</span>
+      </div>
+    );
+  }
+
   return (
-    <div
-      key={`slot-${cursorMin}`}
-      className={`rounded-xl border px-2 flex items-center justify-between ${
-        isPastSlot
-          ? "border-slate-900/60 bg-slate-950/40 opacity-40"
-          : "border-slate-800/50 bg-slate-950/30"
-      }`}
+    <button
+      type="button"
+      onClick={() => onCreateAtSlot(slotTime)}
+      key={`free-${periodLabel}-${cursorMin}`}
+      className="rounded-xl border border-slate-800/50 bg-slate-950/30 flex items-center justify-between px-2 hover:bg-slate-900/40 transition-colors"
       style={{ height: rowPx }}
-      title={`${periodLabel} · ${slotTime}`}
+      title={`${periodLabel} · ${slotTime} · Criar agendamento`}
     >
       <span className="text-[10px] text-slate-500">{slotTime}</span>
-    </div>
+      <span className="text-[10px] text-slate-400">Criar</span>
+    </button>
   );
 }
 
@@ -877,24 +1126,24 @@ function normalizeAppointments(list: any[]): ProviderAppointment[] {
         typeof raw?.time === "string"
           ? raw.time
           : raw?.startAt
-          ? isoToTime(raw.startAt)
-          : "00:00";
+            ? isoToTime(raw.startAt)
+            : "00:00";
 
       const serviceName =
         typeof raw?.serviceName === "string"
           ? raw.serviceName
           : typeof raw?.service?.name === "string"
-          ? raw.service.name
-          : "Serviço";
+            ? raw.service.name
+            : "Serviço";
 
       const customerName =
         typeof raw?.customerName === "string"
           ? raw.customerName
           : typeof raw?.clientName === "string"
-          ? raw.clientName
-          : typeof raw?.customer?.name === "string"
-          ? raw.customer.name
-          : "Cliente";
+            ? raw.clientName
+            : typeof raw?.customer?.name === "string"
+              ? raw.customer.name
+              : "Cliente";
 
       const status = (raw?.status ?? "scheduled") as AppointmentStatus;
 
@@ -926,7 +1175,7 @@ function normalizeAppointments(list: any[]): ProviderAppointment[] {
     .filter(Boolean) as ProviderAppointment[];
 
   return items.sort(
-    (a, b) => timeStrToMinutes(a.time) - timeStrToMinutes(b.time)
+    (a, b) => timeStrToMinutes(a.time) - timeStrToMinutes(b.time),
   );
 }
 
@@ -968,6 +1217,7 @@ function addDays(date: Date, amount: number): Date {
   result.setDate(result.getDate() + amount);
   return result;
 }
+
 type DayInterval = { start: string; end: string };
 
 function getWeekdayKeyLocal(date: Date) {
@@ -989,7 +1239,7 @@ function normalizeIntervals(raw: any): DayInterval[] {
 
 function buildSlotsFromIntervals(
   intervals: DayInterval[],
-  stepMin = 30
+  stepMin = 30,
 ): string[] {
   const out: string[] = [];
 

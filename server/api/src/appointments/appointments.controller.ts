@@ -40,10 +40,13 @@ export class AppointmentsController {
   // Criar appointment (qualquer perfil interno do tenant no MVP)
   @Roles(Role.owner, Role.admin, Role.attendant, Role.provider)
   @Post()
-  create(@Req() req: any, @Body() dto: CreateAppointmentDto) {
-    const tenantId = req.user?.tenantId as string;
-    const userId = req.user?.id as string;
-    return this.appointmentsService.create(tenantId, userId, dto);
+  create(@CurrentUser() user: AuthUser, @Body() dto: CreateAppointmentDto) {
+    return this.appointmentsService.create(
+      user.tenantId,
+      user.id,
+      user.role,
+      dto,
+    );
   }
 
   // Listar appointments de um dia (com providerId opcional)
