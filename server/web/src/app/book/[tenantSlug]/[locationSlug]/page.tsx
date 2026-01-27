@@ -4,13 +4,14 @@ import React, { useEffect, useMemo, useState } from "react";
 import { useParams } from "next/navigation";
 import { ApiError } from "@/lib/api-client";
 import {
-  fetchPublicBookingData,
+  fetchPublicBookingDataBySlug,
   PublicBookingData,
-} from "../_api/public-booking";
+} from "../../_api/public-booking";
 import {
   fetchPublicDayAppointments,
   PublicAppointment,
-} from "../_api/public-availability";
+} from "../../_api/public-availability";
+import { createPublicAppointmentBySlug } from "../../../book/_api/public-create-appointment";
 
 function formatDateYYYYMMDD(date: Date): string {
   const y = date.getFullYear();
@@ -25,22 +26,32 @@ function addDays(date: Date, amount: number): Date {
   return result;
 }
 
-export default function BookPage() {
+export default function BookBySlugPage() {
   const params = useParams();
-  const locationId = (params as any)?.locationId as string | undefined;
+  const tenantSlug = (params as any)?.tenantSlug as string | undefined;
+  const locationSlug = (params as any)?.locationSlug as string | undefined;
 
   const [data, setData] = useState<PublicBookingData | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
-  // Step 1 selections
   const [serviceId, setServiceId] = useState<string>("");
   const [providerId, setProviderId] = useState<string>("");
 
-  // disponibilidade
   const [dayAppts, setDayAppts] = useState<PublicAppointment[]>([]);
   const [slotsLoading, setSlotsLoading] = useState(false);
   const [selectedTime, setSelectedTime] = useState<string | null>(null);
+
+  const [noAvailabilityMsg, setNoAvailabilityMsg] = useState<string | null>(
+    null,
+  );
+
+  // ✅ dados do cliente + submit
+  const [customerName, setCustomerName] = useState("");
+  const [customerPhone, setCustomerPhone] = useState("");
+  const [submitting, setSubmitting] = useState(false);
+  const [submitError, setSubmitError] = useState<string | null>(null);
+  const [submitOk, setSubmitOk] = useState<string | null>(null);
 
   const today = useMemo(() => new Date(), []);
   const [selectedDate, setSelectedDate] = useState<Date>(() => new Date());
@@ -53,25 +64,40 @@ export default function BookPage() {
     [today],
   );
 
-  // bookingStepMin SEMPRE definido (mesmo sem data)
+  const services = data?.services ?? [];
+  const providers = data?.providers ?? [];
+
+  const selectedService = useMemo(
+    () => services.find((s) => s.id === serviceId) ?? null,
+    [services, serviceId],
+  );
+
+  const selectedServiceDurationMin = useMemo(() => {
+    const raw = selectedService?.durationMin ?? 30;
+    return Number.isFinite(raw) && raw > 0 ? raw : 30;
+  }, [selectedService?.durationMin]);
+
   const bookingStepMin = useMemo(() => {
     const raw = data?.location?.bookingIntervalMin ?? 30;
     const allowed = [5, 10, 15, 20, 30, 45, 60] as const;
     return (allowed as readonly number[]).includes(raw) ? raw : 30;
   }, [data?.location?.bookingIntervalMin]);
 
-  // slots do dia (mesmo sem data -> [])
-  const daySlots = useMemo(() => {
+  const getDaySlotsForDate = (date: Date) => {
     const template = data?.location?.businessHoursTemplate;
     if (!template) return [];
 
-    const weekdayKey = getWeekdayKeyLocal(selectedDate);
+    const weekdayKey = getWeekdayKeyLocal(date);
     const raw = template[weekdayKey] ?? [];
     const intervals = normalizeIntervals(raw);
-    return buildSlotsFromIntervals(intervals, bookingStepMin);
-  }, [data?.location?.businessHoursTemplate, selectedDate, bookingStepMin]);
 
-  // isToday + nowMinutes (para bloquear horários passados)
+    return buildSlotsFromIntervals(
+      intervals,
+      bookingStepMin,
+      selectedServiceDurationMin,
+    );
+  };
+
   const isToday = useMemo(() => {
     const now = new Date();
     return formatDateYYYYMMDD(now) === selectedDateStr;
@@ -82,9 +108,8 @@ export default function BookPage() {
     return now.getHours() * 60 + now.getMinutes();
   }, []);
 
-  // calcula slots ocupados baseado nos appointments
-  const occupiedSlots = useMemo(() => {
-    const ranges = (dayAppts ?? [])
+  const busyRanges = useMemo(() => {
+    return (dayAppts ?? [])
       .filter((a) => a.status !== "cancelled")
       .map((a) => {
         const s = new Date(a.startAt);
@@ -94,38 +119,54 @@ export default function BookPage() {
           endMin: e.getHours() * 60 + e.getMinutes(),
         };
       });
+  }, [dayAppts]);
 
-    const set = new Set<string>();
+  const daySlots = useMemo(() => {
+    return getDaySlotsForDate(selectedDate);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [
+    data?.location?.businessHoursTemplate,
+    selectedDateStr,
+    bookingStepMin,
+    selectedServiceDurationMin,
+  ]);
 
-    for (const slot of daySlots) {
-      const sMin = timeStrToMinutes(slot);
-      const eMin = sMin + bookingStepMin;
+  const availableSlots = useMemo(() => {
+    return daySlots.filter((t) => {
+      const sMin = timeStrToMinutes(t);
+      const eMin = sMin + selectedServiceDurationMin;
 
-      if (ranges.some((r) => overlaps(sMin, eMin, r.startMin, r.endMin))) {
-        set.add(slot);
-      }
-    }
+      if (isToday && eMin <= nowMinutes) return false;
 
-    return set;
-  }, [dayAppts, daySlots, bookingStepMin]);
+      const busy = busyRanges.some((r) =>
+        overlaps(sMin, eMin, r.startMin, r.endMin),
+      );
+      if (busy) return false;
 
-  // 1) Carrega dados públicos da location
+      return true;
+    });
+  }, [daySlots, busyRanges, isToday, nowMinutes, selectedServiceDurationMin]);
+
+  // load by slug
   useEffect(() => {
     let alive = true;
 
     async function load() {
-      if (!locationId) return;
+      if (!tenantSlug || !locationSlug) return;
 
       try {
         setLoading(true);
         setError(null);
 
-        const res = await fetchPublicBookingData(locationId);
+        const res = await fetchPublicBookingDataBySlug({
+          tenantSlug,
+          locationSlug,
+        });
+
         if (!alive) return;
 
         setData(res);
 
-        // defaults (serviço/profissional)
         const firstServiceId = res.services?.[0]?.id ?? "";
         const firstProviderId = res.providers?.[0]?.id ?? "";
 
@@ -147,56 +188,165 @@ export default function BookPage() {
     return () => {
       alive = false;
     };
-  }, [locationId]);
+  }, [tenantSlug, locationSlug]);
 
-  // 2) quando mudar serviço/profissional/dia, reseta horário selecionado
   useEffect(() => {
     setSelectedTime(null);
+    setSubmitOk(null);
+    setSubmitError(null);
   }, [serviceId, providerId, selectedDateStr]);
 
-  // 3) carrega appointments do dia (público) para bloquear horários
   useEffect(() => {
     let alive = true;
 
-    async function loadDay() {
+    async function loadDayAndMaybeJump() {
       if (!data?.location?.id) return;
       if (!providerId) return;
 
       try {
         setSlotsLoading(true);
+        setNoAvailabilityMsg(null);
 
-        const list = await fetchPublicDayAppointments({
-          locationId: data.location.id,
-          providerId,
-          date: selectedDateStr,
-        });
+        const horizonDays = 30;
 
-        if (!alive) return;
-        setDayAppts(Array.isArray(list) ? list : []);
+        for (let i = 0; i <= horizonDays; i++) {
+          if (!alive) return;
+
+          const candidateDate = addDays(selectedDate, i);
+          const candidateStr = formatDateYYYYMMDD(candidateDate);
+
+          const slots = getDaySlotsForDate(candidateDate);
+          if (slots.length === 0) continue;
+
+          const appts = await fetchPublicDayAppointments({
+            locationId: data.location.id,
+            providerId,
+            date: candidateStr,
+          });
+
+          if (!alive) return;
+
+          const ranges = (appts ?? [])
+            .filter((a) => a.status !== "cancelled")
+            .map((a) => {
+              const s = new Date(a.startAt);
+              const e = new Date(a.endAt);
+              return {
+                startMin: s.getHours() * 60 + s.getMinutes(),
+                endMin: e.getHours() * 60 + e.getMinutes(),
+              };
+            });
+
+          const now = new Date();
+          const isTodayCandidate = formatDateYYYYMMDD(now) === candidateStr;
+          const nowMin = now.getHours() * 60 + now.getMinutes();
+
+          const filtered = slots.filter((t) => {
+            const sMin = timeStrToMinutes(t);
+            const eMin = sMin + selectedServiceDurationMin;
+
+            if (isTodayCandidate && eMin <= nowMin) return false;
+
+            const busy = ranges.some((r) =>
+              overlaps(sMin, eMin, r.startMin, r.endMin),
+            );
+            if (busy) return false;
+
+            return true;
+          });
+
+          if (filtered.length > 0) {
+            if (candidateStr !== selectedDateStr) {
+              setSelectedDate(candidateDate);
+            }
+            setDayAppts(Array.isArray(appts) ? appts : []);
+            return;
+          }
+        }
+
+        setNoAvailabilityMsg("Sem horários disponíveis nos próximos 30 dias.");
+        setDayAppts([]);
       } catch (err) {
         console.warn("Falha ao carregar disponibilidade pública:", err);
         if (!alive) return;
+        setNoAvailabilityMsg("Falha ao carregar disponibilidade.");
         setDayAppts([]);
       } finally {
         if (alive) setSlotsLoading(false);
       }
     }
 
-    loadDay();
+    loadDayAndMaybeJump();
     return () => {
       alive = false;
     };
-  }, [data?.location?.id, providerId, selectedDateStr]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [
+    data?.location?.id,
+    providerId,
+    selectedDateStr,
+    bookingStepMin,
+    selectedServiceDurationMin,
+  ]);
 
-  // -------- RENDER --------
+  async function handleConfirm() {
+    if (!tenantSlug || !locationSlug) return;
+
+    setSubmitOk(null);
+    setSubmitError(null);
+
+    if (!serviceId || !providerId || !selectedTime) {
+      setSubmitError("Selecione serviço, profissional e horário.");
+      return;
+    }
+
+    const name = customerName.trim();
+    const phone = customerPhone.trim();
+
+    if (!name || !phone) {
+      setSubmitError("Informe nome e telefone.");
+      return;
+    }
+
+    try {
+      setSubmitting(true);
+
+      await createPublicAppointmentBySlug({
+        tenantSlug,
+        locationSlug,
+        payload: {
+          serviceId,
+          providerId,
+          date: selectedDateStr,
+          time: selectedTime,
+          customerName: name,
+          customerPhone: phone,
+        },
+      });
+
+      setSubmitOk("Agendamento confirmado!");
+      setSelectedTime(null);
+
+      // ✅ recarrega a agenda do dia pra bloquear o horário recém-reservado
+      const appts = await fetchPublicDayAppointments({
+        locationId: data!.location.id,
+        providerId,
+        date: selectedDateStr,
+      });
+      setDayAppts(Array.isArray(appts) ? appts : []);
+    } catch (err: any) {
+      const msg =
+        err instanceof ApiError
+          ? err.message
+          : "Erro ao confirmar agendamento.";
+      setSubmitError(msg);
+    } finally {
+      setSubmitting(false);
+    }
+  }
 
   const locationName = data?.location?.name ?? "Agendamento online";
-
-  const services = data?.services ?? [];
-  const providers = data?.providers ?? [];
-
-  const selectedServiceName =
-    services.find((s) => s.id === serviceId)?.name ?? "-";
+  const selectedServiceName = selectedService?.name ?? "-";
   const selectedProviderName =
     providers.find((p) => p.id === providerId)?.name ?? "-";
 
@@ -218,7 +368,6 @@ export default function BookPage() {
     );
   }
 
-  // se não veio data, mostra erro amigável (mas SEM quebrar hooks)
   if (!data) {
     return (
       <div className="min-h-screen bg-slate-950 text-slate-100 flex items-center justify-center">
@@ -246,7 +395,6 @@ export default function BookPage() {
         </p>
 
         <div className="mt-5 space-y-4">
-          {/* Serviço */}
           <div>
             <p className="text-[11px] text-slate-400 mb-1">Serviço</p>
 
@@ -272,7 +420,6 @@ export default function BookPage() {
             )}
           </div>
 
-          {/* Profissional */}
           <div>
             <p className="text-[11px] text-slate-400 mb-1">Profissional</p>
 
@@ -295,7 +442,6 @@ export default function BookPage() {
             )}
           </div>
 
-          {/* Data */}
           <div>
             <p className="text-[11px] text-slate-400 mb-1">Dia</p>
             <input
@@ -311,7 +457,6 @@ export default function BookPage() {
             />
           </div>
 
-          {/* Preview */}
           <div className="rounded-xl border border-slate-800 bg-slate-950/40 p-3 text-xs text-slate-300">
             <p className="text-[11px] text-slate-500 mb-1">Seleção atual</p>
             <p>
@@ -327,7 +472,6 @@ export default function BookPage() {
             </p>
           </div>
 
-          {/* Horários */}
           <div className="rounded-xl border border-slate-800 bg-slate-950/30 p-3">
             <div className="flex items-center justify-between mb-2">
               <p className="text-[11px] uppercase tracking-wide text-slate-500">
@@ -345,42 +489,29 @@ export default function BookPage() {
               <p className="text-xs text-slate-400">
                 Selecione um serviço e um profissional para ver horários.
               </p>
-            ) : daySlots.length === 0 ? (
+            ) : noAvailabilityMsg ? (
+              <p className="text-xs text-rose-200">{noAvailabilityMsg}</p>
+            ) : availableSlots.length === 0 ? (
               <p className="text-xs text-slate-400">
-                Sem horários configurados para este dia.
+                Sem horários disponíveis.
               </p>
             ) : (
               <div className="grid grid-cols-4 gap-2">
-                {daySlots.map((t) => {
-                  const sMin = timeStrToMinutes(t);
-                  const eMin = sMin + bookingStepMin;
-
-                  const past = isToday && eMin <= nowMinutes;
-                  const busy = occupiedSlots.has(t);
+                {availableSlots.map((t) => {
                   const active = selectedTime === t;
 
                   return (
                     <button
                       key={t}
                       type="button"
-                      disabled={past || busy}
                       onClick={() => setSelectedTime(t)}
                       className={[
                         "px-2 py-2 rounded-lg border text-[12px] transition-colors",
                         active
                           ? "border-emerald-500 bg-emerald-500/15 text-emerald-100"
                           : "border-slate-800 bg-slate-900/40 text-slate-100 hover:bg-slate-900/60",
-                        past || busy
-                          ? "opacity-40 cursor-not-allowed hover:bg-slate-900/40"
-                          : "",
                       ].join(" ")}
-                      title={
-                        busy
-                          ? "Indisponível"
-                          : past
-                            ? "Horário já passou"
-                            : "Selecionar horário"
-                      }
+                      title="Selecionar horário"
                     >
                       {t}
                     </button>
@@ -395,6 +526,65 @@ export default function BookPage() {
                 <span className="text-slate-100 font-semibold">
                   {selectedTime}
                 </span>
+              </p>
+            )}
+          </div>
+
+          {/* ✅ DADOS DO CLIENTE + CONFIRMAR */}
+          <div className="rounded-xl border border-slate-800 bg-slate-950/30 p-3 space-y-3">
+            <p className="text-[11px] uppercase tracking-wide text-slate-500">
+              Confirmar agendamento
+            </p>
+
+            <div>
+              <p className="text-[11px] text-slate-400 mb-1">Nome</p>
+              <input
+                value={customerName}
+                onChange={(e) => setCustomerName(e.target.value)}
+                className="w-full rounded-md bg-slate-900/60 border border-slate-700 px-2 py-2 text-[13px] text-slate-100 outline-none focus:border-emerald-500"
+                placeholder="Ex: João Silva"
+              />
+            </div>
+
+            <div>
+              <p className="text-[11px] text-slate-400 mb-1">Telefone</p>
+              <input
+                value={customerPhone}
+                onChange={(e) => setCustomerPhone(e.target.value)}
+                className="w-full rounded-md bg-slate-900/60 border border-slate-700 px-2 py-2 text-[13px] text-slate-100 outline-none focus:border-emerald-500"
+                placeholder="Ex: +351 9xx xxx xxx"
+              />
+            </div>
+
+            {submitError && (
+              <div className="rounded-md border border-rose-500/40 bg-rose-500/10 px-3 py-2 text-xs text-rose-200">
+                {submitError}
+              </div>
+            )}
+
+            {submitOk && (
+              <div className="rounded-md border border-emerald-500/40 bg-emerald-500/10 px-3 py-2 text-xs text-emerald-200">
+                {submitOk}
+              </div>
+            )}
+
+            <button
+              type="button"
+              disabled={submitting || !selectedTime}
+              onClick={handleConfirm}
+              className={[
+                "w-full rounded-lg px-3 py-2 text-sm font-semibold border transition-colors",
+                submitting || !selectedTime
+                  ? "border-slate-800 bg-slate-900/40 text-slate-500 cursor-not-allowed"
+                  : "border-emerald-500 bg-emerald-500/15 text-emerald-100 hover:bg-emerald-500/25",
+              ].join(" ")}
+            >
+              {submitting ? "Confirmando..." : "Confirmar agendamento"}
+            </button>
+
+            {!selectedTime && (
+              <p className="text-[11px] text-slate-500">
+                Selecione um horário para habilitar o botão.
               </p>
             )}
           </div>
@@ -438,7 +628,11 @@ function normalizeIntervals(raw: any): DayInterval[] {
     .filter(Boolean) as DayInterval[];
 }
 
-function buildSlotsFromIntervals(intervals: DayInterval[], stepMin: number) {
+function buildSlotsFromIntervals(
+  intervals: DayInterval[],
+  stepMin: number,
+  serviceDurationMin: number,
+) {
   const out: string[] = [];
 
   for (const itv of intervals) {
@@ -448,8 +642,7 @@ function buildSlotsFromIntervals(intervals: DayInterval[], stepMin: number) {
     if (!Number.isFinite(startMin) || !Number.isFinite(endMin)) continue;
     if (endMin <= startMin) continue;
 
-    for (let m = startMin; m <= endMin; m += stepMin) {
-      if (m > endMin) break;
+    for (let m = startMin; m + serviceDurationMin <= endMin; m += stepMin) {
       out.push(minutesToTimeStr(m));
     }
   }

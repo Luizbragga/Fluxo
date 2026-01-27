@@ -7,6 +7,8 @@ export type PublicBookingData = {
     bookingIntervalMin: number | null;
     businessHoursTemplate?: Record<string, [string, string][]> | null;
     tenantId: string;
+    slug?: string | null;
+    active?: boolean | null;
   };
   services: Array<{
     id: string;
@@ -21,10 +23,16 @@ export type PublicBookingData = {
 };
 
 export async function fetchPublicBookingData(locationId: string) {
-  // IMPORTANTE: seu swagger mostra /v1/public/booking/:locationId
-  // e seu apiClient provavelmente já tem baseURL com /v1 embutido.
-  // Então aqui usamos "/public/booking/..."
   return apiClient<PublicBookingData>(
     `/public/booking/${encodeURIComponent(locationId)}`,
+  );
+}
+
+export async function fetchPublicBookingDataBySlug(params: {
+  tenantSlug: string;
+  locationSlug: string;
+}) {
+  return apiClient<PublicBookingData>(
+    `/public/booking/${encodeURIComponent(params.tenantSlug)}/${encodeURIComponent(params.locationSlug)}`,
   );
 }

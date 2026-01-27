@@ -4,7 +4,13 @@ export type PublicAppointment = {
   id: string;
   startAt: string; // ISO
   endAt: string; // ISO
-  status?: "scheduled" | "in_service" | "done" | "no_show" | "cancelled";
+  status?:
+    | "scheduled"
+    | "in_service"
+    | "done"
+    | "no_show"
+    | "cancelled"
+    | "blocked";
 };
 
 export async function fetchPublicDayAppointments(params: {
@@ -18,7 +24,6 @@ export async function fetchPublicDayAppointments(params: {
     date: params.date,
   });
 
-  // endpoint público que vamos assumir (e ajustar se o teu swagger for diferente)
   return apiClient<PublicAppointment[]>(
     `/public/appointments?${qs.toString()}`,
   );
