@@ -22,12 +22,6 @@ export type PublicBookingData = {
   }>;
 };
 
-export async function fetchPublicBookingData(locationId: string) {
-  return apiClient<PublicBookingData>(
-    `/public/booking/${encodeURIComponent(locationId)}`,
-  );
-}
-
 export async function fetchPublicBookingDataBySlug(params: {
   tenantSlug: string;
   locationSlug: string;
