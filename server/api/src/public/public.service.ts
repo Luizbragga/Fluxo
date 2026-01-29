@@ -3,15 +3,18 @@ import {
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
-import { Prisma, AppointmentState } from '@prisma/client';
+import { AppointmentState, Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { CreatePublicAppointmentDto } from './dto/create-public-appointment.dto';
+import { CreatePublicCheckoutDto } from './dto/create-public-checkout.dto';
+import Stripe from 'stripe';
 
 type PublicRange = {
   id: string;
   startAt: string; // ISO
   endAt: string; // ISO
   status:
+    | 'pending_payment'
     | 'scheduled'
     | 'in_service'
     | 'done'
@@ -20,24 +23,72 @@ type PublicRange = {
     | 'blocked';
 };
 
+type ResolvedLocation = {
+  tenantId: string;
+  id: string;
+  name: string;
+  slug: string;
+  active: boolean;
+  bookingIntervalMin: number | null;
+  businessHoursTemplate: any;
+  bookingPaymentPolicy: 'offline_only' | 'online_optional' | 'online_required';
+  bookingDepositPercent: number;
+};
+
 @Injectable()
 export class PublicService {
-  constructor(private readonly prisma: PrismaService) {}
+  private stripe: Stripe | null = null;
+
+  constructor(private readonly prisma: PrismaService) {
+    const key = process.env.STRIPE_SECRET_KEY;
+    if (key) {
+      this.stripe = new Stripe(key, {
+        apiVersion: '2024-06-20' as Stripe.LatestApiVersion,
+      });
+    }
+  }
+
+  private requireStripe() {
+    if (!this.stripe) {
+      throw new BadRequestException(
+        'Stripe não configurado (STRIPE_SECRET_KEY ausente).',
+      );
+    }
+    return this.stripe;
+  }
 
   // -----------------------------
-  // LEGADO - por locationId (id)
+  // Helpers (slug -> location)
   // -----------------------------
-  async getPublicBookingData(locationId: string) {
-    const location = await this.prisma.location.findUnique({
-      where: { id: locationId },
+  private async resolveLocationBySlug(
+    tenantSlug: string,
+    locationSlug: string,
+  ): Promise<ResolvedLocation> {
+    const tenant = await this.prisma.tenant.findUnique({
+      where: { slug: tenantSlug },
+      select: { id: true },
+    });
+
+    if (!tenant) {
+      throw new NotFoundException('Tenant não encontrado.');
+    }
+
+    const location = await this.prisma.location.findFirst({
+      where: {
+        tenantId: tenant.id,
+        slug: locationSlug,
+        active: true,
+      },
       select: {
+        tenantId: true,
         id: true,
         name: true,
-        bookingIntervalMin: true,
-        businessHoursTemplate: true,
-        tenantId: true,
         slug: true,
         active: true,
+        bookingIntervalMin: true,
+        businessHoursTemplate: true,
+        bookingPaymentPolicy: true,
+        bookingDepositPercent: true,
       },
     });
 
@@ -45,12 +96,22 @@ export class PublicService {
       throw new NotFoundException('Location não encontrada.');
     }
 
+    return {
+      ...location,
+      bookingPaymentPolicy: location.bookingPaymentPolicy as any,
+      bookingDepositPercent: Number(location.bookingDepositPercent ?? 0),
+    };
+  }
+
+  // -----------------------------
+  // PUBLIC BOOKING DATA (slug)
+  // -----------------------------
+  async getPublicBookingDataBySlug(tenantSlug: string, locationSlug: string) {
+    const location = await this.resolveLocationBySlug(tenantSlug, locationSlug);
+
     const [services, providers] = await Promise.all([
       this.prisma.service.findMany({
-        where: {
-          locationId,
-          active: true,
-        },
+        where: { locationId: location.id, active: true },
         select: {
           id: true,
           name: true,
@@ -61,10 +122,7 @@ export class PublicService {
       }),
 
       this.prisma.provider.findMany({
-        where: {
-          locationId,
-          active: true,
-        },
+        where: { locationId: location.id, active: true },
         select: {
           id: true,
           name: true,
@@ -75,7 +133,18 @@ export class PublicService {
     ]);
 
     return {
-      location,
+      location: {
+        id: location.id,
+        name: location.name,
+        slug: location.slug,
+        tenantId: location.tenantId,
+        bookingIntervalMin: location.bookingIntervalMin,
+        businessHoursTemplate: location.businessHoursTemplate,
+        active: location.active,
+
+        bookingPaymentPolicy: location.bookingPaymentPolicy,
+        bookingDepositPercent: location.bookingDepositPercent,
+      },
       services,
       providers: providers.map((p) => ({
         id: p.id,
@@ -84,24 +153,60 @@ export class PublicService {
     };
   }
 
-  async createPublicAppointment(
-    locationId: string,
+  // -----------------------------
+  // CREATE APPOINTMENT OFFLINE (slug)
+  // - se policy = online_required -> bloqueia e manda usar /checkout
+  // -----------------------------
+  async createPublicAppointmentBySlug(
+    tenantSlug: string,
+    locationSlug: string,
     dto: CreatePublicAppointmentDto,
   ) {
-    const location = await this.prisma.location.findUnique({
-      where: { id: locationId },
-      select: {
-        id: true,
-        tenantId: true,
-        bookingIntervalMin: true,
-        businessHoursTemplate: true,
-        active: true,
-      },
-    });
+    const location = await this.resolveLocationBySlug(tenantSlug, locationSlug);
 
-    if (!location || !location.active) {
-      throw new NotFoundException('Location não encontrada.');
+    if (location.bookingPaymentPolicy === 'online_required') {
+      throw new BadRequestException(
+        'Pagamento online obrigatório nesta unidade. Use o endpoint /checkout.',
+      );
     }
+
+    return this.createPublicAppointmentCore(location, dto, {
+      status: AppointmentState.scheduled,
+    });
+  }
+
+  // -----------------------------
+  // CHECKOUT (Stripe) + policy (slug)
+  // -----------------------------
+  async createCheckoutBySlug(
+    tenantSlug: string,
+    locationSlug: string,
+    dto: CreatePublicCheckoutDto,
+  ) {
+    const location = await this.resolveLocationBySlug(tenantSlug, locationSlug);
+
+    // offline_only -> nunca cria checkout
+    if (location.bookingPaymentPolicy === 'offline_only') {
+      return this.createPublicAppointmentCore(location, dto as any, {
+        status: AppointmentState.scheduled,
+      });
+    }
+
+    // online_optional -> cliente escolhe; default = offline
+    const payOnline =
+      location.bookingPaymentPolicy === 'online_optional'
+        ? !!dto.payOnline
+        : true;
+
+    // online_optional com payOnline=false -> cria offline normal
+    if (location.bookingPaymentPolicy === 'online_optional' && !payOnline) {
+      return this.createPublicAppointmentCore(location, dto as any, {
+        status: AppointmentState.scheduled,
+      });
+    }
+
+    // online_required OU online_optional com payOnline=true
+    const stripe = this.requireStripe();
 
     const service = await this.prisma.service.findFirst({
       where: { id: dto.serviceId, locationId: location.id, active: true },
@@ -114,7 +219,177 @@ export class PublicService {
 
     const provider = await this.prisma.provider.findFirst({
       where: { id: dto.providerId, locationId: location.id, active: true },
-      select: { id: true, tenantId: true },
+      select: { id: true },
+    });
+
+    if (!provider) {
+      throw new BadRequestException(
+        'Profissional inválido para esta location.',
+      );
+    }
+
+    // cria appointment pendente (segura o slot)
+    const createdPending = await this.createPublicAppointmentCore(
+      location,
+      dto as any,
+      { status: AppointmentState.pending_payment },
+    );
+
+    const appointmentId = createdPending?.appointment?.id;
+    if (!appointmentId) {
+      throw new BadRequestException('Falha ao criar agendamento pendente.');
+    }
+
+    // sinal vs total
+    const percent = clampInt(location.bookingDepositPercent ?? 0, 0, 100);
+    const kind = percent > 0 && percent < 100 ? 'deposit' : 'full';
+    const amountCents =
+      kind === 'deposit'
+        ? Math.max(50, Math.round((service.priceCents * percent) / 100))
+        : service.priceCents;
+
+    const bookingPayment = await this.prisma.bookingPayment.create({
+      data: {
+        tenantId: location.tenantId,
+        locationId: location.id,
+        appointmentId,
+
+        kind: kind as any,
+        status: 'processing' as any,
+
+        amountCents,
+        currency: 'EUR',
+      },
+      select: { id: true },
+    });
+
+    const frontBase = process.env.STRIPE_PUBLIC_BASE_URL;
+    if (!frontBase) {
+      throw new BadRequestException('STRIPE_PUBLIC_BASE_URL não configurado.');
+    }
+
+    const successUrl = `${frontBase}/book/${tenantSlug}/${locationSlug}?success=1&session_id={CHECKOUT_SESSION_ID}`;
+    const cancelUrl = `${frontBase}/book/${tenantSlug}/${locationSlug}?canceled=1`;
+
+    const session = await stripe.checkout.sessions.create({
+      mode: 'payment',
+      success_url: successUrl,
+      cancel_url: cancelUrl,
+      line_items: [
+        {
+          quantity: 1,
+          price_data: {
+            currency: 'eur',
+            unit_amount: amountCents,
+            product_data: {
+              name:
+                kind === 'deposit'
+                  ? `Sinal (${percent}%) · ${service.name}`
+                  : service.name,
+            },
+          },
+        },
+      ],
+      metadata: {
+        tenantId: location.tenantId,
+        locationId: location.id,
+        appointmentId,
+        bookingPaymentId: bookingPayment.id,
+      },
+    });
+
+    await this.prisma.bookingPayment.update({
+      where: { id: bookingPayment.id },
+      data: { stripeCheckoutSessionId: session.id },
+    });
+
+    return {
+      ok: true,
+      mode: 'stripe',
+      checkoutUrl: session.url,
+      appointmentId,
+    };
+  }
+
+  // -----------------------------
+  // DISPONIBILIDADE DO DIA (slug)
+  // appointments + blocks
+  // -----------------------------
+  async getPublicDayAppointmentsBySlug(params: {
+    tenantSlug: string;
+    locationSlug: string;
+    providerId: string;
+    date: string; // YYYY-MM-DD
+  }): Promise<PublicRange[]> {
+    const { tenantSlug, locationSlug, providerId, date } = params;
+
+    if (!tenantSlug || !locationSlug || !providerId || !date) {
+      throw new BadRequestException(
+        'tenantSlug, locationSlug, providerId e date são obrigatórios.',
+      );
+    }
+
+    const location = await this.resolveLocationBySlug(tenantSlug, locationSlug);
+    const { start, end } = dayUtcRange(date);
+
+    const appts = await this.prisma.appointment.findMany({
+      where: {
+        locationId: location.id,
+        providerId,
+        startAt: { gte: start },
+        endAt: { lte: end },
+      },
+      select: { id: true, startAt: true, endAt: true, status: true },
+      orderBy: { startAt: 'asc' },
+    });
+
+    const blocks = await this.prisma.block.findMany({
+      where: {
+        tenantId: location.tenantId,
+        providerId,
+        startAt: { lt: end },
+        endAt: { gt: start },
+      },
+      select: { id: true, startAt: true, endAt: true },
+      orderBy: { startAt: 'asc' },
+    });
+
+    return [
+      ...appts.map((a) => ({
+        id: a.id,
+        startAt: a.startAt.toISOString(),
+        endAt: a.endAt.toISOString(),
+        status: (a.status as any) ?? 'scheduled',
+      })),
+      ...blocks.map((b) => ({
+        id: `block_${b.id}`,
+        startAt: b.startAt.toISOString(),
+        endAt: b.endAt.toISOString(),
+        status: 'blocked' as const,
+      })),
+    ];
+  }
+
+  // -----------------------------
+  // CORE: cria appointment com validações
+  // -----------------------------
+  private async createPublicAppointmentCore(
+    location: ResolvedLocation,
+    dto: CreatePublicAppointmentDto,
+    opts: { status: AppointmentState },
+  ) {
+    const service = await this.prisma.service.findFirst({
+      where: { id: dto.serviceId, locationId: location.id, active: true },
+      select: { id: true, durationMin: true, name: true, priceCents: true },
+    });
+
+    if (!service) {
+      throw new BadRequestException('Serviço inválido para esta location.');
+    }
+
+    const provider = await this.prisma.provider.findFirst({
+      where: { id: dto.providerId, locationId: location.id, active: true },
+      select: { id: true },
     });
 
     if (!provider) {
@@ -152,7 +427,7 @@ export class PublicService {
       throw new BadRequestException('Horário fora do expediente.');
     }
 
-    // conflito com BLOCKS (public)
+    // conflito com BLOCKS
     const blockConflict = await this.prisma.block.findFirst({
       where: {
         tenantId: location.tenantId,
@@ -167,7 +442,7 @@ export class PublicService {
       throw new BadRequestException('Este horário não está disponível.');
     }
 
-    // conflito com appointments (overlap) — considera qualquer coisa que não esteja cancelled
+    // conflito com appointments — considera qualquer coisa que não esteja cancelled
     const conflict = await this.prisma.appointment.findFirst({
       where: {
         locationId: location.id,
@@ -186,9 +461,8 @@ export class PublicService {
     }
 
     // Customer por (tenantId, phone)
-    let customerId: string | undefined;
-    const phone = dto.customerPhone.trim();
-    const name = dto.customerName.trim();
+    const phone = dto.customerPhone?.trim();
+    const name = dto.customerName?.trim();
 
     if (!phone || !name) {
       throw new BadRequestException(
@@ -201,19 +475,14 @@ export class PublicService {
       select: { id: true },
     });
 
-    if (existingCustomer?.id) {
-      customerId = existingCustomer.id;
-    } else {
-      const createdCustomer = await this.prisma.customer.create({
-        data: {
-          tenantId: location.tenantId,
-          name,
-          phone,
-        },
-        select: { id: true },
-      });
-      customerId = createdCustomer.id;
-    }
+    const customerId =
+      existingCustomer?.id ??
+      (
+        await this.prisma.customer.create({
+          data: { tenantId: location.tenantId, name, phone },
+          select: { id: true },
+        })
+      ).id;
 
     const data: Prisma.AppointmentUncheckedCreateInput = {
       tenantId: location.tenantId,
@@ -233,7 +502,7 @@ export class PublicService {
       clientName: name,
       clientPhone: phone,
 
-      status: AppointmentState.scheduled,
+      status: opts.status,
       customerId,
     };
 
@@ -249,133 +518,14 @@ export class PublicService {
 
     return { ok: true, appointment: created };
   }
-
-  // -----------------------------
-  // NOVO - por slug (tenant/location)
-  // -----------------------------
-  private async resolveLocationBySlug(
-    tenantSlug: string,
-    locationSlug: string,
-  ) {
-    const tenant = await this.prisma.tenant.findUnique({
-      where: { slug: tenantSlug },
-      select: { id: true },
-    });
-
-    if (!tenant) {
-      throw new NotFoundException('Tenant não encontrado.');
-    }
-
-    const location = await this.prisma.location.findFirst({
-      where: {
-        tenantId: tenant.id,
-        slug: locationSlug,
-        active: true,
-      },
-      select: { id: true },
-    });
-
-    if (!location) {
-      throw new NotFoundException('Location não encontrada.');
-    }
-
-    return location.id;
-  }
-
-  async getPublicBookingDataBySlug(tenantSlug: string, locationSlug: string) {
-    const locationId = await this.resolveLocationBySlug(
-      tenantSlug,
-      locationSlug,
-    );
-    return this.getPublicBookingData(locationId);
-  }
-
-  async createPublicAppointmentBySlug(
-    tenantSlug: string,
-    locationSlug: string,
-    dto: CreatePublicAppointmentDto,
-  ) {
-    const locationId = await this.resolveLocationBySlug(
-      tenantSlug,
-      locationSlug,
-    );
-    return this.createPublicAppointment(locationId, dto);
-  }
-
-  // -----------------------------
-  // DISPONIBILIDADE DO DIA (public)
-  // appointments + blocks
-  // -----------------------------
-  async getPublicDayAppointments(params: {
-    locationId: string;
-    providerId: string;
-    date: string; // YYYY-MM-DD
-  }): Promise<PublicRange[]> {
-    const { locationId, providerId, date } = params;
-
-    if (!locationId || !providerId || !date) {
-      throw new BadRequestException(
-        'locationId, providerId e date são obrigatórios.',
-      );
-    }
-
-    const { start, end } = dayUtcRange(date);
-
-    // pega tenantId da location (pra filtrar blocks corretamente)
-    const location = await this.prisma.location.findUnique({
-      where: { id: locationId },
-      select: { tenantId: true, active: true },
-    });
-
-    if (!location || !location.active) {
-      throw new NotFoundException('Location não encontrada.');
-    }
-
-    // appointments do dia
-    const appts = await this.prisma.appointment.findMany({
-      where: {
-        locationId,
-        providerId,
-        startAt: { gte: start },
-        endAt: { lte: end },
-      },
-      select: { id: true, startAt: true, endAt: true, status: true },
-      orderBy: { startAt: 'asc' },
-    });
-
-    // blocks do dia
-    const blocks = await this.prisma.block.findMany({
-      where: {
-        tenantId: location.tenantId,
-        providerId,
-        startAt: { lt: end },
-        endAt: { gt: start },
-      },
-      select: { id: true, startAt: true, endAt: true },
-      orderBy: { startAt: 'asc' },
-    });
-
-    // normaliza em uma lista única (front só precisa de ranges ocupados)
-    const out: PublicRange[] = [
-      ...appts.map((a) => ({
-        id: a.id,
-        startAt: a.startAt.toISOString(),
-        endAt: a.endAt.toISOString(),
-        status: (a.status as any) ?? 'scheduled',
-      })),
-      ...blocks.map((b) => ({
-        id: `block_${b.id}`,
-        startAt: b.startAt.toISOString(),
-        endAt: b.endAt.toISOString(),
-        status: 'blocked',
-      })),
-    ];
-
-    return out;
-  }
 }
 
 /* ----------------- helpers ----------------- */
+
+function clampInt(value: number, min: number, max: number) {
+  const v = Number.isFinite(value) ? Math.trunc(value) : 0;
+  return Math.max(min, Math.min(max, v));
+}
 
 function buildLocalDateTime(dateYYYYMMDD: string, timeHHmm: string) {
   const [y, m, d] = dateYYYYMMDD.split('-').map(Number);

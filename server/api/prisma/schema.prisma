@@ -25,6 +25,7 @@ enum Specialty {
 }
 
 enum AppointmentState {
+  pending_payment
   scheduled
   in_service
   done
@@ -58,6 +59,26 @@ enum PaymentMethod {
   other
 }
 
+enum BookingPaymentPolicy {
+  offline_only // só presencial
+  online_optional // cliente escolhe pagar online ou presencial
+  online_required // só agenda se pagar (sinal ou total)
+}
+
+enum BookingPaymentKind {
+  full
+  deposit
+}
+
+enum BookingPaymentStatus {
+  requires_action
+  processing
+  succeeded
+  canceled
+  failed
+  refunded
+}
+
 model Tenant {
   id        String  @id @default(cuid())
   brandName String?
@@ -83,6 +104,7 @@ model Tenant {
   customers            Customer[]
   invites              Invite[]
   notifications        Notification[]
+  bookingPayments      BookingPayment[]
 }
 
 model TenantSettings {
@@ -104,7 +126,7 @@ model TenantSettings {
   emailReschedule   Boolean @default(true)
 
   notifyProvidersNewBooking Boolean @default(true)
-  notifyProvidersChanges Boolean @default(true)
+  notifyProvidersChanges    Boolean @default(true)
 
   clientRemindersEnabled Boolean @default(false)
   reminderHoursBefore    Int     @default(24)
@@ -145,15 +167,22 @@ model Location {
 
   bookingIntervalMin Int?
 
-  tenant        Tenant         @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  providers     Provider[]
-  appointments  Appointment[]
-  blocks        Block[]
-  users         User[]
-  planTemplates PlanTemplate[]
-  customerPlans CustomerPlan[]
-  services      Service[]
-  invites       Invite[]
+  // --------- Pagamento no agendamento (Stripe) ---------
+  bookingPaymentPolicy BookingPaymentPolicy @default(offline_only)
+
+  // 0 = sem sinal | 100 = pagamento total
+  bookingDepositPercent Int @default(0)
+
+  tenant          Tenant           @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  providers       Provider[]
+  appointments    Appointment[]
+  blocks          Block[]
+  users           User[]
+  planTemplates   PlanTemplate[]
+  customerPlans   CustomerPlan[]
+  services        Service[]
+  invites         Invite[]
+  bookingPayments BookingPayment[]
 
   // Profissional responsável pela unidade (opcional)
   managerProviderId String?
@@ -326,6 +355,7 @@ model Appointment {
   reminderSmsSentAt  DateTime?
   customerPlanId     String?
   customerId         String?
+  bookingPayment     BookingPayment?
 
   createdById String?
   createdBy   User?   @relation(fields: [createdById], references: [id], onDelete: SetNull)
@@ -468,6 +498,34 @@ model Invite {
   @@index([tenantId])
   @@index([tenantId, role])
   @@index([locationId])
+}
+
+model BookingPayment {
+  id            String @id @default(cuid())
+  tenantId      String
+  locationId    String
+  appointmentId String @unique
+
+  kind   BookingPaymentKind
+  status BookingPaymentStatus @default(processing)
+
+  amountCents Int
+  currency    String @default("EUR")
+
+  // Stripe identifiers
+  stripePaymentIntentId   String? @unique
+  stripeCheckoutSessionId String? @unique
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  tenant      Tenant      @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  location    Location    @relation(fields: [locationId], references: [id], onDelete: Cascade)
+  appointment Appointment @relation(fields: [appointmentId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId])
+  @@index([locationId])
+  @@index([status, createdAt])
 }
 
 model Notification {

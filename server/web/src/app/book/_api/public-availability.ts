@@ -1,5 +1,4 @@
 import { apiClient } from "@/lib/api-client";
-
 export type PublicAppointment = {
   id: string;
   startAt: string; // ISO
@@ -14,6 +13,8 @@ export type PublicAppointment = {
 };
 
 export async function fetchPublicDayAppointments(params: {
+  tenantSlug: string;
+  locationSlug: string;
   locationId: string;
   providerId: string;
   date: string; // YYYY-MM-DD
@@ -25,6 +26,6 @@ export async function fetchPublicDayAppointments(params: {
   });
 
   return apiClient<PublicAppointment[]>(
-    `/public/appointments?${qs.toString()}`,
+    `/public/booking/${params.tenantSlug}/${params.locationSlug}/appointments?${qs.toString()}`,
   );
 }

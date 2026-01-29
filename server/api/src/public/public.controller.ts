@@ -2,31 +2,16 @@ import { Body, Controller, Get, Param, Post, Query } from '@nestjs/common';
 import { ApiTags, ApiQuery } from '@nestjs/swagger';
 import { PublicService } from './public.service';
 import { CreatePublicAppointmentDto } from './dto/create-public-appointment.dto';
+import { CreatePublicCheckoutDto } from './dto/create-public-checkout.dto';
 
 @ApiTags('Public')
 @Controller('public')
 export class PublicController {
   constructor(private readonly publicService: PublicService) {}
 
-  // -------------------------
-  // LEGADO (por ID) - mantém
-  // -------------------------
-  @Get('booking/:locationId')
-  async getPublicBookingData(@Param('locationId') locationId: string) {
-    return this.publicService.getPublicBookingData(locationId);
-  }
-
-  @Post('booking/:locationId/appointments')
-  async createPublicAppointment(
-    @Param('locationId') locationId: string,
-    @Body() dto: CreatePublicAppointmentDto,
-  ) {
-    return this.publicService.createPublicAppointment(locationId, dto);
-  }
-
   // ---------------------------------------------
-  // NOVO (por slug) - padrão de mercado (Fresha)
-  // /public/booking/{tenantSlug}/{locationSlug}
+  // BOOKING DATA (slug)
+  // GET /public/booking/{tenantSlug}/{locationSlug}
   // ---------------------------------------------
   @Get('booking/:tenantSlug/:locationSlug')
   async getPublicBookingDataBySlug(
@@ -39,6 +24,11 @@ export class PublicController {
     );
   }
 
+  // --------------------------------------------------------
+  // CRIAR APPOINTMENT OFFLINE (slug)
+  // POST /public/booking/{tenantSlug}/{locationSlug}/appointments
+  // Observação: se policy = online_required -> bloqueia e manda usar /checkout
+  // --------------------------------------------------------
   @Post('booking/:tenantSlug/:locationSlug/appointments')
   async createPublicAppointmentBySlug(
     @Param('tenantSlug') tenantSlug: string,
@@ -52,17 +42,28 @@ export class PublicController {
     );
   }
 
+  // -------------------------------------------------------------
+  // CHECKOUT (Stripe) + policy da Location (slug)
+  // POST /public/booking/{tenantSlug}/{locationSlug}/checkout
+  // -------------------------------------------------------------
+  @Post('booking/:tenantSlug/:locationSlug/checkout')
+  async createCheckoutBySlug(
+    @Param('tenantSlug') tenantSlug: string,
+    @Param('locationSlug') locationSlug: string,
+    @Body() dto: CreatePublicCheckoutDto,
+  ) {
+    return this.publicService.createCheckoutBySlug(
+      tenantSlug,
+      locationSlug,
+      dto,
+    );
+  }
+
   // --------------------------------------------------------
-  // DISPONIBILIDADE PÚBLICA DO DIA (appointments + blocks)
-  // GET /public/appointments?locationId=&providerId=&date=
+  // DISPONIBILIDADE PÚBLICA DO DIA (slug) (appointments + blocks)
+  // GET /public/booking/{tenantSlug}/{locationSlug}/appointments?providerId=&date=
   // --------------------------------------------------------
-  @Get('appointments')
-  @ApiQuery({
-    name: 'locationId',
-    required: true,
-    type: String,
-    description: 'ID da Location',
-  })
+  @Get('booking/:tenantSlug/:locationSlug/appointments')
   @ApiQuery({
     name: 'providerId',
     required: true,
@@ -74,15 +75,17 @@ export class PublicController {
     required: true,
     type: String,
     example: '2026-01-26',
-    description: 'YYYY-MM-DD (usado para filtrar o dia)',
+    description: 'YYYY-MM-DD (filtra o dia)',
   })
-  async getPublicDayAppointments(
-    @Query('locationId') locationId: string,
+  async getPublicDayAppointmentsBySlug(
+    @Param('tenantSlug') tenantSlug: string,
+    @Param('locationSlug') locationSlug: string,
     @Query('providerId') providerId: string,
     @Query('date') date: string,
   ) {
-    return this.publicService.getPublicDayAppointments({
-      locationId,
+    return this.publicService.getPublicDayAppointmentsBySlug({
+      tenantSlug,
+      locationSlug,
       providerId,
       date,
     });
