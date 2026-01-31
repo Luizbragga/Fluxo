@@ -219,7 +219,8 @@ export default function BookBySlugPage() {
           if (slots.length === 0) continue;
 
           const appts = await fetchPublicDayAppointments({
-            locationId: data.location.id,
+            tenantSlug: tenantSlug!,
+            locationSlug: locationSlug!,
             providerId,
             date: candidateStr,
           });
@@ -327,12 +328,13 @@ export default function BookBySlugPage() {
       setSubmitOk("Agendamento confirmado!");
       setSelectedTime(null);
 
-      // ✅ recarrega a agenda do dia pra bloquear o horário recém-reservado
       const appts = await fetchPublicDayAppointments({
-        locationId: data!.location.id,
+        tenantSlug: tenantSlug!,
+        locationSlug: locationSlug!,
         providerId,
         date: selectedDateStr,
       });
+
       setDayAppts(Array.isArray(appts) ? appts : []);
     } catch (err: any) {
       const msg =

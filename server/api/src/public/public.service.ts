@@ -369,6 +369,50 @@ export class PublicService {
       })),
     ];
   }
+  // -----------------------------
+  // PAYMENT STATUS by session_id
+  // -----------------------------
+  async getPaymentStatusBySessionId(sessionId: string) {
+    if (!sessionId?.trim()) {
+      throw new BadRequestException('session_id é obrigatório.');
+    }
+
+    const payment = await this.prisma.bookingPayment.findFirst({
+      where: { stripeCheckoutSessionId: sessionId },
+      select: {
+        id: true,
+        status: true,
+        kind: true,
+        amountCents: true,
+        currency: true,
+        appointmentId: true,
+      },
+    });
+
+    if (!payment) {
+      throw new NotFoundException(
+        'Pagamento não encontrado para este session_id.',
+      );
+    }
+
+    const appointment = await this.prisma.appointment.findUnique({
+      where: { id: payment.appointmentId },
+      select: { id: true, status: true },
+    });
+
+    return {
+      ok: true,
+      payment: {
+        id: payment.id,
+        status: payment.status,
+        kind: payment.kind,
+        amountCents: payment.amountCents,
+        currency: payment.currency,
+        appointmentId: payment.appointmentId,
+      },
+      appointment,
+    };
+  }
 
   // -----------------------------
   // CORE: cria appointment com validações
