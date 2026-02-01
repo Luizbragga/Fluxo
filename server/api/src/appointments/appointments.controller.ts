@@ -7,7 +7,6 @@ import {
   Patch,
   Post,
   Query,
-  Req,
   UseGuards,
 } from '@nestjs/common';
 import {
@@ -16,17 +15,23 @@ import {
   ApiQuery,
   ApiBody,
   getSchemaPath,
+  ApiOperation,
+  ApiParam,
+  ApiResponse,
 } from '@nestjs/swagger';
 
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { Roles } from '../auth/decorators/roles.decorator';
 import { RolesGuard } from '../auth/guards/roles.guard';
 import { Role } from '@prisma/client';
+
 import { AppointmentsService } from './appointments.service';
 import { CreateAppointmentDto } from './dto/create-appointment.dto';
 import { ListAppointmentsDayQueryDto } from './dto/list-day.query.dto';
 import { RescheduleAppointmentDto } from './dto/reschedule-appointment.dto';
 import { UpdateAppointmentStatusDto } from './dto/update-status.dto';
+import { CreateAppointmentPaymentDto } from './dto/create-appointment-payment.dto';
+
 import { CurrentUser } from '../auth/current-user.decorator';
 import type { AuthUser } from '../auth/auth-user.interface';
 
@@ -40,12 +45,69 @@ export class AppointmentsController {
   // Criar appointment (qualquer perfil interno do tenant no MVP)
   @Roles(Role.owner, Role.admin, Role.attendant, Role.provider)
   @Post()
+  @ApiOperation({ summary: 'Criar agendamento' })
   create(@CurrentUser() user: AuthUser, @Body() dto: CreateAppointmentDto) {
     return this.appointmentsService.create(
       user.tenantId,
       user.id,
       user.role,
       dto,
+    );
+  }
+
+  // Registrar pagamento manual (presencial / parcial)
+  // ✅ Provider liberado aqui — mas o SERVICE deve validar ownership (appointment do próprio provider)
+  @Roles(Role.owner, Role.admin, Role.attendant, Role.provider)
+  @Post(':id/payments')
+  @ApiOperation({ summary: 'Registrar pagamento manual no agendamento' })
+  @ApiParam({
+    name: 'id',
+    type: String,
+    example: 'cm1381j6w000fuyvw67olvu9h',
+    description: 'ID do appointment',
+  })
+  @ApiBody({ type: CreateAppointmentPaymentDto })
+  @ApiResponse({
+    status: 201,
+    description: 'Resumo de pagamentos do agendamento + lista de pagamentos',
+  })
+  addPayment(
+    @CurrentUser() user: AuthUser,
+    @Param('id') id: string,
+    @Body() dto: CreateAppointmentPaymentDto,
+  ) {
+    return this.appointmentsService.addPayment(
+      user.tenantId,
+      id,
+      user.id,
+      user.role,
+      dto,
+    );
+  }
+
+  // Obter resumo + lista de pagamentos do agendamento
+  // ✅ Provider liberado aqui — mas o SERVICE deve validar ownership (appointment do próprio provider)
+  @Roles(Role.owner, Role.admin, Role.attendant, Role.provider)
+  @Get(':id/payments')
+  @ApiOperation({
+    summary: 'Obter resumo e lista de pagamentos do agendamento',
+  })
+  @ApiParam({
+    name: 'id',
+    type: String,
+    example: 'cm1381j6w000fuyvw67olvu9h',
+    description: 'ID do appointment',
+  })
+  @ApiResponse({
+    status: 200,
+    description: 'Resumo de pagamentos do agendamento + lista de pagamentos',
+  })
+  getPaymentsSummary(@CurrentUser() user: AuthUser, @Param('id') id: string) {
+    return this.appointmentsService.getPaymentsSummary(
+      user.tenantId,
+      id,
+      user.id,
+      user.role,
     );
   }
 
@@ -73,10 +135,13 @@ export class AppointmentsController {
     example: 'cxxxxxxxxxxxxxxxxxxxxxxxxxxx',
     description: 'Opcional: filtra por unidade (location)',
   })
-  listDayQuery(@Req() req: any, @Query() query: ListAppointmentsDayQueryDto) {
-    const tenantId = req.user?.tenantId as string;
+  @ApiOperation({ summary: 'Listar agendamentos por dia' })
+  listDayQuery(
+    @CurrentUser() user: AuthUser,
+    @Query() query: ListAppointmentsDayQueryDto,
+  ) {
     return this.appointmentsService.findByDay(
-      tenantId,
+      user.tenantId,
       query.date,
       query.providerId,
       query.locationId,
@@ -96,15 +161,15 @@ export class AppointmentsController {
       ],
     },
   })
+  @ApiOperation({ summary: 'Atualizar status ou reagendar' })
   updateFlexible(
     @CurrentUser() user: AuthUser,
     @Param('id') id: string,
-    @Body() dto: any, // <- por enquanto simplifica aqui
+    @Body() dto: any,
   ) {
     const { tenantId } = user;
     const { startAt, endAt, status } = dto;
 
-    // se veio startAt/endAt -> usa o reschedule, que já tem validação de plano
     if (startAt || endAt) {
       return this.appointmentsService.reschedule(
         tenantId,
@@ -118,19 +183,17 @@ export class AppointmentsController {
       if (status === 'cancelled') {
         return this.appointmentsService.remove(tenantId, id, user.role);
       }
-
       return this.appointmentsService.updateStatus(tenantId, id, status);
     }
 
-    // se não veio nada útil, só retorna o appointment atual
     return this.appointmentsService.findOne(id);
   }
 
   // Cancelamento lógico (status = cancelled)
   @Roles(Role.owner, Role.admin, Role.attendant, Role.provider)
   @Delete(':id')
+  @ApiOperation({ summary: 'Cancelar agendamento' })
   remove(@CurrentUser() user: AuthUser, @Param('id') id: string) {
-    const tenantId = user.tenantId as string;
-    return this.appointmentsService.remove(tenantId, id, user.role);
+    return this.appointmentsService.remove(user.tenantId, id, user.role);
   }
 }

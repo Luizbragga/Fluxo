@@ -8,19 +8,26 @@ import {
 } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { CreateAppointmentDto } from './dto/create-appointment.dto';
+import { CreateAppointmentPaymentDto } from './dto/create-appointment-payment.dto';
 import { addMinutes, isBefore } from 'date-fns';
 import { AppointmentStateEnum } from './dto/update-status.dto';
 import {
   CustomerPlanStatus,
   CustomerPlanPaymentStatus,
+  PaymentMethod,
   Role,
+  BookingPaymentStatus,
 } from '@prisma/client';
 import { EmailService } from '../notifications/email.service';
 import { SmsService } from '../notifications/sms.service';
 import { NotificationsService } from '../notifications/notifications.service';
 
 const DEFAULT_COMMISSION_PERCENTAGE = 50; // 50% por padrão (ajustável)
-
+const PAYMENT_MANAGERS = new Set<Role>([
+  Role.owner,
+  Role.admin,
+  Role.attendant,
+]);
 @Injectable()
 export class AppointmentsService {
   private readonly logger = new Logger(AppointmentsService.name);
@@ -1529,5 +1536,190 @@ export class AppointmentsService {
       html,
       text: `Reagendamento: ${appt.clientName} - ${oldLabel} -> ${newLabel} - ${appt.serviceName}`,
     });
+  }
+  // ---------------------------------------------------------------------------
+  // PAGAMENTOS MANUAIS (PRESENCIAL/PARCIAL)
+  // ---------------------------------------------------------------------------
+  async addPayment(
+    tenantId: string,
+    appointmentId: string,
+    actorUserId: string,
+    actorRole: Role,
+    dto: CreateAppointmentPaymentDto,
+  ) {
+    // MVP: somente gestão registra pagamento manual
+    if (!PAYMENT_MANAGERS.has(actorRole)) {
+      throw new ForbiddenException('Sem permissão para registrar pagamentos.');
+    }
+
+    const appt = await this.prisma.appointment.findFirst({
+      where: { id: appointmentId, tenantId },
+      select: {
+        id: true,
+        tenantId: true,
+        status: true,
+        servicePriceCents: true,
+        bookingPayment: {
+          select: { status: true, amountCents: true },
+        },
+        payments: {
+          select: { amountCents: true },
+        },
+      },
+    });
+
+    if (!appt) throw new NotFoundException('Appointment não encontrado.');
+
+    if (appt.status === 'cancelled') {
+      throw new BadRequestException(
+        'Não é possível registrar pagamento em agendamento cancelado.',
+      );
+    }
+
+    const serviceTotal = appt.servicePriceCents ?? 0;
+
+    const paidOnline =
+      appt.bookingPayment?.status === BookingPaymentStatus.succeeded
+        ? appt.bookingPayment.amountCents
+        : 0;
+
+    const paidManual = (appt.payments ?? []).reduce(
+      (sum, p) => sum + (p.amountCents ?? 0),
+      0,
+    );
+
+    const nextPaid = paidOnline + paidManual + dto.amountCents;
+
+    // regra MVP: não deixa ultrapassar o total do serviço
+    if (serviceTotal > 0 && nextPaid > serviceTotal) {
+      throw new BadRequestException({
+        code: 'PAYMENT_EXCEEDS_TOTAL',
+        message:
+          'O pagamento ultrapassa o total do serviço. Regista um valor menor ou ajusta o total do serviço.',
+        serviceTotal,
+        paidOnline,
+        paidManual,
+        tryingToAdd: dto.amountCents,
+        nextPaid,
+      });
+    }
+
+    await this.prisma.appointmentPayment.create({
+      data: {
+        tenantId,
+        appointmentId,
+        amountCents: dto.amountCents,
+        method: dto.method as PaymentMethod,
+        recordedById: actorUserId,
+        note: dto.note ?? undefined,
+      },
+    });
+
+    // Retorna resumo + lista atualizada
+    return this.getPaymentsSummary(
+      tenantId,
+      appointmentId,
+      actorUserId,
+      actorRole,
+    );
+  }
+
+  async getPaymentsSummary(
+    tenantId: string,
+    appointmentId: string,
+    actorUserId: string,
+    actorRole: Role,
+  ) {
+    // Gestão pode ver tudo do tenant
+    const isManager = PAYMENT_MANAGERS.has(actorRole);
+
+    // Provider: só pode ver se o appointment é dele
+    const needsOwnershipCheck = actorRole === Role.provider;
+
+    const appt = await this.prisma.appointment.findFirst({
+      where: { id: appointmentId, tenantId },
+      select: {
+        id: true,
+        providerId: true,
+        status: true,
+        clientName: true,
+        serviceName: true,
+        servicePriceCents: true,
+        startAt: true,
+
+        provider: {
+          select: {
+            id: true,
+            userId: true, // <- ownership real
+          },
+        },
+
+        bookingPayment: {
+          select: {
+            status: true,
+            amountCents: true,
+            kind: true,
+            createdAt: true,
+          },
+        },
+
+        payments: {
+          orderBy: { paidAt: 'asc' },
+          select: {
+            id: true,
+            amountCents: true,
+            method: true,
+            paidAt: true,
+            note: true,
+            recordedBy: { select: { id: true, name: true, role: true } },
+          },
+        },
+      },
+    });
+
+    if (!appt) throw new NotFoundException('Appointment não encontrado.');
+
+    // Se for provider, exige que o appointment pertença ao provider logado
+    if (needsOwnershipCheck) {
+      const apptProviderUserId = appt.provider?.userId;
+
+      if (!apptProviderUserId || apptProviderUserId !== actorUserId) {
+        throw new ForbiddenException(
+          'Sem permissão para ver pagamentos deste agendamento.',
+        );
+      }
+    }
+
+    // Se não for manager nem provider, nega (defensivo)
+    if (!isManager && !needsOwnershipCheck) {
+      throw new ForbiddenException('Sem permissão para ver pagamentos.');
+    }
+
+    const total = appt.servicePriceCents ?? 0;
+
+    const paidOnline =
+      appt.bookingPayment?.status === BookingPaymentStatus.succeeded
+        ? appt.bookingPayment.amountCents
+        : 0;
+
+    const paidManual = (appt.payments ?? []).reduce(
+      (sum, p) => sum + (p.amountCents ?? 0),
+      0,
+    );
+
+    const paidTotal = paidOnline + paidManual;
+    const remaining = Math.max(0, total - paidTotal);
+
+    return {
+      appointment: appt,
+      summary: {
+        totalCents: total,
+        paidOnlineCents: paidOnline,
+        paidManualCents: paidManual,
+        paidTotalCents: paidTotal,
+        remainingCents: remaining,
+        isFullyPaid: total > 0 ? paidTotal >= total : false,
+      },
+    };
   }
 }

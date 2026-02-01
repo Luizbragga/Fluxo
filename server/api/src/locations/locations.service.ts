@@ -57,6 +57,15 @@ export class LocationsService {
           typeof dto.bookingIntervalMin !== 'undefined'
             ? dto.bookingIntervalMin
             : undefined,
+        bookingPaymentPolicy:
+          typeof dto.bookingPaymentPolicy !== 'undefined'
+            ? dto.bookingPaymentPolicy
+            : undefined,
+
+        bookingDepositPercent:
+          typeof dto.bookingDepositPercent !== 'undefined'
+            ? dto.bookingDepositPercent
+            : undefined,
       },
 
       include: {
@@ -163,6 +172,15 @@ export class LocationsService {
         bookingIntervalMin:
           typeof dto.bookingIntervalMin !== 'undefined'
             ? dto.bookingIntervalMin
+            : undefined,
+        bookingPaymentPolicy:
+          typeof dto.bookingPaymentPolicy !== 'undefined'
+            ? dto.bookingPaymentPolicy
+            : undefined,
+
+        bookingDepositPercent:
+          typeof dto.bookingDepositPercent !== 'undefined'
+            ? dto.bookingDepositPercent
             : undefined,
       },
 

@@ -105,6 +105,7 @@ model Tenant {
   invites              Invite[]
   notifications        Notification[]
   bookingPayments      BookingPayment[]
+  appointmentPayments  AppointmentPayment[]
 }
 
 model TenantSettings {
@@ -214,12 +215,13 @@ model User {
   createdAt    DateTime  @default(now())
   reauthNonce  Int       @default(0)
 
-  tenant         Tenant         @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  location       Location?      @relation(fields: [locationId], references: [id])
-  tokens         RefreshToken[]
-  appointments   Appointment[]
-  createdInvites Invite[]       @relation("InviteCreatedBy")
-  notifications  Notification[]
+  tenant           Tenant               @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  location         Location?            @relation(fields: [locationId], references: [id])
+  tokens           RefreshToken[]
+  appointments     Appointment[]
+  recordedPayments AppointmentPayment[] @relation("AppointmentPaymentRecordedBy")
+  createdInvites   Invite[]             @relation("InviteCreatedBy")
+  notifications    Notification[]
 
   @@index([tenantId])
 }
@@ -339,7 +341,7 @@ model Block {
 }
 
 model Appointment {
-  id                 String           @id @default(cuid())
+  id                 String               @id @default(cuid())
   tenantId           String
   providerId         String
   serviceId          String
@@ -351,11 +353,12 @@ model Appointment {
   endAt              DateTime
   clientName         String
   clientPhone        String
-  status             AppointmentState @default(scheduled)
+  status             AppointmentState     @default(scheduled)
   reminderSmsSentAt  DateTime?
   customerPlanId     String?
   customerId         String?
   bookingPayment     BookingPayment?
+  payments           AppointmentPayment[]
 
   createdById String?
   createdBy   User?   @relation(fields: [createdById], references: [id], onDelete: SetNull)
@@ -372,6 +375,7 @@ model Appointment {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
+  @@unique([tenantId, id])
   @@index([tenantId])
   @@index([tenantId, providerId, startAt, endAt])
   @@index([tenantId, status, startAt, reminderSmsSentAt])
@@ -526,6 +530,31 @@ model BookingPayment {
   @@index([tenantId])
   @@index([locationId])
   @@index([status, createdAt])
+}
+
+model AppointmentPayment {
+  id            String @id @default(cuid())
+  tenantId      String
+  appointmentId String
+
+  amountCents Int
+  method      PaymentMethod
+  paidAt      DateTime      @default(now())
+
+  // quem registrou (owner/admin/attendant/provider se você permitir depois)
+  recordedById String?
+  note         String?
+
+  createdAt DateTime @default(now())
+
+  tenant      Tenant      @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  appointment Appointment @relation(fields: [tenantId, appointmentId], references: [tenantId, id], onDelete: Cascade)
+  recordedBy  User?       @relation("AppointmentPaymentRecordedBy", fields: [recordedById], references: [id], onDelete: SetNull)
+
+  @@index([tenantId])
+  @@index([appointmentId])
+  @@index([tenantId, appointmentId])
+  @@index([tenantId, paidAt])
 }
 
 model Notification {
