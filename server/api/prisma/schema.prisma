@@ -220,6 +220,7 @@ model User {
   tokens           RefreshToken[]
   appointments     Appointment[]
   recordedPayments AppointmentPayment[] @relation("AppointmentPaymentRecordedBy")
+  refundedBookingPayments BookingPayment[] @relation("BookingPaymentRefundedBy")
   createdInvites   Invite[]             @relation("InviteCreatedBy")
   notifications    Notification[]
 
@@ -519,6 +520,16 @@ model BookingPayment {
   // Stripe identifiers
   stripePaymentIntentId   String? @unique
   stripeCheckoutSessionId String? @unique
+
+  // --- Falha do pagamento (produção) ---
+  failedAt       DateTime?
+  failureMessage String?
+
+  // --- Reembolso (mínimo MVP: manual via endpoint interno) ---
+  refundedAt   DateTime?
+  refundReason String?
+  refundedById String?
+  refundedBy   User? @relation("BookingPaymentRefundedBy", fields: [refundedById], references: [id], onDelete: SetNull)
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt

@@ -24,14 +24,13 @@ import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { Roles } from '../auth/decorators/roles.decorator';
 import { RolesGuard } from '../auth/guards/roles.guard';
 import { Role } from '@prisma/client';
-
 import { AppointmentsService } from './appointments.service';
 import { CreateAppointmentDto } from './dto/create-appointment.dto';
 import { ListAppointmentsDayQueryDto } from './dto/list-day.query.dto';
 import { RescheduleAppointmentDto } from './dto/reschedule-appointment.dto';
 import { UpdateAppointmentStatusDto } from './dto/update-status.dto';
 import { CreateAppointmentPaymentDto } from './dto/create-appointment-payment.dto';
-
+import { RefundBookingPaymentDto } from './dto/refund-booking-payment.dto';
 import { CurrentUser } from '../auth/current-user.decorator';
 import type { AuthUser } from '../auth/auth-user.interface';
 
@@ -108,6 +107,30 @@ export class AppointmentsController {
       id,
       user.id,
       user.role,
+    );
+  }
+  // Reembolso (MVP): marca no banco como refunded (não chama Stripe)
+  @Roles(Role.owner, Role.admin)
+  @Post(':id/booking-payment/refund')
+  @ApiOperation({ summary: 'Marcar pagamento online como reembolsado (MVP)' })
+  @ApiParam({
+    name: 'id',
+    type: String,
+    example: 'cm1381j6w000fuyvw67olvu9h',
+    description: 'ID do appointment',
+  })
+  @ApiBody({ type: RefundBookingPaymentDto })
+  refundBookingPayment(
+    @CurrentUser() user: AuthUser,
+    @Param('id') id: string,
+    @Body() dto: RefundBookingPaymentDto,
+  ) {
+    return this.appointmentsService.refundBookingPayment(
+      user.tenantId,
+      id,
+      user.id,
+      user.role,
+      dto.reason,
     );
   }
 

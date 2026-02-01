@@ -29,6 +29,8 @@ const PAYMENT_MANAGERS = new Set<Role>([
   Role.admin,
   Role.attendant,
 ]);
+const REFUND_MANAGERS = new Set<Role>([Role.owner, Role.admin]);
+
 @Injectable()
 export class AppointmentsService {
   private readonly logger = new Logger(AppointmentsService.name);
@@ -1767,5 +1769,158 @@ export class AppointmentsService {
         isFullyPaid: total > 0 ? paidTotal >= total : false,
       },
     };
+  }
+  // ---------------------------------------------------------------------------
+  // REEMBOLSO (MVP): marca no banco como "refunded" (sem chamar Stripe)
+  // Regras MVP:
+  // - somente owner/admin
+  // - só reembolsa se bookingPayment estiver succeeded
+  // - exige appointment CANCELLED (evita reembolso em agenda ativa)
+  // ---------------------------------------------------------------------------
+  async refundBookingPayment(
+    tenantId: string,
+    appointmentId: string,
+    actorUserId: string,
+    actorRole: Role,
+    reason?: string,
+  ) {
+    if (!REFUND_MANAGERS.has(actorRole)) {
+      throw new ForbiddenException('Sem permissão para reembolsar pagamentos.');
+    }
+
+    return this.prisma.$transaction(async (tx) => {
+      const appt = await tx.appointment.findFirst({
+        where: { id: appointmentId, tenantId },
+        select: {
+          id: true,
+          status: true,
+          bookingPayment: {
+            select: {
+              id: true,
+              status: true,
+              refundedAt: true,
+            },
+          },
+        },
+      });
+
+      if (!appt) throw new NotFoundException('Appointment não encontrado.');
+      if (!appt.bookingPayment?.id) {
+        throw new BadRequestException(
+          'Este agendamento não possui pagamento online.',
+        );
+      }
+
+      // Guardrail: exige cancelamento antes de reembolsar (MVP)
+      if (appt.status !== AppointmentState.cancelled) {
+        throw new BadRequestException({
+          code: 'REFUND_REQUIRES_CANCELLED_APPOINTMENT',
+          message:
+            'Para reembolsar, primeiro cancele o agendamento (status=cancelled).',
+          currentStatus: appt.status,
+        });
+      }
+
+      // Guardrail: só reembolsa se foi pago com sucesso
+      if (appt.bookingPayment.status !== BookingPaymentStatus.succeeded) {
+        throw new BadRequestException({
+          code: 'REFUND_NOT_ALLOWED_FOR_STATUS',
+          message:
+            'Só é possível reembolsar quando o pagamento está como SUCCEEDED.',
+          currentPaymentStatus: appt.bookingPayment.status,
+        });
+      }
+
+      // Guardrail: não reembolsa duas vezes
+      if (appt.bookingPayment.refundedAt) {
+        throw new BadRequestException({
+          code: 'ALREADY_REFUNDED',
+          message: 'Este pagamento já foi marcado como reembolsado.',
+          refundedAt: appt.bookingPayment.refundedAt,
+        });
+      }
+
+      const updated = await tx.bookingPayment.update({
+        where: { id: appt.bookingPayment.id },
+        data: {
+          status: BookingPaymentStatus.refunded,
+          refundedAt: new Date(),
+          refundReason: reason?.trim() ? reason.trim() : 'manual_refund',
+          refundedById: actorUserId,
+        },
+      });
+
+      return updated;
+    });
+  }
+  async markBookingPaymentRefunded(
+    tenantId: string,
+    appointmentId: string,
+    actorUserId: string,
+    actorRole: Role,
+    dto: { reason?: string },
+  ) {
+    // segurança defensiva (mesmo com @Roles)
+    if (![Role.owner, Role.admin, Role.attendant].includes(actorRole as any)) {
+      throw new ForbiddenException('Sem permissão para reembolsar.');
+    }
+
+    return this.prisma.$transaction(async (tx) => {
+      // busca o bookingPayment pelo appointment (1:1)
+      const bp = await tx.bookingPayment.findFirst({
+        where: { tenantId, appointmentId },
+        select: {
+          id: true,
+          status: true,
+          refundedAt: true,
+          stripePaymentIntentId: true,
+        },
+      });
+
+      if (!bp) {
+        throw new NotFoundException(
+          'Este agendamento não possui pagamento online (BookingPayment).',
+        );
+      }
+
+      // Guardrail 1: não reembolsa se já está reembolsado
+      if (bp.status === BookingPaymentStatus.refunded) {
+        throw new BadRequestException({
+          code: 'ALREADY_REFUNDED',
+          message: 'Este pagamento já está marcado como reembolsado.',
+        });
+      }
+
+      // Guardrail 2: só permite refund se estava succeeded
+      if (bp.status !== BookingPaymentStatus.succeeded) {
+        throw new BadRequestException({
+          code: 'REFUND_NOT_ALLOWED',
+          message:
+            'Só é permitido marcar reembolso quando o pagamento estiver como succeeded.',
+          currentStatus: bp.status,
+        });
+      }
+
+      // Marca como reembolsado (manual)
+      const updated = await tx.bookingPayment.update({
+        where: { id: bp.id },
+        data: {
+          status: BookingPaymentStatus.refunded,
+          refundedAt: new Date(),
+          refundReason: dto.reason?.trim() || null,
+          refundedById: actorUserId,
+        },
+        select: {
+          id: true,
+          status: true,
+          refundedAt: true,
+          refundReason: true,
+          refundedById: true,
+          appointmentId: true,
+        },
+      });
+
+      return { ok: true, bookingPayment: updated };
+    });
   }
 }
