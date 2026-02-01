@@ -10,7 +10,8 @@ import { PrismaService } from '../prisma/prisma.service';
 import { CreateAppointmentDto } from './dto/create-appointment.dto';
 import { CreateAppointmentPaymentDto } from './dto/create-appointment-payment.dto';
 import { addMinutes, isBefore } from 'date-fns';
-import { AppointmentStateEnum } from './dto/update-status.dto';
+import { AllowedAppointmentStatusEnum } from './dto/update-status.dto';
+import { AppointmentState, BookingPaymentPolicy } from '@prisma/client';
 import {
   CustomerPlanStatus,
   CustomerPlanPaymentStatus,
@@ -975,7 +976,7 @@ export class AppointmentsService {
   async updateStatus(
     tenantId: string,
     appointmentId: string,
-    status: AppointmentStateEnum,
+    status: AllowedAppointmentStatusEnum,
   ) {
     return this.prisma.$transaction(async (tx: any) => {
       const found = await tx.appointment.findFirst({
@@ -996,15 +997,17 @@ export class AppointmentsService {
       if (!found) {
         throw new NotFoundException('Appointment não encontrado no tenant');
       }
-      if (status === AppointmentStateEnum.cancelled) {
+
+      if (status === AllowedAppointmentStatusEnum.cancelled) {
         throw new BadRequestException(
           'Para cancelar use o endpoint de cancelamento (remove). Isso ajusta plano/financeiro e dispara notificações.',
         );
       }
 
+      // status do banco é Prisma enum
       if (
-        found.status === AppointmentStateEnum.done &&
-        status !== AppointmentStateEnum.done
+        found.status === AppointmentState.done &&
+        status !== AllowedAppointmentStatusEnum.done
       ) {
         throw new BadRequestException(
           'Appointments concluídos não podem ter o status alterado.',
@@ -1013,7 +1016,7 @@ export class AppointmentsService {
 
       const updated = await tx.appointment.update({
         where: { id: found.id },
-        data: { status: status as any },
+        data: { status: status as unknown as AppointmentState },
         include: {
           service: {
             select: {
@@ -1028,7 +1031,7 @@ export class AppointmentsService {
       });
 
       // se virou DONE, garante earning existe
-      if (status === AppointmentStateEnum.done) {
+      if (status === AllowedAppointmentStatusEnum.done) {
         const existing = await tx.appointmentEarning.findUnique({
           where: { appointmentId: updated.id },
         });
@@ -1090,13 +1093,13 @@ export class AppointmentsService {
         'cancel',
       );
 
-      if (appt.status === AppointmentStateEnum.done) {
+      if (appt.status === AppointmentState.done) {
         throw new BadRequestException(
           'Appointments concluídos não podem ser cancelados. Faça um ajuste financeiro manual se necessário.',
         );
       }
 
-      if (appt.status === AppointmentStateEnum.cancelled) {
+      if (appt.status === AppointmentState.cancelled) {
         return tx.appointment.findUnique({
           where: { id },
           include: {
@@ -1128,7 +1131,7 @@ export class AppointmentsService {
 
       return tx.appointment.update({
         where: { id },
-        data: { status: AppointmentStateEnum.cancelled as any },
+        data: { status: AppointmentState.cancelled },
         include: {
           service: { select: { id: true, name: true, durationMin: true } },
           provider: { select: { id: true, name: true } },
@@ -1559,6 +1562,13 @@ export class AppointmentsService {
         tenantId: true,
         status: true,
         servicePriceCents: true,
+        locationId: true,
+        location: {
+          select: {
+            bookingPaymentPolicy: true,
+            bookingDepositPercent: true,
+          },
+        },
         bookingPayment: {
           select: { status: true, amountCents: true },
         },
@@ -1615,7 +1625,43 @@ export class AppointmentsService {
       },
     });
 
-    // Retorna resumo + lista atualizada
+    // ✅ Se estava pendente de pagamento e agora atingiu o mínimo exigido, libera (scheduled)
+    const policy =
+      appt.location?.bookingPaymentPolicy ?? BookingPaymentPolicy.offline_only;
+    const depositPercent = Math.max(
+      0,
+      Math.min(100, appt.location?.bookingDepositPercent ?? 0),
+    );
+
+    const total = appt.servicePriceCents ?? 0;
+
+    // mínimo exigido (MVP):
+    // - offline_only => 0
+    // - online_optional => se depositPercent > 0 exige depósito; senão 0
+    // - online_required => se depositPercent > 0 exige depósito; se 0 exige total (100%)
+    let requiredCents = 0;
+
+    if (policy === BookingPaymentPolicy.online_optional) {
+      requiredCents =
+        depositPercent > 0 ? Math.ceil((total * depositPercent) / 100) : 0;
+    }
+
+    if (policy === BookingPaymentPolicy.online_required) {
+      const effectivePercent = depositPercent > 0 ? depositPercent : 100;
+      requiredCents = Math.ceil((total * effectivePercent) / 100);
+    }
+
+    // paidOnline/paidManual/nextPaid você já calculou acima:
+    if (
+      appt.status === AppointmentState.pending_payment &&
+      nextPaid >= requiredCents
+    ) {
+      await this.prisma.appointment.update({
+        where: { id: appt.id },
+        data: { status: AppointmentState.scheduled },
+      });
+    }
+
     return this.getPaymentsSummary(
       tenantId,
       appointmentId,
