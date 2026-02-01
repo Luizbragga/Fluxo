@@ -204,7 +204,12 @@ export class AppointmentsController {
 
     if (status) {
       if (status === 'cancelled') {
-        return this.appointmentsService.remove(tenantId, id, user.role);
+        return this.appointmentsService.remove(
+          tenantId,
+          id,
+          user.id,
+          user.role,
+        );
       }
       return this.appointmentsService.updateStatus(tenantId, id, status);
     }
@@ -217,6 +222,11 @@ export class AppointmentsController {
   @Delete(':id')
   @ApiOperation({ summary: 'Cancelar agendamento' })
   remove(@CurrentUser() user: AuthUser, @Param('id') id: string) {
-    return this.appointmentsService.remove(user.tenantId, id, user.role);
+    return this.appointmentsService.remove(
+      user.tenantId,
+      id,
+      user.id,
+      user.role,
+    );
   }
 }

@@ -1072,7 +1072,12 @@ export class AppointmentsService {
   }
 
   // CANCELAMENTO SEGURO (ajusta plano e financeiro) ---------------------------
-  async remove(tenantId: string, id: string, actorRole: Role) {
+  async remove(
+    tenantId: string,
+    id: string,
+    actorUserId: string,
+    actorRole: Role,
+  ) {
     const updated = await this.prisma.$transaction(async (tx: any) => {
       const appt = await tx.appointment.findFirst({
         where: { id, tenantId },
@@ -1081,6 +1086,15 @@ export class AppointmentsService {
           status: true,
           customerPlanId: true,
           startAt: true,
+          bookingPayment: {
+            select: {
+              id: true,
+              status: true,
+              refundedAt: true,
+              kind: true,
+              amountCents: true,
+            },
+          },
         },
       });
 
@@ -1130,8 +1144,38 @@ export class AppointmentsService {
       await tx.appointmentEarning.deleteMany({
         where: { appointmentId: appt.id },
       });
+      // --- AUTO-REFUND (MVP) ---
+      // Regra: só reembolsa automaticamente quando o cancelamento respeita a antecedência mínima.
+      // - Provider/attendant só conseguem cancelar antes do cutoff (por assertMinCancelNotice), então aqui quase sempre será true.
+      // - Owner/admin podem cancelar mesmo depois do cutoff (override), então aqui pode ser false.
+      let shouldAutoRefund = false;
 
-      return tx.appointment.update({
+      if (
+        appt.bookingPayment?.id &&
+        appt.bookingPayment.status === BookingPaymentStatus.succeeded &&
+        !appt.bookingPayment.refundedAt
+      ) {
+        const settings = await tx.tenantSettings.findUnique({
+          where: { tenantId },
+          select: { minCancelNoticeHours: true },
+        });
+
+        const hours = settings?.minCancelNoticeHours ?? 0;
+
+        if (hours > 0) {
+          const now = new Date();
+          const cutoff = addMinutes(appt.startAt, -hours * 60);
+          shouldAutoRefund = now <= cutoff; // só auto-refund se estiver antes do cutoff
+        } else {
+          // se minCancelNoticeHours = 0, você pode escolher:
+          // - true (reembolsa sempre), ou
+          // - false (não reembolsa automático nunca)
+          // Eu recomendo false no MVP para não fazer “refund automático sem regra”.
+          shouldAutoRefund = false;
+        }
+      }
+
+      const updatedAppointment = await tx.appointment.update({
         where: { id },
         data: { status: AppointmentState.cancelled },
         include: {
@@ -1139,6 +1183,21 @@ export class AppointmentsService {
           provider: { select: { id: true, name: true } },
         },
       });
+
+      // aplica auto-refund se elegível
+      if (shouldAutoRefund && appt.bookingPayment?.id) {
+        await tx.bookingPayment.update({
+          where: { id: appt.bookingPayment.id },
+          data: {
+            status: BookingPaymentStatus.refunded,
+            refundedAt: new Date(),
+            refundReason: 'auto_cancel_refund',
+            refundedById: actorUserId,
+          },
+        });
+      }
+
+      return updatedAppointment;
     });
 
     // EMAIL (não quebra o cancelamento se falhar)
