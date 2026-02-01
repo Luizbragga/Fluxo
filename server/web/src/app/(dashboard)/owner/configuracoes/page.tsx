@@ -243,7 +243,7 @@ export default function OwnerConfiguracoesPage() {
     if (reauthArea) {
       setAreaError(
         reauthArea,
-        "Para salvar esta alteração, é necessário reautenticar com a sua senha."
+        "Para salvar esta alteração, é necessário reautenticar com a sua senha.",
       );
     }
     setReauthOpen(false);
@@ -292,7 +292,7 @@ export default function OwnerConfiguracoesPage() {
     } catch (err: any) {
       // senha errada -> backend manda 401 Unauthorized
       setReauthError(
-        err?.message ?? "Falha ao reautenticar. Verifique a senha."
+        err?.message ?? "Falha ao reautenticar. Verifique a senha.",
       );
     } finally {
       setReauthLoading(false);
@@ -366,7 +366,7 @@ export default function OwnerConfiguracoesPage() {
         if (cancelled) return;
         setErrorMessage(
           err?.message ??
-            "Erro ao carregar configurações. Verifica a API e o token."
+            "Erro ao carregar configurações. Verifica a API e o token.",
         );
       } finally {
         if (!cancelled) setIsLoading(false);
@@ -418,7 +418,7 @@ export default function OwnerConfiguracoesPage() {
       }
       if (!DATE_FORMAT_OPTIONS.includes(draftPrefs.dateFormat as any)) {
         setPrefsError(
-          "Formato de data inválido. Selecione um formato da lista."
+          "Formato de data inválido. Selecione um formato da lista.",
         );
         return;
       }
@@ -428,7 +428,7 @@ export default function OwnerConfiguracoesPage() {
         draftPrefs.minCancelNoticeHours > 720
       ) {
         setPrefsError(
-          "Aviso mínimo de cancelamento inválido. Use um valor entre 0 e 720 horas."
+          "Aviso mínimo de cancelamento inválido. Use um valor entre 0 e 720 horas.",
         );
         return;
       }
@@ -437,7 +437,7 @@ export default function OwnerConfiguracoesPage() {
         ...draftPrefs,
         minCancelNoticeHours: Math.trunc(draftPrefs.minCancelNoticeHours),
         bufferBetweenAppointmentsMin: Math.trunc(
-          draftPrefs.bufferBetweenAppointmentsMin
+          draftPrefs.bufferBetweenAppointmentsMin,
         ),
         bookingIntervalMin: Math.trunc(draftPrefs.bookingIntervalMin),
       };
@@ -596,7 +596,7 @@ export default function OwnerConfiguracoesPage() {
       }
 
       setSecurityError(
-        "Não foi possível salvar as configurações de segurança."
+        "Não foi possível salvar as configurações de segurança.",
       );
     } finally {
       setIsSavingSecurity(false);
@@ -675,6 +675,7 @@ export default function OwnerConfiguracoesPage() {
       setIsSavingBrand(false);
     }
   }
+  const notifs = (isEditingNotifs ? draftNotifs : settings) ?? null;
 
   return (
     <>
@@ -698,7 +699,7 @@ export default function OwnerConfiguracoesPage() {
             active={activeTab === "notifications"}
             onClick={() =>
               setActiveTab(
-                activeTab === "notifications" ? null : "notifications"
+                activeTab === "notifications" ? null : "notifications",
               )
             }
           >
@@ -841,7 +842,7 @@ export default function OwnerConfiguracoesPage() {
                 value={draftPrefs?.bufferBetweenAppointmentsMin ?? 0}
                 onChange={(n) =>
                   setDraftPrefs((p) =>
-                    p ? { ...p, bufferBetweenAppointmentsMin: n } : p
+                    p ? { ...p, bufferBetweenAppointmentsMin: n } : p,
                   )
                 }
               />
@@ -852,7 +853,7 @@ export default function OwnerConfiguracoesPage() {
                 options={BOOKING_INTERVAL_OPTIONS as unknown as number[]}
                 onChange={(n) =>
                   setDraftPrefs((p) =>
-                    p ? { ...p, bookingIntervalMin: n } : p
+                    p ? { ...p, bookingIntervalMin: n } : p,
                   )
                 }
               />
@@ -862,7 +863,7 @@ export default function OwnerConfiguracoesPage() {
                 checked={!!draftPrefs?.allowOverbooking}
                 onChange={(checked) =>
                   setDraftPrefs((p) =>
-                    p ? { ...p, allowOverbooking: checked } : p
+                    p ? { ...p, allowOverbooking: checked } : p,
                   )
                 }
               />
@@ -872,7 +873,7 @@ export default function OwnerConfiguracoesPage() {
                 value={draftPrefs?.minCancelNoticeHours ?? 0}
                 onChange={(n) =>
                   setDraftPrefs((p) =>
-                    p ? { ...p, minCancelNoticeHours: n } : p
+                    p ? { ...p, minCancelNoticeHours: n } : p,
                   )
                 }
               />
@@ -943,54 +944,36 @@ export default function OwnerConfiguracoesPage() {
                 <div className="space-y-2">
                   <ToggleRow
                     label="Email: novo agendamento"
-                    caption={
-                      (isEditingNotifs ? draftNotifs : settings).emailNewBooking
-                        ? "Ativo"
-                        : "Desativado"
-                    }
-                    checked={
-                      (isEditingNotifs ? draftNotifs : settings).emailNewBooking
-                    }
+                    caption={notifs?.emailNewBooking ? "Ativo" : "Desativado"}
+                    checked={!!notifs?.emailNewBooking}
                     disabled={!isEditingNotifs}
                     onChange={(v) =>
                       setDraftNotifs((p) =>
-                        p ? { ...p, emailNewBooking: v } : p
+                        p ? { ...p, emailNewBooking: v } : p,
                       )
                     }
                   />
+
                   <ToggleRow
                     label="Email: cancelamento"
-                    caption={
-                      (isEditingNotifs ? draftNotifs : settings)
-                        .emailCancellation
-                        ? "Ativo"
-                        : "Desativado"
-                    }
-                    checked={
-                      (isEditingNotifs ? draftNotifs : settings)
-                        .emailCancellation
-                    }
+                    caption={notifs?.emailCancellation ? "Ativo" : "Desativado"}
+                    checked={!!notifs?.emailCancellation}
                     disabled={!isEditingNotifs}
                     onChange={(v) =>
                       setDraftNotifs((p) =>
-                        p ? { ...p, emailCancellation: v } : p
+                        p ? { ...p, emailCancellation: v } : p,
                       )
                     }
                   />
+
                   <ToggleRow
                     label="Email: reagendamento"
-                    caption={
-                      (isEditingNotifs ? draftNotifs : settings).emailReschedule
-                        ? "Ativo"
-                        : "Desativado"
-                    }
-                    checked={
-                      (isEditingNotifs ? draftNotifs : settings).emailReschedule
-                    }
+                    caption={notifs?.emailReschedule ? "Ativo" : "Desativado"}
+                    checked={!!notifs?.emailReschedule}
                     disabled={!isEditingNotifs}
                     onChange={(v) =>
                       setDraftNotifs((p) =>
-                        p ? { ...p, emailReschedule: v } : p
+                        p ? { ...p, emailReschedule: v } : p,
                       )
                     }
                   />
@@ -1007,38 +990,27 @@ export default function OwnerConfiguracoesPage() {
                   <ToggleRow
                     label="Avisar profissional: novo agendamento"
                     caption={
-                      (isEditingNotifs ? draftNotifs : settings)
-                        .notifyProvidersNewBooking
-                        ? "Ativo"
-                        : "Desativado"
+                      notifs?.notifyProvidersNewBooking ? "Ativo" : "Desativado"
                     }
-                    checked={
-                      (isEditingNotifs ? draftNotifs : settings)
-                        .notifyProvidersNewBooking
-                    }
+                    checked={!!notifs?.notifyProvidersNewBooking}
                     disabled={!isEditingNotifs}
                     onChange={(v) =>
                       setDraftNotifs((p) =>
-                        p ? { ...p, notifyProvidersNewBooking: v } : p
+                        p ? { ...p, notifyProvidersNewBooking: v } : p,
                       )
                     }
                   />
+
                   <ToggleRow
                     label="Avisar profissional: alterações/cancelamentos"
                     caption={
-                      (isEditingNotifs ? draftNotifs : settings)
-                        .notifyProvidersChanges
-                        ? "Ativo"
-                        : "Desativado"
+                      notifs?.notifyProvidersChanges ? "Ativo" : "Desativado"
                     }
-                    checked={
-                      (isEditingNotifs ? draftNotifs : settings)
-                        .notifyProvidersChanges
-                    }
+                    checked={!!notifs?.notifyProvidersChanges}
                     disabled={!isEditingNotifs}
                     onChange={(v) =>
                       setDraftNotifs((p) =>
-                        p ? { ...p, notifyProvidersChanges: v } : p
+                        p ? { ...p, notifyProvidersChanges: v } : p,
                       )
                     }
                   />
@@ -1055,19 +1027,13 @@ export default function OwnerConfiguracoesPage() {
                   <ToggleRow
                     label="Ativar lembretes ao cliente"
                     caption={
-                      (isEditingNotifs ? draftNotifs : settings)
-                        .clientRemindersEnabled
-                        ? "Ativo"
-                        : "Desativado"
+                      notifs?.clientRemindersEnabled ? "Ativo" : "Desativado"
                     }
-                    checked={
-                      (isEditingNotifs ? draftNotifs : settings)
-                        .clientRemindersEnabled
-                    }
+                    checked={!!notifs?.clientRemindersEnabled}
                     disabled={!isEditingNotifs}
                     onChange={(v) =>
                       setDraftNotifs((p) =>
-                        p ? { ...p, clientRemindersEnabled: v } : p
+                        p ? { ...p, clientRemindersEnabled: v } : p,
                       )
                     }
                   />
@@ -1088,10 +1054,7 @@ export default function OwnerConfiguracoesPage() {
                       max={168}
                       className="w-20 rounded-lg border border-slate-800 bg-slate-900/70 px-2 py-1 text-sm text-slate-100 outline-none disabled:opacity-60"
                       disabled={!isEditingNotifs}
-                      value={
-                        (isEditingNotifs ? draftNotifs : settings)
-                          .reminderHoursBefore
-                      }
+                      value={notifs?.reminderHoursBefore ?? 24}
                       onChange={(e) =>
                         setDraftNotifs((p) =>
                           p
@@ -1099,7 +1062,7 @@ export default function OwnerConfiguracoesPage() {
                                 ...p,
                                 reminderHoursBefore: Number(e.target.value),
                               }
-                            : p
+                            : p,
                         )
                       }
                     />
@@ -1193,7 +1156,7 @@ export default function OwnerConfiguracoesPage() {
                 value={draftSecurity?.sessionIdleTimeoutMin ?? 0}
                 onChange={(n) =>
                   setDraftSecurity((p) =>
-                    p ? { ...p, sessionIdleTimeoutMin: n } : p
+                    p ? { ...p, sessionIdleTimeoutMin: n } : p,
                   )
                 }
               />
@@ -1202,7 +1165,7 @@ export default function OwnerConfiguracoesPage() {
                 checked={!!draftSecurity?.requireReauthForSensitiveActions}
                 onChange={(checked) =>
                   setDraftSecurity((p) =>
-                    p ? { ...p, requireReauthForSensitiveActions: checked } : p
+                    p ? { ...p, requireReauthForSensitiveActions: checked } : p,
                   )
                 }
               />
@@ -1211,7 +1174,7 @@ export default function OwnerConfiguracoesPage() {
                 checked={!!draftSecurity?.twoFactorEnabled}
                 onChange={(checked) =>
                   setDraftSecurity((p) =>
-                    p ? { ...p, twoFactorEnabled: checked } : p
+                    p ? { ...p, twoFactorEnabled: checked } : p,
                   )
                 }
               />
@@ -1264,7 +1227,7 @@ export default function OwnerConfiguracoesPage() {
                   value={draftBrand?.legalName ?? ""}
                   onChange={(e) =>
                     setDraftBrand((p) =>
-                      p ? { ...p, legalName: e.target.value } : p
+                      p ? { ...p, legalName: e.target.value } : p,
                     )
                   }
                 />
@@ -1281,7 +1244,7 @@ export default function OwnerConfiguracoesPage() {
                   value={draftBrand?.brandName ?? ""}
                   onChange={(e) =>
                     setDraftBrand((p) =>
-                      p ? { ...p, brandName: e.target.value } : p
+                      p ? { ...p, brandName: e.target.value } : p,
                     )
                   }
                 />
@@ -1341,7 +1304,7 @@ export default function OwnerConfiguracoesPage() {
                   value={draftBrand?.nif ?? ""}
                   onChange={(e) =>
                     setDraftBrand((p) =>
-                      p ? { ...p, nif: e.target.value } : p
+                      p ? { ...p, nif: e.target.value } : p,
                     )
                   }
                   placeholder="Ex: 123456789"
@@ -2035,8 +1998,8 @@ function FieldDateFormatSelect({
           {value === "dd/MM/yyyy"
             ? "23/12/2025"
             : value === "MM/dd/yyyy"
-            ? "12/23/2025"
-            : "2025-12-23"}
+              ? "12/23/2025"
+              : "2025-12-23"}
         </span>
       </p>
     </div>

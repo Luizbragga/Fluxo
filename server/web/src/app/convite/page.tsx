@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import React, { Suspense, useEffect, useMemo, useState } from "react";
 import { useSearchParams } from "next/navigation";
 import { apiClient, ApiError } from "@/lib/api-client";
 
@@ -23,12 +23,29 @@ type AcceptInviteResponse = {
 };
 
 export default function ConvitePage() {
+  return (
+    <Suspense fallback={<ConviteLoading />}>
+      <ConviteClient />
+    </Suspense>
+  );
+}
+
+function ConviteLoading() {
+  return (
+    <div className="min-h-screen bg-slate-950 text-slate-50 flex items-center justify-center px-6">
+      <div className="w-full max-w-md rounded-2xl border border-slate-800 bg-slate-900/60 p-6">
+        <p className="text-slate-300 text-sm">Carregando convite...</p>
+      </div>
+    </div>
+  );
+}
+
+function ConviteClient() {
   const sp = useSearchParams();
   const token = sp.get("token") ?? "";
 
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState<string | null>(null);
-
   const [data, setData] = useState<ValidateInviteResponse | null>(null);
 
   const [name, setName] = useState("");
@@ -54,13 +71,12 @@ export default function ConvitePage() {
 
         const res = await apiClient<ValidateInviteResponse>(
           `/invites/validate?token=${encodeURIComponent(token)}`,
-          { method: "GET" }
+          { method: "GET" },
         );
 
         if (!mounted) return;
 
         setData(res);
-
         if (res.invite.email) setEmail(res.invite.email);
         if (res.invite.phone) setPhone(res.invite.phone);
       } catch (e) {
@@ -84,22 +100,11 @@ export default function ConvitePage() {
     try {
       setErr(null);
 
-      if (!name.trim()) {
-        setErr("Preenche o nome.");
-        return;
-      }
-      if (!email.trim()) {
-        setErr("Preenche o email.");
-        return;
-      }
-      if (password.length < 8) {
-        setErr("Senha precisa ter pelo menos 8 caracteres.");
-        return;
-      }
-      if (password !== password2) {
-        setErr("As senhas não coincidem.");
-        return;
-      }
+      if (!name.trim()) return setErr("Preenche o nome.");
+      if (!email.trim()) return setErr("Preenche o email.");
+      if (password.length < 8)
+        return setErr("Senha precisa ter pelo menos 8 caracteres.");
+      if (password !== password2) return setErr("As senhas não coincidem.");
 
       const res = await apiClient<AcceptInviteResponse>("/invites/accept", {
         method: "POST",
@@ -112,7 +117,6 @@ export default function ConvitePage() {
         },
       });
 
-      // guarda tokens e manda pro app decidir rota (middleware/guard)
       localStorage.setItem("fluxo_token", res.tokens.access);
       localStorage.setItem("fluxo_refresh", res.tokens.refresh);
 
@@ -125,13 +129,7 @@ export default function ConvitePage() {
   }
 
   if (loading) {
-    return (
-      <div className="min-h-screen bg-slate-950 text-slate-50 flex items-center justify-center px-6">
-        <div className="w-full max-w-md rounded-2xl border border-slate-800 bg-slate-900/60 p-6">
-          <p className="text-slate-300 text-sm">Validando convite...</p>
-        </div>
-      </div>
-    );
+    return <ConviteLoading />;
   }
 
   if (!data) {
@@ -148,10 +146,10 @@ export default function ConvitePage() {
     data.invite.role === "provider"
       ? "Profissional"
       : data.invite.role === "attendant"
-      ? "Atendente"
-      : data.invite.role === "admin"
-      ? "Admin"
-      : data.invite.role;
+        ? "Atendente"
+        : data.invite.role === "admin"
+          ? "Admin"
+          : data.invite.role;
 
   return (
     <div className="min-h-screen bg-slate-950 text-slate-50 flex items-center justify-center px-6">

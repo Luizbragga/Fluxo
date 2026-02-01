@@ -120,10 +120,8 @@ export const ownerOverviewMock: OwnerOverviewData = {
     },
   ],
   agendaDay: {
-    dateYmd: "2025-01-01",
     professionals: [],
     appointments: [],
-    timeSlots: [],
   },
   financeiroToday: {
     dailyRevenue: [],
@@ -246,7 +244,7 @@ function buildNextAppointments(agenda: OwnerAgendaDay): NextAppointment[] {
 }
 
 function buildQuickFinancialCards(
-  fin: OwnerFinanceiroData
+  fin: OwnerFinanceiroData,
 ): QuickFinancialCard[] {
   const plansRevenueMonth = fin.planPayments
     .filter((p) => p.status === "paid")
@@ -254,7 +252,7 @@ function buildQuickFinancialCards(
 
   const servicesRevenueMonth = fin.dailyRevenue.reduce(
     (sum, d) => sum + d.totalRevenue,
-    0
+    0,
   );
 
   return [
@@ -305,7 +303,7 @@ export async function fetchOwnerOverview(params?: {
 
   const revenueServicesToday = financeiroToday.dailyRevenue.reduce(
     (sum, d) => sum + d.totalRevenue,
-    0
+    0,
   );
 
   const revenuePlansToday = financeiroToday.planPayments
@@ -316,12 +314,12 @@ export async function fetchOwnerOverview(params?: {
 
   const totalActivePlans = plansData.planStats.reduce(
     (sum, s) => sum + s.activeCustomers,
-    0
+    0,
   );
 
   const totalMrr = plansData.planStats.reduce(
     (sum, s) => sum + s.totalRevenueMonth,
-    0
+    0,
   );
 
   const toPayProfessionals = financeiroMonth.payoutItems

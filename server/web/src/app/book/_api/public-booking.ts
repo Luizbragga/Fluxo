@@ -9,7 +9,14 @@ export type PublicBookingData = {
     tenantId: string;
     slug?: string | null;
     active?: boolean | null;
+
+    bookingPaymentPolicy?:
+      | "offline_only"
+      | "online_optional"
+      | "online_required";
+    bookingDepositPercent?: number;
   };
+
   services: Array<{
     id: string;
     name: string;

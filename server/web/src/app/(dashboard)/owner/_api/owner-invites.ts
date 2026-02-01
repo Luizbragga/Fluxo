@@ -11,6 +11,11 @@ export type CreateInviteInput = {
     | "tattoo"
     | "other";
   locationId?: string;
+
+  // ✅ alinhado com CreateInviteDto do backend
+  email?: string;
+  phone?: string;
+
   expiresInHours?: number;
 };
 

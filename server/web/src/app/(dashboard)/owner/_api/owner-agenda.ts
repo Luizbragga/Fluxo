@@ -49,6 +49,8 @@ type BackendAppointment = {
 
   // Duração já gravada no appointment
   serviceDurationMin?: number | null;
+  // Preço gravado no appointment (snapshot)
+  servicePriceCents?: number | null;
 
   // Se está ligado a um plano
   customerPlanId?: string | null;
@@ -81,7 +83,7 @@ export type OwnerAgendaDay = {
 };
 
 function mapProviderToAgendaProfessional(
-  provider: BackendProvider
+  provider: BackendProvider,
 ): AgendaProfessional {
   const locationId = provider.locationId ?? provider.location?.id ?? null;
 
@@ -110,7 +112,7 @@ type OwnerAgendaDayParams = {
 
 export async function fetchOwnerAgendaDay(
   dateYYYYMMDD: string,
-  params?: OwnerAgendaDayParams
+  params?: OwnerAgendaDayParams,
 ): Promise<OwnerAgendaDay> {
   const qs = new URLSearchParams();
   qs.set("date", dateYYYYMMDD);
@@ -124,7 +126,7 @@ export async function fetchOwnerAgendaDay(
       params?.locationId
         ? `/providers?locationId=${encodeURIComponent(params.locationId)}`
         : "/providers",
-      { method: "GET" }
+      { method: "GET" },
     ),
   ]);
 
@@ -162,7 +164,7 @@ export async function fetchOwnerAgendaDay(
     if (!professionalsMap.has(provider.id)) {
       professionalsMap.set(
         provider.id,
-        mapProviderToAgendaProfessional(provider)
+        mapProviderToAgendaProfessional(provider),
       );
     }
   }
@@ -181,8 +183,8 @@ export async function fetchOwnerAgendaDay(
       professionalsMap.set(
         providerId,
         mapProviderToAgendaProfessional(
-          provider ?? { id: providerId, name: providerName }
-        )
+          provider ?? { id: providerId, name: providerName },
+        ),
       );
     }
 
@@ -192,7 +194,7 @@ export async function fetchOwnerAgendaDay(
     const hours = start.getHours();
     const minutes = start.getMinutes();
     const timeLabel = `${String(hours).padStart(2, "0")}:${String(
-      minutes
+      minutes,
     ).padStart(2, "0")}`;
 
     // minutos desde meia-noite
@@ -238,7 +240,7 @@ export async function fetchOwnerAgendaDay(
  */
 export async function updateAppointmentStatus(
   appointmentId: string,
-  status: AgendaAppointmentStatus
+  status: AgendaAppointmentStatus,
 ): Promise<void> {
   await apiClient(`/appointments/${appointmentId}`, {
     method: "PATCH",

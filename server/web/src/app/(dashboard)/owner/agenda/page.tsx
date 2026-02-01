@@ -21,6 +21,7 @@ import {
   type OwnerLocation,
 } from "../_api/owner-locations";
 import { fetchOwnerTenantSettings } from "../_api/owner-tenant-settings";
+import { Suspense } from "react";
 
 type PendingAppointmentSlot = {
   time: string;
@@ -137,7 +138,7 @@ function normalizeIntervals(raw: any): DayInterval[] {
 
 function buildSlotsFromIntervals(
   intervals: DayInterval[],
-  stepMin = 30
+  stepMin = 30,
 ): string[] {
   const out: string[] = [];
 
@@ -189,7 +190,7 @@ function getLocationDayIntervals(location: any, date: Date): DayInterval[] {
   return [];
 }
 
-export default function OwnerAgendaPage() {
+function OwnerAgendaPageClient() {
   // Protege a rota: só owner logado entra
   const { user, loading: authLoading } = useRequireAuth({
     requiredRole: "owner",
@@ -202,7 +203,7 @@ export default function OwnerAgendaPage() {
   const [selectedProfessionalId, setSelectedProfessionalId] =
     useState<FilterProfessionalId>("all");
   const [selectedLocationId, setSelectedLocationId] = useState<string | "all">(
-    "all"
+    "all",
   );
   const [locations, setLocations] = useState<OwnerLocation[]>([]);
   const [viewMode, setViewMode] = useState<"daily" | "weekly">("daily");
@@ -352,7 +353,7 @@ export default function OwnerAgendaPage() {
 
   // Slot clicado para criar agendamento
   const [pendingSlot, setPendingSlot] = useState<PendingAppointmentSlot | null>(
-    null
+    null,
   );
 
   const overbookingCount = useMemo(() => {
@@ -362,7 +363,7 @@ export default function OwnerAgendaPage() {
       (a) =>
         a.status !== "cancelled" &&
         a.professionalId === pendingSlot.professionalId &&
-        a.time === pendingSlot.time
+        a.time === pendingSlot.time,
     ).length;
   }, [appointments, pendingSlot]);
 
@@ -392,14 +393,14 @@ export default function OwnerAgendaPage() {
             .map((id) => id.trim())
             .filter(Boolean)
         : null,
-    [planServiceIdsParam]
+    [planServiceIdsParam],
   );
 
   const hasCustomerPrefill = !!customerNameFromUrl || !!customerPhoneFromUrl;
 
   // Se veio um customerPlanId na URL, por padrão marcamos "usar plano"
   const [usePlanForAppointment, setUsePlanForAppointment] = useState<boolean>(
-    !!customerPlanIdFromUrl
+    !!customerPlanIdFromUrl,
   );
 
   const [services, setServices] = useState<OwnerServiceForAppointment[]>([]);
@@ -485,7 +486,7 @@ export default function OwnerAgendaPage() {
   }
 
   function handleDetailsStatusChange(
-    forceStatus?: AgendaAppointment["status"]
+    forceStatus?: AgendaAppointment["status"],
   ) {
     if (!selectedAppointment) return;
 
@@ -493,7 +494,7 @@ export default function OwnerAgendaPage() {
     handleChangeStatus(
       selectedAppointment.id,
       selectedAppointment.status,
-      forceStatus
+      forceStatus,
     );
 
     setSelectedAppointment(null);
@@ -593,7 +594,7 @@ export default function OwnerAgendaPage() {
         const items = await fetchOwnerServicesForAppointment(
           usePlanForAppointment && customerPlanIdFromUrl
             ? customerPlanIdFromUrl
-            : undefined
+            : undefined,
         );
 
         if (!isMounted) return;
@@ -660,7 +661,7 @@ export default function OwnerAgendaPage() {
   async function handleChangeStatus(
     appointmentId: string,
     currentStatus: AgendaAppointment["status"],
-    forceStatus?: AgendaAppointment["status"]
+    forceStatus?: AgendaAppointment["status"],
   ) {
     const nextStatus = forceStatus ?? getNextStatusForClick(currentStatus);
 
@@ -675,8 +676,8 @@ export default function OwnerAgendaPage() {
       // otimista: atualiza na tela antes
       setAppointments((prev) =>
         prev.map((a) =>
-          a.id === appointmentId ? { ...a, status: nextStatus } : a
-        )
+          a.id === appointmentId ? { ...a, status: nextStatus } : a,
+        ),
       );
 
       await updateAppointmentStatus(appointmentId, nextStatus);
@@ -687,8 +688,8 @@ export default function OwnerAgendaPage() {
       // rollback
       setAppointments((prev) =>
         prev.map((a) =>
-          a.id === appointmentId ? { ...a, status: currentStatus } : a
-        )
+          a.id === appointmentId ? { ...a, status: currentStatus } : a,
+        ),
       );
     }
   }
@@ -708,7 +709,7 @@ export default function OwnerAgendaPage() {
       setProfessionals(data.professionals);
       setAppointments(data.appointments);
       setRestoredPlanVisits((prev) =>
-        prev.includes(appointmentId) ? prev : [...prev, appointmentId]
+        prev.includes(appointmentId) ? prev : [...prev, appointmentId],
       );
     } catch (err) {
       console.error("Erro ao devolver visita do plano:", err);
@@ -772,7 +773,7 @@ export default function OwnerAgendaPage() {
 
     if (!modalCustomerName.trim() || !modalCustomerPhone.trim()) {
       setCreateError(
-        "Nome e telefone do cliente são obrigatórios para criar o agendamento."
+        "Nome e telefone do cliente são obrigatórios para criar o agendamento.",
       );
       return;
     }
@@ -783,7 +784,7 @@ export default function OwnerAgendaPage() {
     }
 
     const selectedService = services.find(
-      (service) => service.id === selectedServiceId
+      (service) => service.id === selectedServiceId,
     );
 
     if (!selectedService) {
@@ -813,7 +814,7 @@ export default function OwnerAgendaPage() {
       const now = new Date();
       if (startDate <= now) {
         setCreateError(
-          "Não é possível criar agendamentos em horários que já passaram."
+          "Não é possível criar agendamentos em horários que já passaram.",
         );
         return;
       }
@@ -866,43 +867,43 @@ export default function OwnerAgendaPage() {
       if (apiError?.code === "CUSTOMER_NAME_CONFLICT") {
         setCreateError(
           apiError.message ??
-            "Já existe um cliente com este telefone registado com outro nome."
+            "Já existe um cliente com este telefone registado com outro nome.",
         );
       }
       // Plano esgotado -> força atendimento avulso
       else if (
         msg.includes(
-          "Cliente já utilizou todas as visitas disponíveis neste ciclo do plano"
+          "Cliente já utilizou todas as visitas disponíveis neste ciclo do plano",
         )
       ) {
         setUsePlanForAppointment(false);
         setCreateError(
           "Os atendimentos do plano deste cliente já foram todos usados neste ciclo. " +
-            "Este agendamento será registado como atendimento avulso."
+            "Este agendamento será registado como atendimento avulso.",
         );
       }
       // Data fora do ciclo -> também força avulso
       else if (
         msg.includes(
-          "Data do agendamento está fora do ciclo atual do plano do cliente"
+          "Data do agendamento está fora do ciclo atual do plano do cliente",
         )
       ) {
         setUsePlanForAppointment(false);
         setCreateError(
           "A data escolhida está fora do ciclo atual do plano deste cliente. " +
-            "Este agendamento será registado como atendimento avulso."
+            "Este agendamento será registado como atendimento avulso.",
         );
       }
       // Dia da semana não permitido pelo plano
       else if (
         msg.includes(
-          "Este plano não permite agendamentos neste dia da semana"
+          "Este plano não permite agendamentos neste dia da semana",
         ) ||
         msg.includes("Este dia da semana não é permitido para este plano")
       ) {
         setCreateError(
           msg ||
-            "Este plano não permite agendamentos neste dia da semana. Escolha um dia permitido pelo plano."
+            "Este plano não permite agendamentos neste dia da semana. Escolha um dia permitido pelo plano.",
         );
       }
       // Horário não permitido pelo plano
@@ -913,19 +914,19 @@ export default function OwnerAgendaPage() {
       ) {
         setCreateError(
           msg ||
-            "Horário não permitido para este plano. Escolha um horário dentro da janela permitida."
+            "Horário não permitido para este plano. Escolha um horário dentro da janela permitida.",
         );
       }
       // Serviço fora do plano
       else if (
         msg.includes("Este serviço não faz parte do plano selecionado") ||
         msg.includes(
-          "O serviço escolhido não faz parte dos serviços incluídos neste plano"
+          "O serviço escolhido não faz parte dos serviços incluídos neste plano",
         )
       ) {
         setCreateError(
           msg ||
-            "Este serviço não faz parte do plano selecionado. Altere o serviço ou marque como atendimento avulso."
+            "Este serviço não faz parte do plano selecionado. Altere o serviço ou marque como atendimento avulso.",
         );
       }
       // Intervalo mínimo entre visitas
@@ -945,7 +946,7 @@ export default function OwnerAgendaPage() {
       // Qualquer outro erro
       else {
         setCreateError(
-          msg || "Não foi possível criar o agendamento. Tente novamente."
+          msg || "Não foi possível criar o agendamento. Tente novamente.",
         );
       }
     } finally {
@@ -958,7 +959,7 @@ export default function OwnerAgendaPage() {
     selectedLocationId === "all"
       ? professionals
       : professionals.filter(
-          (pro: any) => pro.locationId === selectedLocationId
+          (pro: any) => pro.locationId === selectedLocationId,
         );
   const isSpecificLocationSelected = selectedLocationId !== "all";
   const locationHasNoProfessionals =
@@ -969,7 +970,7 @@ export default function OwnerAgendaPage() {
     selectedProfessionalId === "all"
       ? professionalsByLocation
       : professionalsByLocation.filter(
-          (pro) => pro.id === selectedProfessionalId
+          (pro) => pro.id === selectedProfessionalId,
         );
   const visibleProIdsKey = useMemo(() => {
     return visibleProfessionals
@@ -1004,7 +1005,7 @@ export default function OwnerAgendaPage() {
             const data = await fetchOwnerAgendaDay(dateStr);
 
             const filtered = data.appointments.filter((a) =>
-              proIdSet.has(a.professionalId)
+              proIdSet.has(a.professionalId),
             );
 
             let planCount = 0;
@@ -1038,7 +1039,7 @@ export default function OwnerAgendaPage() {
             const items = filtered
               .slice()
               .sort(
-                (a, b) => timeStrToMinutes(a.time) - timeStrToMinutes(b.time)
+                (a, b) => timeStrToMinutes(a.time) - timeStrToMinutes(b.time),
               )
               .map((a) => ({
                 id: a.id,
@@ -1062,7 +1063,7 @@ export default function OwnerAgendaPage() {
               {
                 day: "2-digit",
                 month: "2-digit",
-              }
+              },
             )}`;
 
             const isToday = formatDateYYYYMMDD(d) === todayStr;
@@ -1086,7 +1087,7 @@ export default function OwnerAgendaPage() {
             };
 
             return dayData;
-          })
+          }),
         );
 
         if (!alive) return;
@@ -1122,8 +1123,8 @@ export default function OwnerAgendaPage() {
   const nowMinutes = today.getHours() * 60 + today.getMinutes();
   const overbookingEnabled = Boolean(
     (effectiveLocation as any)?.overbookingEnabled ??
-      (tenantSettings as any)?.overbookingEnabled ??
-      true
+    (tenantSettings as any)?.overbookingEnabled ??
+    true,
   );
 
   const overbookingMaxPerSlot = (() => {
@@ -1152,7 +1153,7 @@ export default function OwnerAgendaPage() {
       (a) =>
         a.professionalId === proId &&
         a.time === slotTime &&
-        a.status !== "cancelled"
+        a.status !== "cancelled",
     ).length;
 
     return currentCount < overbookingMaxPerSlot;
@@ -1166,7 +1167,7 @@ export default function OwnerAgendaPage() {
   async function findNextDayWithFreeSlot(
     baseDate: Date,
     professionalFilter: FilterProfessionalId,
-    locationFilter: string | "all"
+    locationFilter: string | "all",
   ): Promise<Date | null> {
     const today = new Date();
     const todayStr = formatDateYYYYMMDD(today);
@@ -1180,7 +1181,7 @@ export default function OwnerAgendaPage() {
       0,
       0,
       0,
-      0
+      0,
     );
 
     for (let i = 0; i < maxDaysToSearch; i++) {
@@ -1188,16 +1189,16 @@ export default function OwnerAgendaPage() {
       const data = await fetchOwnerAgendaDay(currentStr);
       const stepMinForSearch =
         locationFilter === "all"
-          ? tenantSettings?.bookingIntervalMin ?? 30
-          : locations.find((l) => l.id === locationFilter)
+          ? (tenantSettings?.bookingIntervalMin ?? 30)
+          : (locations.find((l) => l.id === locationFilter)
               ?.bookingIntervalMin ??
             tenantSettings?.bookingIntervalMin ??
-            30;
+            30);
       const prosByLocation =
         locationFilter === "all"
           ? data.professionals
           : data.professionals.filter(
-              (p: any) => p.locationId === locationFilter
+              (p: any) => p.locationId === locationFilter,
             );
 
       const prosForSearch =
@@ -1243,7 +1244,7 @@ export default function OwnerAgendaPage() {
         for (const pro of prosForSearch) {
           const appt = data.appointments
             .filter(
-              (a) => a.professionalId === pro.id && a.status !== "cancelled"
+              (a) => a.professionalId === pro.id && a.status !== "cancelled",
             )
             .find((a) => {
               const startMin = timeStrToMinutes(a.time);
@@ -1287,12 +1288,12 @@ export default function OwnerAgendaPage() {
       const nextDate = await findNextDayWithFreeSlot(
         base,
         selectedProfessionalId,
-        selectedLocationId
+        selectedLocationId,
       );
 
       if (!nextDate) {
         setError(
-          "Não encontramos nenhum horário livre nos próximos dias para este filtro."
+          "Não encontramos nenhum horário livre nos próximos dias para este filtro.",
         );
         return;
       }
@@ -1305,13 +1306,13 @@ export default function OwnerAgendaPage() {
           0,
           0,
           0,
-          0
-        )
+          0,
+        ),
       );
     } catch (err) {
       console.error("Erro ao procurar próximo horário livre:", err);
       setError(
-        "Não foi possível procurar o próximo horário livre. Tente novamente."
+        "Não foi possível procurar o próximo horário livre. Tente novamente.",
       );
     } finally {
       setLoadingAgenda(false);
@@ -1451,7 +1452,7 @@ export default function OwnerAgendaPage() {
             value={selectedProfessionalId}
             onChange={(e) =>
               setSelectedProfessionalId(
-                (e.target.value || "all") as FilterProfessionalId
+                (e.target.value || "all") as FilterProfessionalId,
               )
             }
           >
@@ -1603,10 +1604,10 @@ export default function OwnerAgendaPage() {
             className="shrink-0 px-3 py-1 rounded-lg border border-amber-400 bg-amber-500/10 text-[11px] text-amber-100 hover:bg-amber-500/20"
             onClick={() => {
               const returnTo = encodeURIComponent(
-                `/owner/agenda?locationId=${selectedLocationId}`
+                `/owner/agenda?locationId=${selectedLocationId}`,
               );
               router.push(
-                `/owner/profissionais?locationId=${selectedLocationId}&openCreate=1&returnTo=${returnTo}`
+                `/owner/profissionais?locationId=${selectedLocationId}&openCreate=1&returnTo=${returnTo}`,
               );
             }}
           >
@@ -1764,8 +1765,8 @@ export default function OwnerAgendaPage() {
                           0,
                           0,
                           0,
-                          0
-                        )
+                          0,
+                        ),
                       );
                       setViewMode("daily");
                     }}
@@ -1800,7 +1801,7 @@ export default function OwnerAgendaPage() {
                   disabled={
                     !canOverbookSlot(
                       selectedOverbooking.professionalId,
-                      selectedOverbooking.slotTime
+                      selectedOverbooking.slotTime,
                     )
                   }
                   className="px-3 py-1 rounded-lg border border-amber-400 bg-amber-500/10 text-[11px] text-amber-200 disabled:opacity-50 disabled:cursor-not-allowed"
@@ -1934,13 +1935,13 @@ export default function OwnerAgendaPage() {
                       disabled={
                         !canOverbookSlot(
                           selectedAppointment.professionalId,
-                          selectedAppointment.time
+                          selectedAppointment.time,
                         )
                       }
                       className="w-full px-3 py-1 rounded-lg border border-amber-400 bg-amber-500/10 text-[11px] text-amber-200 disabled:opacity-50 disabled:cursor-not-allowed"
                       onClick={() =>
                         handleCreateOverbookingFromAppointment(
-                          selectedAppointment
+                          selectedAppointment,
                         )
                       }
                     >
@@ -2318,7 +2319,7 @@ function ProfessionalTimeline({
               title={`${periodLabel} · ${slotTime}`}
             >
               <span className="text-[10px] text-slate-500">{slotTime}</span>
-            </div>
+            </div>,
           );
         } else {
           items.push(
@@ -2337,7 +2338,7 @@ function ProfessionalTimeline({
               title={`${periodLabel} · ${slotTime}`}
             >
               <span className="text-[10px] text-slate-500">{slotTime}</span>
-            </button>
+            </button>,
           );
         }
 
@@ -2363,7 +2364,7 @@ function ProfessionalTimeline({
             title={`${periodLabel} · ${slotTime}`}
           >
             <span className="text-[10px] text-slate-500">{slotTime}</span>
-          </div>
+          </div>,
         );
       } else {
         items.push(
@@ -2382,7 +2383,7 @@ function ProfessionalTimeline({
             title={`${periodLabel} · ${slotTime}`}
           >
             <span className="text-[10px] text-slate-500">{slotTime}</span>
-          </button>
+          </button>,
         );
       }
 
@@ -2441,7 +2442,7 @@ function ProfessionalTimeline({
               </span>
             </div>
           </div>
-        </button>
+        </button>,
       );
     } else {
       const count = nextGroup.items.length;
@@ -2475,7 +2476,6 @@ function ProfessionalTimeline({
               <p className="text-[10px] text-slate-300">
                 {slotTime} · até {nextGroup.maxDurMin}m
               </p>
-
               <p className="text-[12px] font-medium truncate">Overbooking</p>
               <p className="text-[10px] text-slate-300 truncate">
                 {count} agendamentos neste horário
@@ -2486,7 +2486,7 @@ function ProfessionalTimeline({
               +{count - 1}
             </span>
           </div>
-        </button>
+        </button>,
       );
     }
 
@@ -2502,7 +2502,7 @@ function ProfessionalTimeline({
           title={`Buffer ${bufferMin} min`}
         >
           Buffer · {bufferMin}m
-        </div>
+        </div>,
       );
     }
 
@@ -2647,7 +2647,7 @@ function startOfWeekMonday(date: Date): Date {
     0,
     0,
     0,
-    0
+    0,
   );
 
   const day = d.getDay(); // 0=Dom, 1=Seg...
@@ -2753,7 +2753,7 @@ function getStatusClasses(status: AgendaAppointment["status"]) {
 }
 
 function getNextStatusForClick(
-  status: AgendaAppointment["status"]
+  status: AgendaAppointment["status"],
 ): AgendaAppointment["status"] | null {
   switch (status) {
     case "scheduled":
@@ -2783,4 +2783,15 @@ function addDays(date: Date, amount: number): Date {
   const result = new Date(date);
   result.setDate(result.getDate() + amount);
   return result;
+}
+export default function Page() {
+  return (
+    <Suspense
+      fallback={
+        <div className="p-4 text-xs text-slate-400">Carregando agenda...</div>
+      }
+    >
+      <OwnerAgendaPageClient />
+    </Suspense>
+  );
 }
