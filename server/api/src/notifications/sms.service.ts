@@ -11,18 +11,21 @@ export class SmsService {
   private messagingServiceSid?: string;
 
   constructor(private readonly config: ConfigService) {
-    const p = (this.config.get<string>('SMS_PROVIDER') || 'mock').toLowerCase();
-    this.provider = p === 'twilio' ? 'twilio' : 'mock';
+    const rawProvider = (this.config.get<string>('SMS_PROVIDER') || 'mock')
+      .trim()
+      .toLowerCase();
 
-    // ✅ Se não for twilio, não valida env nenhuma
+    this.provider = rawProvider === 'twilio' ? 'twilio' : 'mock';
+
+    // ✅ Se for mock, NÃO exige env nenhuma e NÃO inicializa Twilio
     if (this.provider === 'mock') {
-      this.logger.log('[SMS] Provider=mock (SMS desativado em dev)');
+      this.logger.log('[SMS] provider=mock (Twilio desativado)');
       return;
     }
 
-    // ✅ Só valida Twilio quando provider=twilio
-    const accountSid = this.config.get<string>('TWILIO_ACCOUNT_SID');
-    const messagingServiceSid = this.config.get<string>(
+    // ✅ Só chega aqui se SMS_PROVIDER=twilio
+    const accountSid = this.config.getOrThrow<string>('TWILIO_ACCOUNT_SID');
+    const messagingServiceSid = this.config.getOrThrow<string>(
       'TWILIO_MESSAGING_SERVICE_SID',
     );
 
@@ -30,25 +33,19 @@ export class SmsService {
     const apiKeySecret = this.config.get<string>('TWILIO_API_KEY_SECRET');
     const authToken = this.config.get<string>('TWILIO_AUTH_TOKEN');
 
-    if (!accountSid || !messagingServiceSid) {
-      throw new Error(
-        'Twilio env faltando: informe TWILIO_ACCOUNT_SID e TWILIO_MESSAGING_SERVICE_SID',
-      );
-    }
-
     this.messagingServiceSid = messagingServiceSid;
 
-    // ✅ Prioridade: API Key (SK + secret)
+    // Prioridade: API Key
     if (apiKeySid && apiKeySecret) {
       this.client = twilio(apiKeySid, apiKeySecret, { accountSid });
-      this.logger.log('[SMS] Provider=twilio (api key)');
+      this.logger.log('[SMS] provider=twilio (api key)');
       return;
     }
 
-    // ✅ fallback: Auth Token
+    // Fallback: Auth Token
     if (authToken) {
       this.client = twilio(accountSid, authToken);
-      this.logger.log('[SMS] Provider=twilio (auth token)');
+      this.logger.log('[SMS] provider=twilio (auth token)');
       return;
     }
 
@@ -58,15 +55,16 @@ export class SmsService {
   }
 
   async sendSms(to: string, body: string) {
-    // ✅ mock: não quebra fluxo, só loga
-    if (this.provider !== 'twilio') {
-      this.logger.log(`[SMS:MOCK] to=${to} body="${body}"`);
-      return { ok: true, provider: 'mock' as const };
+    // mock: nunca falha o fluxo do sistema
+    if (this.provider === 'mock') {
+      this.logger.log(`[SMS:mock] to=${to} body="${body}"`);
+      return;
     }
 
-    // ✅ twilio: envia de verdade
+    // twilio: valida se foi inicializado
     if (!this.client || !this.messagingServiceSid) {
-      throw new Error('SmsService não inicializado corretamente (twilio).');
+      this.logger.warn('[SMS] Twilio não inicializado corretamente.');
+      return;
     }
 
     await this.client.messages.create({
@@ -74,7 +72,5 @@ export class SmsService {
       body,
       messagingServiceSid: this.messagingServiceSid,
     });
-
-    return { ok: true, provider: 'twilio' as const };
   }
 }
