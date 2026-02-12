@@ -174,4 +174,62 @@ export class AppointmentsCronService {
       this.logger.log(`Cron REMINDER SMS: enviados ${totalSent} lembretes.`);
     }
   }
+  /**
+   * Expira appointments pendentes de pagamento para não prender slot.
+   *
+   * Regra MVP:
+   * - Appointment.status = pending_payment
+   * - createdAt < now - TTL_MIN
+   * => cancela appointment e marca bookingPayment como canceled (se ainda não finalizado)
+   */
+  @Cron(CronExpression.EVERY_MINUTE)
+  async expirePendingPayments() {
+    const now = new Date();
+    const TTL_MIN = Number(process.env.PENDING_PAYMENT_TTL_MIN ?? 15);
+    const cutoff = addMinutes(now, -TTL_MIN);
+
+    // pega um lote por ciclo (evita carga excessiva)
+    const stale = await this.prisma.appointment.findMany({
+      where: {
+        status: 'pending_payment',
+        createdAt: { lt: cutoff },
+      },
+      select: { id: true },
+      take: 200,
+      orderBy: { createdAt: 'asc' },
+    });
+
+    if (stale.length === 0) return;
+
+    const ids = stale.map((a) => a.id);
+
+    const result = await this.prisma.$transaction(async (tx) => {
+      // marca pagamentos ligados como canceled, se ainda não finalizados
+      await tx.bookingPayment.updateMany({
+        where: {
+          appointmentId: { in: ids },
+          status: { in: ['processing', 'requires_action'] as any },
+        },
+        data: {
+          status: 'canceled' as any,
+          failedAt: now,
+          failureMessage: 'expired_by_cron',
+        },
+      });
+
+      // cancela appointment pra liberar slot
+      const appts = await tx.appointment.updateMany({
+        where: { id: { in: ids }, status: 'pending_payment' },
+        data: { status: 'cancelled' as any },
+      });
+
+      return appts;
+    });
+
+    if (result.count > 0) {
+      this.logger.log(
+        `Cron EXPIRE PENDING_PAYMENT: cancelados ${result.count} appointments (TTL=${TTL_MIN}m).`,
+      );
+    }
+  }
 }
