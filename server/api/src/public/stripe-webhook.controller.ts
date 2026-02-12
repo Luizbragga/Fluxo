@@ -63,6 +63,35 @@ export class StripeWebhookController {
     } catch (err: any) {
       throw new BadRequestException(`Assinatura inválida: ${err?.message}`);
     }
+    // -----------------------------
+    // Idempotência: processa cada event.id 1x
+    // -----------------------------
+    const eventId = event.id;
+    const eventType = event.type;
+
+    const bookingPaymentIdFromMeta = (event.data?.object as any)?.metadata
+      ?.bookingPaymentId as string | undefined;
+
+    const appointmentIdFromMeta = (event.data?.object as any)?.metadata
+      ?.appointmentId as string | undefined;
+
+    try {
+      await this.prisma.stripeWebhookEvent.create({
+        data: {
+          id: eventId,
+          type: eventType,
+          bookingPaymentId: bookingPaymentIdFromMeta,
+          appointmentId: appointmentIdFromMeta,
+        },
+      });
+    } catch (e: any) {
+      // Se já existe (replay do Stripe), não reprocessa.
+      // Prisma P2002 = Unique constraint failed
+      if (e?.code === 'P2002') {
+        return { received: true, replay: true };
+      }
+      throw e;
+    }
 
     // Processa eventos importantes pro MVP
     switch (event.type) {

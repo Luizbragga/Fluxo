@@ -22,6 +22,7 @@ import {
 import { EmailService } from '../notifications/email.service';
 import { SmsService } from '../notifications/sms.service';
 import { NotificationsService } from '../notifications/notifications.service';
+import Stripe from 'stripe';
 
 const DEFAULT_COMMISSION_PERCENTAGE = 50; // 50% por padrão (ajustável)
 const PAYMENT_MANAGERS = new Set<Role>([
@@ -40,7 +41,14 @@ export class AppointmentsService {
     private readonly email: EmailService,
     private readonly smsService: SmsService,
     private readonly notifications: NotificationsService,
-  ) {}
+  ) {
+    const key = process.env.STRIPE_SECRET_KEY;
+    if (key) {
+      this.stripe = new Stripe(key, {
+        apiVersion: '2024-06-20' as Stripe.LatestApiVersion,
+      });
+    }
+  }
 
   private async assertMinCancelNotice(
     tenantId: string,
@@ -84,6 +92,16 @@ export class AppointmentsService {
         })
       )?.timezone ?? 'Europe/Lisbon'
     );
+  }
+  private stripe: Stripe | null = null;
+
+  private requireStripe() {
+    if (!this.stripe) {
+      throw new BadRequestException(
+        'Stripe não configurado (STRIPE_SECRET_KEY ausente).',
+      );
+    }
+    return this.stripe;
   }
 
   private formatPtDateTime(date: Date, tz: string) {
@@ -1148,32 +1166,6 @@ export class AppointmentsService {
       // Regra: só reembolsa automaticamente quando o cancelamento respeita a antecedência mínima.
       // - Provider/attendant só conseguem cancelar antes do cutoff (por assertMinCancelNotice), então aqui quase sempre será true.
       // - Owner/admin podem cancelar mesmo depois do cutoff (override), então aqui pode ser false.
-      let shouldAutoRefund = false;
-
-      if (
-        appt.bookingPayment?.id &&
-        appt.bookingPayment.status === BookingPaymentStatus.succeeded &&
-        !appt.bookingPayment.refundedAt
-      ) {
-        const settings = await tx.tenantSettings.findUnique({
-          where: { tenantId },
-          select: { minCancelNoticeHours: true },
-        });
-
-        const hours = settings?.minCancelNoticeHours ?? 0;
-
-        if (hours > 0) {
-          const now = new Date();
-          const cutoff = addMinutes(appt.startAt, -hours * 60);
-          shouldAutoRefund = now <= cutoff; // só auto-refund se estiver antes do cutoff
-        } else {
-          // se minCancelNoticeHours = 0, você pode escolher:
-          // - true (reembolsa sempre), ou
-          // - false (não reembolsa automático nunca)
-          // Eu recomendo false no MVP para não fazer “refund automático sem regra”.
-          shouldAutoRefund = false;
-        }
-      }
 
       const updatedAppointment = await tx.appointment.update({
         where: { id },
@@ -1183,19 +1175,6 @@ export class AppointmentsService {
           provider: { select: { id: true, name: true } },
         },
       });
-
-      // aplica auto-refund se elegível
-      if (shouldAutoRefund && appt.bookingPayment?.id) {
-        await tx.bookingPayment.update({
-          where: { id: appt.bookingPayment.id },
-          data: {
-            status: BookingPaymentStatus.refunded,
-            refundedAt: new Date(),
-            refundReason: 'auto_cancel_refund',
-            refundedById: actorUserId,
-          },
-        });
-      }
 
       return updatedAppointment;
     });
@@ -1858,6 +1837,8 @@ export class AppointmentsService {
               id: true,
               status: true,
               refundedAt: true,
+              stripePaymentIntentId: true,
+              amountCents: true,
             },
           },
         },
@@ -1898,13 +1879,28 @@ export class AppointmentsService {
           refundedAt: appt.bookingPayment.refundedAt,
         });
       }
+      const pi = appt.bookingPayment.stripePaymentIntentId;
+      if (!pi) {
+        throw new BadRequestException({
+          code: 'MISSING_STRIPE_PAYMENT_INTENT',
+          message:
+            'Este pagamento não possui stripePaymentIntentId. Confirme se o webhook registrou o payment_intent.',
+        });
+      }
+
+      const stripe = this.requireStripe();
+
+      await stripe.refunds.create(
+        { payment_intent: pi },
+        { idempotencyKey: `refund:${appt.bookingPayment.id}` },
+      );
 
       const updated = await tx.bookingPayment.update({
         where: { id: appt.bookingPayment.id },
         data: {
           status: BookingPaymentStatus.refunded,
           refundedAt: new Date(),
-          refundReason: reason?.trim() ? reason.trim() : 'manual_refund',
+          refundReason: reason?.trim() ? reason.trim() : 'stripe_refund',
           refundedById: actorUserId,
         },
       });
@@ -1912,74 +1908,85 @@ export class AppointmentsService {
       return updated;
     });
   }
-  async markBookingPaymentRefunded(
+
+  // ---------------------------------------------------------------------------
+  // Cancelar + reembolsar (fluxo único)
+  // - cancela o appointment (status=cancelled)
+  // - faz refund na Stripe (e marca BookingPayment como refunded)
+  // Regras:
+  // - somente owner/admin
+  // - só reembolsa se bookingPayment.status = succeeded
+  // - refund exige appointment CANCELLED (refundBookingPayment já valida isso)
+  // ---------------------------------------------------------------------------
+  async cancelAndRefund(
     tenantId: string,
     appointmentId: string,
     actorUserId: string,
     actorRole: Role,
-    dto: { reason?: string },
+    reason?: string,
   ) {
-    // segurança defensiva (mesmo com @Roles)
-    if (![Role.owner, Role.admin, Role.attendant].includes(actorRole as any)) {
-      throw new ForbiddenException('Sem permissão para reembolsar.');
+    // 0) Idempotência: se já estiver reembolsado, não tenta reembolsar de novo
+    const current = await this.prisma.appointment.findFirst({
+      where: { id: appointmentId, tenantId },
+      select: {
+        id: true,
+        status: true,
+        bookingPayment: {
+          select: { id: true, status: true, refundedAt: true },
+        },
+      },
+    });
+
+    if (!current) throw new NotFoundException('Appointment não encontrado.');
+
+    // Se já está reembolsado, só garante cancelamento e retorna replay
+    if (current.bookingPayment?.status === BookingPaymentStatus.refunded) {
+      if (current.status !== AppointmentState.cancelled) {
+        const cancelled = await this.remove(
+          tenantId,
+          appointmentId,
+          actorUserId,
+          actorRole,
+        );
+        return {
+          replay: true,
+          appointment: cancelled,
+          bookingPayment: current.bookingPayment,
+        };
+      }
+
+      return {
+        replay: true,
+        appointment: current,
+        bookingPayment: current.bookingPayment,
+      };
     }
 
-    return this.prisma.$transaction(async (tx) => {
-      // busca o bookingPayment pelo appointment (1:1)
-      const bp = await tx.bookingPayment.findFirst({
-        where: { tenantId, appointmentId },
-        select: {
-          id: true,
-          status: true,
-          refundedAt: true,
-          stripePaymentIntentId: true,
-        },
-      });
+    // 1) Permissão (defensivo)
+    if (!REFUND_MANAGERS.has(actorRole)) {
+      throw new ForbiddenException('Sem permissão para cancelar e reembolsar.');
+    }
 
-      if (!bp) {
-        throw new NotFoundException(
-          'Este agendamento não possui pagamento online (BookingPayment).',
-        );
-      }
+    // 2) Cancela
+    const cancelledAppointment = await this.remove(
+      tenantId,
+      appointmentId,
+      actorUserId,
+      actorRole,
+    );
 
-      // Guardrail 1: não reembolsa se já está reembolsado
-      if (bp.status === BookingPaymentStatus.refunded) {
-        throw new BadRequestException({
-          code: 'ALREADY_REFUNDED',
-          message: 'Este pagamento já está marcado como reembolsado.',
-        });
-      }
+    // 3) Reembolsa
+    const refundedBookingPayment = await this.refundBookingPayment(
+      tenantId,
+      appointmentId,
+      actorUserId,
+      actorRole,
+      reason,
+    );
 
-      // Guardrail 2: só permite refund se estava succeeded
-      if (bp.status !== BookingPaymentStatus.succeeded) {
-        throw new BadRequestException({
-          code: 'REFUND_NOT_ALLOWED',
-          message:
-            'Só é permitido marcar reembolso quando o pagamento estiver como succeeded.',
-          currentStatus: bp.status,
-        });
-      }
-
-      // Marca como reembolsado (manual)
-      const updated = await tx.bookingPayment.update({
-        where: { id: bp.id },
-        data: {
-          status: BookingPaymentStatus.refunded,
-          refundedAt: new Date(),
-          refundReason: dto.reason?.trim() || null,
-          refundedById: actorUserId,
-        },
-        select: {
-          id: true,
-          status: true,
-          refundedAt: true,
-          refundReason: true,
-          refundedById: true,
-          appointmentId: true,
-        },
-      });
-
-      return { ok: true, bookingPayment: updated };
-    });
+    return {
+      appointment: cancelledAppointment,
+      bookingPayment: refundedBookingPayment,
+    };
   }
 }

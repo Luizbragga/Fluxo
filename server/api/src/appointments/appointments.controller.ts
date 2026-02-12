@@ -109,28 +109,42 @@ export class AppointmentsController {
       user.role,
     );
   }
-  // Reembolso (MVP): marca no banco como refunded (não chama Stripe)
+
+  // Cancelar + reembolsar (1 clique)
+  // Regras:
+  // - somente owner/admin
+  // - cancela o appointment (status=cancelled)
+  // - se tiver bookingPayment SUCCEEDED com stripePaymentIntentId, faz refund no Stripe e marca como refunded
   @Roles(Role.owner, Role.admin)
-  @Post(':id/booking-payment/refund')
-  @ApiOperation({ summary: 'Marcar pagamento online como reembolsado (MVP)' })
+  @Post(':id/cancel-refund')
+  @ApiOperation({
+    summary: 'Cancelar agendamento e reembolsar pagamento online (1 clique)',
+  })
   @ApiParam({
     name: 'id',
     type: String,
-    example: 'cm1381j6w000fuyvw67olvu9h',
+    example: 'cmlii1g5v0003uyz4dkdn7or8',
     description: 'ID do appointment',
   })
-  @ApiBody({ type: RefundBookingPaymentDto })
-  refundBookingPayment(
+  @ApiBody({
+    schema: {
+      type: 'object',
+      properties: {
+        reason: { type: 'string', example: 'cancel+refund teste' },
+      },
+    },
+  })
+  cancelAndRefund(
     @CurrentUser() user: AuthUser,
     @Param('id') id: string,
-    @Body() dto: RefundBookingPaymentDto,
+    @Body() body: { reason?: string },
   ) {
-    return this.appointmentsService.refundBookingPayment(
+    return this.appointmentsService.cancelAndRefund(
       user.tenantId,
       id,
       user.id,
       user.role,
-      dto.reason,
+      body?.reason,
     );
   }
 

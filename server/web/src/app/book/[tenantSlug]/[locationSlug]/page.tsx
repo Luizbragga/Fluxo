@@ -52,6 +52,7 @@ export default function BookBySlugPage() {
   const [submitting, setSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState<string | null>(null);
   const [submitOk, setSubmitOk] = useState<string | null>(null);
+  const [payOnline, setPayOnline] = useState(false);
 
   const today = useMemo(() => new Date(), []);
   const [selectedDate, setSelectedDate] = useState<Date>(() => new Date());
@@ -312,6 +313,70 @@ export default function BookBySlugPage() {
     try {
       setSubmitting(true);
 
+      const policy = data?.location?.bookingPaymentPolicy ?? "offline_only";
+
+      if (policy === "offline_only") {
+        await createPublicAppointmentBySlug({
+          tenantSlug,
+          locationSlug,
+          payload: {
+            serviceId,
+            providerId,
+            date: selectedDateStr,
+            time: selectedTime,
+            customerName: name,
+            customerPhone: phone,
+          },
+        });
+
+        setSubmitOk("Agendamento confirmado!");
+        setSelectedTime(null);
+
+        const appts = await fetchPublicDayAppointments({
+          tenantSlug: tenantSlug!,
+          locationSlug: locationSlug!,
+          providerId,
+          date: selectedDateStr,
+        });
+
+        setDayAppts(Array.isArray(appts) ? appts : []);
+        return;
+      }
+
+      if (
+        policy === "online_required" ||
+        (policy === "online_optional" && payOnline)
+      ) {
+        // chama checkout e redireciona
+        const { createPublicCheckoutBySlug } =
+          await import("../../../book/_api/public-checkout");
+
+        const res = await createPublicCheckoutBySlug({
+          tenantSlug,
+          locationSlug,
+          payload: {
+            serviceId,
+            providerId,
+            date: selectedDateStr,
+            time: selectedTime,
+            customerName: name,
+            customerPhone: phone,
+            payOnline: policy === "online_optional" ? true : undefined,
+          },
+        });
+
+        if (res?.checkoutUrl) {
+          window.location.href = res.checkoutUrl;
+          return;
+        }
+
+        throw new Error(
+          "CheckoutUrl não retornou. Verifique endpoint /checkout.",
+        );
+      }
+
+      // online_optional com payOnline=false cai aqui (offline)
+      // online_optional com payOnline=false cai aqui (offline)
       await createPublicAppointmentBySlug({
         tenantSlug,
         locationSlug,
@@ -328,12 +393,14 @@ export default function BookBySlugPage() {
       setSubmitOk("Agendamento confirmado!");
       setSelectedTime(null);
 
-      const appts = await fetchPublicDayAppointments({
+      const dayApptsRes = await fetchPublicDayAppointments({
         tenantSlug: tenantSlug!,
         locationSlug: locationSlug!,
         providerId,
         date: selectedDateStr,
       });
+
+      setDayAppts(Array.isArray(dayApptsRes) ? dayApptsRes : []);
 
       setDayAppts(Array.isArray(appts) ? appts : []);
     } catch (err: any) {
@@ -537,6 +604,52 @@ export default function BookBySlugPage() {
             <p className="text-[11px] uppercase tracking-wide text-slate-500">
               Confirmar agendamento
             </p>
+            {/* Pagamento */}
+            {(() => {
+              const policy =
+                data?.location?.bookingPaymentPolicy ?? "offline_only";
+              const percent = Number(
+                data?.location?.bookingDepositPercent ?? 0,
+              );
+
+              if (policy === "offline_only") return null;
+
+              if (policy === "online_required") {
+                return (
+                  <div className="rounded-md border border-emerald-500/30 bg-emerald-500/10 px-3 py-2 text-xs text-emerald-200">
+                    Pagamento online obrigatório
+                    {percent > 0 && percent < 100
+                      ? ` (sinal de ${percent}%)`
+                      : ""}
+                    .
+                  </div>
+                );
+              }
+
+              // online_optional
+              return (
+                <div className="rounded-md border border-slate-800 bg-slate-900/30 px-3 py-2">
+                  <p className="text-[11px] text-slate-400 mb-2">Pagamento</p>
+
+                  <label className="flex items-center gap-2 text-xs text-slate-200">
+                    <input
+                      type="checkbox"
+                      checked={payOnline}
+                      onChange={(e) => setPayOnline(e.target.checked)}
+                    />
+                    Pagar online agora
+                    {percent > 0 && percent < 100
+                      ? ` (sinal de ${percent}%)`
+                      : ""}
+                    .
+                  </label>
+
+                  <p className="mt-1 text-[11px] text-slate-500">
+                    Se desmarcar, o pagamento será feito presencialmente.
+                  </p>
+                </div>
+              );
+            })()}
 
             <div>
               <p className="text-[11px] text-slate-400 mb-1">Nome</p>
