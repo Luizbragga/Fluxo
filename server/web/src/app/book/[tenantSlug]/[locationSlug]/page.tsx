@@ -339,7 +339,6 @@ export default function BookBySlugPage() {
           date: selectedDateStr,
         });
 
-        setDayAppts(Array.isArray(appts) ? appts : []);
         return;
       }
 
@@ -401,8 +400,6 @@ export default function BookBySlugPage() {
       });
 
       setDayAppts(Array.isArray(dayApptsRes) ? dayApptsRes : []);
-
-      setDayAppts(Array.isArray(appts) ? appts : []);
     } catch (err: any) {
       const msg =
         err instanceof ApiError
