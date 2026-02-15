@@ -1,7 +1,7 @@
 "use client";
 
 import React, { useEffect, useMemo, useState } from "react";
-import { useParams } from "next/navigation";
+import { useParams, useSearchParams, useRouter } from "next/navigation";
 import { ApiError } from "@/lib/api-client";
 import {
   fetchPublicBookingDataBySlug,
@@ -28,6 +28,8 @@ function addDays(date: Date, amount: number): Date {
 
 export default function BookBySlugPage() {
   const params = useParams();
+  const searchParams = useSearchParams();
+  const router = useRouter();
   const tenantSlug = (params as any)?.tenantSlug as string | undefined;
   const locationSlug = (params as any)?.locationSlug as string | undefined;
 
@@ -147,6 +149,28 @@ export default function BookBySlugPage() {
       return true;
     });
   }, [daySlots, busyRanges, isToday, nowMinutes, selectedServiceDurationMin]);
+  useEffect(() => {
+    const success = searchParams.get("success");
+    const canceled = searchParams.get("canceled");
+    const sessionId = searchParams.get("session_id");
+
+    if (success === "1") {
+      setSubmitOk("Pagamento confirmado! Seu agendamento foi concluído.");
+      setSubmitError(null);
+      // opcional: guardar sessionId pra debug (não precisa mostrar)
+    } else if (canceled === "1") {
+      setSubmitError("Pagamento cancelado. Você pode tentar novamente.");
+      setSubmitOk(null);
+    } else {
+      return; // nada pra fazer
+    }
+
+    // limpa a URL (remove query params) sem recarregar a página
+    if (tenantSlug && locationSlug) {
+      router.replace(`/book/${tenantSlug}/${locationSlug}`);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [searchParams, tenantSlug, locationSlug]);
 
   // load by slug
   useEffect(() => {
