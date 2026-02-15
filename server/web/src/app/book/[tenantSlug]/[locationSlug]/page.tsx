@@ -339,6 +339,9 @@ export default function BookBySlugPage() {
           date: selectedDateStr,
         });
 
+        setDayAppts(Array.isArray(appts) ? appts : []);
+        return;
+
         return;
       }
 
