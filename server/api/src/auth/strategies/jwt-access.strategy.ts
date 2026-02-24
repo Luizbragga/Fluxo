@@ -2,6 +2,15 @@ import { Injectable } from '@nestjs/common';
 import { PassportStrategy } from '@nestjs/passport';
 import { ExtractJwt, Strategy } from 'passport-jwt';
 
+type JwtAccessPayload = {
+  sub: string;
+  tenantId: string;
+  role: string;
+  locationId?: string | null;
+  reauthNonce?: number;
+  isReauth?: boolean;
+};
+
 @Injectable()
 export class JwtAccessStrategy extends PassportStrategy(Strategy, 'jwt') {
   constructor() {
@@ -12,7 +21,7 @@ export class JwtAccessStrategy extends PassportStrategy(Strategy, 'jwt') {
     });
   }
 
-  async validate(payload: any) {
+  validate(payload: JwtAccessPayload) {
     const userId = payload.sub;
 
     return {

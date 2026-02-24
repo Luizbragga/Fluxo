@@ -15,7 +15,7 @@ export class JwtRefreshStrategy extends PassportStrategy(
     });
   }
 
-  async validate(payload: any) {
-    return payload; // { sub, tenantId }
+  validate(payload: any) {
+    return payload;
   }
 }

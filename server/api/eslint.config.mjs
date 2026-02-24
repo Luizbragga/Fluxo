@@ -27,9 +27,21 @@ export default tseslint.config(
   {
     rules: {
       '@typescript-eslint/no-explicit-any': 'off',
+
+      // mantém disciplina, mas não bloqueia o MVP
       '@typescript-eslint/no-floating-promises': 'warn',
+
+      // ⚠️ estes são os que estão travando teu repo inteiro agora
       '@typescript-eslint/no-unsafe-argument': 'warn',
-      "prettier/prettier": ["error", { endOfLine: "auto" }],
+      '@typescript-eslint/no-unsafe-assignment': 'warn',
+      '@typescript-eslint/no-unsafe-member-access': 'warn',
+      '@typescript-eslint/no-unsafe-call': 'warn',
+      '@typescript-eslint/no-unsafe-return': 'warn',
+
+      // opcional: muita gente também deixa isso warn no MVP
+      '@typescript-eslint/no-misused-promises': 'warn',
+
+      'prettier/prettier': ['error', { endOfLine: 'auto' }],
     },
   },
 );

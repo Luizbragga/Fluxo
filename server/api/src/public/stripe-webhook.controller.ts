@@ -8,6 +8,7 @@ import {
 import { ApiExcludeEndpoint, ApiTags } from '@nestjs/swagger';
 import Stripe from 'stripe';
 import { PrismaService } from '../prisma/prisma.service';
+import { AppointmentState, BookingPaymentStatus } from '@prisma/client';
 
 @ApiTags('Public')
 @Controller('public')
@@ -63,6 +64,7 @@ export class StripeWebhookController {
     } catch (err: any) {
       throw new BadRequestException(`Assinatura inválida: ${err?.message}`);
     }
+
     // -----------------------------
     // Idempotência: processa cada event.id 1x
     // -----------------------------
@@ -93,10 +95,33 @@ export class StripeWebhookController {
       throw e;
     }
 
+    // Helper: estados finais no payment (não rebaixar)
+    const isFinalPayment = (s: BookingPaymentStatus) =>
+      s === BookingPaymentStatus.succeeded ||
+      s === BookingPaymentStatus.refunded;
+
+    // Helper: cancela appointment somente se estiver pendente (pra liberar slot)
+    const cancelAppointmentIfPending = async (
+      tx: any,
+      appointmentId: string,
+    ) => {
+      const appt = await tx.appointment.findUnique({
+        where: { id: appointmentId },
+        select: { status: true },
+      });
+
+      if (appt?.status === AppointmentState.pending_payment) {
+        await tx.appointment.update({
+          where: { id: appointmentId },
+          data: { status: AppointmentState.cancelled },
+        });
+      }
+    };
+
     // Processa eventos importantes pro MVP
     switch (event.type) {
       case 'checkout.session.completed': {
-        const session = event.data.object as Stripe.Checkout.Session;
+        const session = event.data.object;
 
         const bookingPaymentId = session.metadata?.bookingPaymentId;
         const appointmentId = session.metadata?.appointmentId;
@@ -112,17 +137,12 @@ export class StripeWebhookController {
           if (!current) return;
 
           // Guardrail: não sobrescreve estados finais
-          if (
-            current.status === ('refunded' as any) ||
-            current.status === ('succeeded' as any)
-          ) {
-            return;
-          }
+          if (isFinalPayment(current.status)) return;
 
           await tx.bookingPayment.update({
             where: { id: bookingPaymentId },
             data: {
-              status: 'succeeded' as any,
+              status: BookingPaymentStatus.succeeded,
               stripeCheckoutSessionId: session.id,
               stripePaymentIntentId:
                 typeof session.payment_intent === 'string'
@@ -131,17 +151,25 @@ export class StripeWebhookController {
             },
           });
 
-          await tx.appointment.update({
+          // ✅ pagamento ok: agenda (apenas se estava pendente)
+          const appt = await tx.appointment.findUnique({
             where: { id: appointmentId },
-            data: { status: 'scheduled' as any },
+            select: { status: true },
           });
+
+          if (appt?.status === AppointmentState.pending_payment) {
+            await tx.appointment.update({
+              where: { id: appointmentId },
+              data: { status: AppointmentState.scheduled },
+            });
+          }
         });
 
         break;
       }
 
       case 'checkout.session.expired': {
-        const session = event.data.object as Stripe.Checkout.Session;
+        const session = event.data.object;
 
         const bookingPaymentId = session.metadata?.bookingPaymentId;
         const appointmentId = session.metadata?.appointmentId;
@@ -157,25 +185,17 @@ export class StripeWebhookController {
           if (!current) return;
 
           // Guardrail: não sobrescreve estados finais
-          if (
-            current.status === ('refunded' as any) ||
-            current.status === ('succeeded' as any)
-          ) {
-            return;
-          }
+          if (isFinalPayment(current.status)) return;
 
           await tx.bookingPayment.update({
             where: { id: bookingPaymentId },
             data: {
-              status: 'canceled' as any,
+              status: BookingPaymentStatus.canceled,
               stripeCheckoutSessionId: session.id,
             },
           });
 
-          await tx.appointment.update({
-            where: { id: appointmentId },
-            data: { status: 'cancelled' as any },
-          });
+          await cancelAppointmentIfPending(tx, appointmentId);
         });
 
         break;
@@ -183,7 +203,7 @@ export class StripeWebhookController {
 
       // ✅ Checkout tentou pagar (async) e falhou
       case 'checkout.session.async_payment_failed': {
-        const session = event.data.object as Stripe.Checkout.Session;
+        const session = event.data.object;
 
         const bookingPaymentId = session.metadata?.bookingPaymentId;
         const appointmentId = session.metadata?.appointmentId;
@@ -199,17 +219,12 @@ export class StripeWebhookController {
           if (!current) return;
 
           // Guardrails: não rebaixa succeeded/refunded
-          if (
-            current.status === ('refunded' as any) ||
-            current.status === ('succeeded' as any)
-          ) {
-            return;
-          }
+          if (isFinalPayment(current.status)) return;
 
           await tx.bookingPayment.update({
             where: { id: bookingPaymentId },
             data: {
-              status: 'failed' as any,
+              status: BookingPaymentStatus.failed,
               stripeCheckoutSessionId: session.id,
               stripePaymentIntentId:
                 typeof session.payment_intent === 'string'
@@ -220,11 +235,7 @@ export class StripeWebhookController {
             },
           });
 
-          // falhou: cancela para liberar o slot
-          await tx.appointment.update({
-            where: { id: appointmentId },
-            data: { status: 'cancelled' as any },
-          });
+          await cancelAppointmentIfPending(tx, appointmentId);
         });
 
         break;
@@ -232,7 +243,7 @@ export class StripeWebhookController {
 
       // ✅ Falha no PaymentIntent (nem sempre vem com metadata, mas tratamos quando der)
       case 'payment_intent.payment_failed': {
-        const pi = event.data.object as Stripe.PaymentIntent;
+        const pi = event.data.object;
 
         let bookingPaymentId = pi.metadata?.bookingPaymentId;
         let appointmentId = pi.metadata?.appointmentId;
@@ -250,25 +261,22 @@ export class StripeWebhookController {
           appointmentId = bp.appointmentId;
         }
 
+        if (!bookingPaymentId || !appointmentId) break;
+
         await this.prisma.$transaction(async (tx) => {
           const current = await tx.bookingPayment.findUnique({
-            where: { id: bookingPaymentId! },
+            where: { id: bookingPaymentId },
             select: { status: true },
           });
 
           if (!current) return;
 
-          if (
-            current.status === ('refunded' as any) ||
-            current.status === ('succeeded' as any)
-          ) {
-            return;
-          }
+          if (isFinalPayment(current.status)) return;
 
           await tx.bookingPayment.update({
-            where: { id: bookingPaymentId! },
+            where: { id: bookingPaymentId },
             data: {
-              status: 'failed' as any,
+              status: BookingPaymentStatus.failed,
               stripePaymentIntentId: pi.id,
               failedAt: new Date(),
               failureMessage:
@@ -278,10 +286,7 @@ export class StripeWebhookController {
             },
           });
 
-          await tx.appointment.update({
-            where: { id: appointmentId! },
-            data: { status: 'cancelled' as any },
-          });
+          await cancelAppointmentIfPending(tx, appointmentId);
         });
 
         break;
@@ -289,7 +294,7 @@ export class StripeWebhookController {
 
       // ✅ PaymentIntent cancelado (usuário desistiu, timeout, Stripe cancelou)
       case 'payment_intent.canceled': {
-        const pi = event.data.object as Stripe.PaymentIntent;
+        const pi = event.data.object;
 
         let bookingPaymentId = pi.metadata?.bookingPaymentId;
         let appointmentId = pi.metadata?.appointmentId;
@@ -307,26 +312,23 @@ export class StripeWebhookController {
           appointmentId = bp.appointmentId;
         }
 
+        if (!bookingPaymentId || !appointmentId) break;
+
         await this.prisma.$transaction(async (tx) => {
           const current = await tx.bookingPayment.findUnique({
-            where: { id: bookingPaymentId! },
+            where: { id: bookingPaymentId },
             select: { status: true },
           });
 
           if (!current) return;
 
           // Guardrails: não rebaixa estados finais
-          if (
-            current.status === ('refunded' as any) ||
-            current.status === ('succeeded' as any)
-          ) {
-            return;
-          }
+          if (isFinalPayment(current.status)) return;
 
           await tx.bookingPayment.update({
-            where: { id: bookingPaymentId! },
+            where: { id: bookingPaymentId },
             data: {
-              status: 'canceled' as any,
+              status: BookingPaymentStatus.canceled,
               stripePaymentIntentId: pi.id,
               // usando campos já existentes no teu padrão (evita quebrar schema)
               failedAt: new Date(),
@@ -334,11 +336,7 @@ export class StripeWebhookController {
             },
           });
 
-          // cancela appointment pra liberar slot
-          await tx.appointment.update({
-            where: { id: appointmentId! },
-            data: { status: 'cancelled' as any },
-          });
+          await cancelAppointmentIfPending(tx, appointmentId);
         });
 
         break;
@@ -346,7 +344,7 @@ export class StripeWebhookController {
 
       // ✅ Reembolso feito no Stripe (painel / automação) -> refletir no banco
       case 'charge.refunded': {
-        const charge = event.data.object as Stripe.Charge;
+        const charge = event.data.object;
 
         // metadata é "ideal", mas nem sempre vem
         let bookingPaymentId = (charge.metadata as any)?.bookingPaymentId as
@@ -376,35 +374,38 @@ export class StripeWebhookController {
           appointmentId = bp.appointmentId;
         }
 
+        if (!bookingPaymentId || !appointmentId) break;
+
         await this.prisma.$transaction(async (tx) => {
           const current = await tx.bookingPayment.findUnique({
-            where: { id: bookingPaymentId! },
+            where: { id: bookingPaymentId },
             select: { status: true },
           });
 
           if (!current) return;
 
           // Guardrail: se já está refunded, não faz nada
-          if (current.status === ('refunded' as any)) return;
+          if (current.status === BookingPaymentStatus.refunded) {
+            return;
+          }
 
-          // Se quiser ser mais permissivo, remova este guardrail
-          if (current.status !== ('succeeded' as any)) return;
+          // Regra MVP: só marca refunded se já tinha succeeded
+          if (current.status !== BookingPaymentStatus.succeeded) {
+            return;
+          }
 
           await tx.bookingPayment.update({
-            where: { id: bookingPaymentId! },
+            where: { id: bookingPaymentId },
             data: {
-              status: 'refunded' as any,
+              status: BookingPaymentStatus.refunded,
               // usando campos existentes (evita quebrar schema)
               failedAt: new Date(),
               failureMessage: 'charge.refunded',
             },
           });
 
-          // regra MVP: após refund, cancela o appointment
-          await tx.appointment.update({
-            where: { id: appointmentId! },
-            data: { status: 'cancelled' as any },
-          });
+          // regra MVP: após refund, cancela o appointment (somente se pendente)
+          await cancelAppointmentIfPending(tx, appointmentId);
         });
 
         break;

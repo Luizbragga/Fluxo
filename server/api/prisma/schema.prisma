@@ -360,6 +360,9 @@ model Appointment {
   customerId         String?
   bookingPayment     BookingPayment?
   payments           AppointmentPayment[]
+  
+  cancelledAt DateTime?
+  noShowAt    DateTime?
 
   createdById String?
   createdBy   User?   @relation(fields: [createdById], references: [id], onDelete: SetNull)

@@ -17,6 +17,7 @@ import { Role, CustomerPlanPaymentStatus } from '@prisma/client';
 import { ProviderPayoutsQueryDto } from './dto/provider-payouts-query.dto';
 import { AppointmentsOverviewQueryDto } from './dto/appointments-overview-query.dto';
 import { ServicesReportQueryDto } from './dto/services-report-query.dto';
+import type { Request } from 'express';
 
 @ApiTags('Reports')
 @ApiBearerAuth()
@@ -52,7 +53,7 @@ export class ReportsController {
     example: 'cmi8prov0000...',
   })
   getProviderEarnings(
-    @Req() req: any,
+    @Req() req: Request,
     @Query('from') from?: string,
     @Query('to') to?: string,
     @Query('locationId') locationId?: string,
@@ -72,7 +73,7 @@ export class ReportsController {
   @Roles(Role.owner, Role.admin)
   @Get('provider-payouts')
   async getProviderPayouts(
-    @Req() req: any,
+    @Req() req: Request,
     @Query() query: ProviderPayoutsQueryDto,
   ) {
     const { tenantId } = req.user as { tenantId: string };
@@ -82,7 +83,7 @@ export class ReportsController {
   @Roles(Role.owner, Role.admin)
   @Patch('provider-payouts/provider/:providerId/mark-paid')
   async markProviderPayoutsAsPaid(
-    @Req() req: any,
+    @Req() req: Request,
     @Param('providerId') providerId: string,
   ) {
     const { tenantId } = req.user as { tenantId: string };
@@ -118,7 +119,7 @@ export class ReportsController {
     enum: CustomerPlanPaymentStatus,
   })
   getPlanPayments(
-    @Req() req: any,
+    @Req() req: Request,
     @Query('from') from?: string,
     @Query('to') to?: string,
     @Query('locationId') locationId?: string,
@@ -161,7 +162,7 @@ export class ReportsController {
     example: 'cmi8prov0000...',
   })
   getDailyRevenue(
-    @Req() req: any,
+    @Req() req: Request,
     @Query('from') from?: string,
     @Query('to') to?: string,
     @Query('locationId') locationId?: string,
@@ -180,6 +181,21 @@ export class ReportsController {
 
   @Roles(Role.owner, Role.admin)
   @Get('cancellations')
+  @ApiQuery({
+    name: 'dateBasis',
+    required: false,
+    enum: ['appointment_date', 'event_date'],
+    description:
+      'Base da data do filtro: startAt (appointment_date) ou cancelledAt/noShowAt (event_date)',
+  })
+  @ApiQuery({
+    name: 'day',
+    required: false,
+    type: String,
+    example: '2026-02-18',
+    description:
+      'Filtra por um dia específico (YYYY-MM-DD). Sobrescreve from/to.',
+  })
   @ApiQuery({
     name: 'from',
     required: false,
@@ -210,12 +226,14 @@ export class ReportsController {
     enum: ['cancelled', 'no_show'],
   })
   async getCancellationsAndNoShows(
-    @Req() req: any,
+    @Req() req: Request,
     @Query('from') from?: string,
     @Query('to') to?: string,
     @Query('locationId') locationId?: string,
     @Query('providerId') providerId?: string,
     @Query('type') type?: 'cancelled' | 'no_show',
+    @Query('dateBasis') dateBasis?: 'appointment_date' | 'event_date',
+    @Query('day') day?: string,
   ) {
     const { tenantId } = req.user as { tenantId: string };
 
@@ -226,11 +244,14 @@ export class ReportsController {
       locationId,
       providerId,
       type,
+      dateBasis,
+      day,
     });
   }
+  @Roles(Role.owner, Role.admin)
   @Get('appointments-overview')
   getAppointmentsOverview(
-    @Req() req: any,
+    @Req() req: Request,
     @Query() query: AppointmentsOverviewQueryDto,
   ) {
     const tenantId = req.user?.tenantId as string;
@@ -243,10 +264,11 @@ export class ReportsController {
       providerId: query.providerId,
     });
   }
+  @Roles(Role.owner, Role.admin)
   @Get('services')
   async getServicesReport(
     @Query() query: ServicesReportQueryDto,
-    @Req() req: any,
+    @Req() req: Request,
   ) {
     return this.reportsService.getServicesReport(req.user, query);
   }

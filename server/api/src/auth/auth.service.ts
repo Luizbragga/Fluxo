@@ -96,7 +96,7 @@ export class AuthService {
   }
 
   private async saveRefresh(userId: string, refresh: string) {
-    const decoded = this.jwt.decode(refresh) as { exp?: number } | null;
+    const decoded = this.jwt.decode(refresh);
     const expSec =
       decoded?.exp ?? Math.floor(Date.now() / 1000) + REFRESH_TTL_SEC;
 
@@ -333,9 +333,9 @@ export class AuthService {
 
     // rotação: apaga o refresh usado e grava o novo
     await this.prisma.$transaction(async (tx) => {
-      await tx.refreshToken.delete({ where: { id: usedRowId! } });
+      await tx.refreshToken.delete({ where: { id: usedRowId } });
 
-      const decodedNew = this.jwt.decode(newRefresh) as { exp?: number } | null;
+      const decodedNew = this.jwt.decode(newRefresh);
       const expSec =
         decodedNew?.exp ?? Math.floor(Date.now() / 1000) + REFRESH_TTL_SEC;
 
@@ -355,7 +355,7 @@ export class AuthService {
   // ======================
 
   async revokeRefresh(refreshToken: string) {
-    const decoded = this.jwt.decode(refreshToken) as { sub?: string } | null;
+    const decoded = this.jwt.decode(refreshToken);
     if (!decoded?.sub) return;
 
     const rows = await this.prisma.refreshToken.findMany({
@@ -425,7 +425,7 @@ export class AuthService {
       await tx.refreshToken.deleteMany({ where: { userId: user.id } });
 
       const tokenHash = await bcrypt.hash(refresh, 10);
-      const decodedNew = this.jwt.decode(refresh) as { exp?: number } | null;
+      const decodedNew = this.jwt.decode(refresh);
       const expSec =
         decodedNew?.exp ?? Math.floor(Date.now() / 1000) + REFRESH_TTL_SEC;
 

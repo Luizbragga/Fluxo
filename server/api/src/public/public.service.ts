@@ -268,7 +268,7 @@ export class PublicService {
       throw new BadRequestException('STRIPE_PUBLIC_BASE_URL não configurado.');
     }
 
-    const successUrl = `${frontBase}/book/${tenantSlug}/${locationSlug}?success=1&session_id={CHECKOUT_SESSION_ID}`;
+    const successUrl = `${frontBase}/book/${tenantSlug}/${locationSlug}/confirmed?session_id={CHECKOUT_SESSION_ID}`;
     const cancelUrl = `${frontBase}/book/${tenantSlug}/${locationSlug}?canceled=1`;
 
     const session = await stripe.checkout.sessions.create({
@@ -397,7 +397,30 @@ export class PublicService {
 
     const appointment = await this.prisma.appointment.findUnique({
       where: { id: payment.appointmentId },
-      select: { id: true, status: true },
+      select: {
+        id: true,
+        status: true,
+        startAt: true,
+        endAt: true,
+        serviceName: true,
+        clientName: true,
+
+        provider: {
+          select: {
+            id: true,
+            name: true,
+            user: { select: { name: true } },
+          },
+        },
+
+        location: {
+          select: {
+            id: true,
+            name: true,
+            slug: true,
+          },
+        },
+      },
     });
 
     return {

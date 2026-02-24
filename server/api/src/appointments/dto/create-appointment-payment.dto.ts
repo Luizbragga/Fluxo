@@ -1,5 +1,5 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
-import { PaymentMethod, Role } from '@prisma/client';
+import { PaymentMethod } from '@prisma/client';
 import { Type } from 'class-transformer';
 import {
   IsEnum,

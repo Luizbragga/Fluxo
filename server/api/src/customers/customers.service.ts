@@ -257,7 +257,8 @@ export class CustomersService {
           professionalName: appt.provider?.name ?? '',
           serviceName: appt.serviceName ?? '',
           source,
-          status: appt.status as 'done' | 'no_show' | 'cancelled' | any,
+          status: appt.status as 'done' | 'no_show' | 'cancelled',
+
           price,
           year,
           month,

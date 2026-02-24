@@ -15,7 +15,6 @@ import { AppointmentState, BookingPaymentPolicy } from '@prisma/client';
 import {
   CustomerPlanStatus,
   CustomerPlanPaymentStatus,
-  PaymentMethod,
   Role,
   BookingPaymentStatus,
 } from '@prisma/client';
@@ -631,7 +630,7 @@ export class AppointmentsService {
       });
     } catch (e) {
       this.logger.warn(
-        `[NOTIF] Falha ao criar notificação: ${(e as any)?.message ?? e}`,
+        `[NOTIF] Falha ao criar notificação: ${e?.message ?? e}`,
       );
     }
 
@@ -650,9 +649,7 @@ export class AppointmentsService {
 
       await this.smsService.sendSms(to, msg);
     } catch (e) {
-      this.logger.warn(
-        `[SMS] Falha ao enviar confirmação: ${(e as any)?.message ?? e}`,
-      );
+      this.logger.warn(`[SMS] Falha ao enviar confirmação: ${e?.message ?? e}`);
     }
 
     // ------------------------------------------------------------------
@@ -964,7 +961,7 @@ export class AppointmentsService {
       }
     } catch (e) {
       this.logger.warn(
-        `[SMS] Falha ao enviar reagendamento: ${(e as any)?.message ?? e}`,
+        `[SMS] Falha ao enviar reagendamento: ${e?.message ?? e}`,
       );
     }
 
@@ -985,7 +982,7 @@ export class AppointmentsService {
       });
     } catch (e) {
       this.logger.warn(
-        `[NOTIF] Falha ao criar notificação (reagendamento): ${(e as any)?.message ?? e}`,
+        `[NOTIF] Falha ao criar notificação (reagendamento): ${e?.message ?? e}`,
       );
     }
 
@@ -1036,7 +1033,12 @@ export class AppointmentsService {
 
       const updated = await tx.appointment.update({
         where: { id: found.id },
-        data: { status: status as unknown as AppointmentState },
+        data: {
+          status: status as unknown as AppointmentState,
+          ...(status === AllowedAppointmentStatusEnum.no_show
+            ? { noShowAt: new Date() }
+            : {}),
+        },
         include: {
           service: {
             select: {
@@ -1065,7 +1067,7 @@ export class AppointmentsService {
           );
 
           const servicePriceCents =
-            updated.servicePriceCents ?? (updated.service as any).priceCents;
+            updated.servicePriceCents ?? updated.service.priceCents;
 
           const providerEarningsCents = Math.round(
             (servicePriceCents * commissionPercentage) / 100,
@@ -1169,7 +1171,10 @@ export class AppointmentsService {
 
       const updatedAppointment = await tx.appointment.update({
         where: { id },
-        data: { status: AppointmentState.cancelled },
+        data: {
+          status: AppointmentState.cancelled,
+          cancelledAt: new Date(),
+        },
         include: {
           service: { select: { id: true, name: true, durationMin: true } },
           provider: { select: { id: true, name: true } },
@@ -1209,7 +1214,7 @@ export class AppointmentsService {
       }
     } catch (e) {
       this.logger.warn(
-        `[SMS] Falha ao enviar cancelamento: ${(e as any)?.message ?? e}`,
+        `[SMS] Falha ao enviar cancelamento: ${e?.message ?? e}`,
       );
     }
 
@@ -1226,7 +1231,7 @@ export class AppointmentsService {
       });
     } catch (e) {
       this.logger.warn(
-        `[NOTIF] Falha ao criar notificação (cancelamento): ${(e as any)?.message ?? e}`,
+        `[NOTIF] Falha ao criar notificação (cancelamento): ${e?.message ?? e}`,
       );
     }
 
@@ -1633,6 +1638,11 @@ export class AppointmentsService {
         ? appt.bookingPayment.amountCents
         : 0;
 
+    const refundedOnline =
+      appt.bookingPayment?.status === BookingPaymentStatus.refunded
+        ? appt.bookingPayment.amountCents
+        : 0;
+
     const paidManual = (appt.payments ?? []).reduce(
       (sum, p) => sum + (p.amountCents ?? 0),
       0,
@@ -1659,7 +1669,7 @@ export class AppointmentsService {
         tenantId,
         appointmentId,
         amountCents: dto.amountCents,
-        method: dto.method as PaymentMethod,
+        method: dto.method,
         recordedById: actorUserId,
         note: dto.note ?? undefined,
       },
@@ -1787,6 +1797,10 @@ export class AppointmentsService {
       appt.bookingPayment?.status === BookingPaymentStatus.succeeded
         ? appt.bookingPayment.amountCents
         : 0;
+    const refundedOnlineCents =
+      appt.bookingPayment?.status === BookingPaymentStatus.refunded
+        ? appt.bookingPayment.amountCents
+        : 0;
 
     const paidManual = (appt.payments ?? []).reduce(
       (sum, p) => sum + (p.amountCents ?? 0),
@@ -1801,6 +1815,7 @@ export class AppointmentsService {
       summary: {
         totalCents: total,
         paidOnlineCents: paidOnline,
+        refundedOnlineCents: refundedOnlineCents,
         paidManualCents: paidManual,
         paidTotalCents: paidTotal,
         remainingCents: remaining,
@@ -1860,6 +1875,16 @@ export class AppointmentsService {
           currentStatus: appt.status,
         });
       }
+      // ✅ Idempotência: se já foi reembolsado, retorna replay (não é erro)
+      if (
+        appt.bookingPayment.status === BookingPaymentStatus.refunded ||
+        appt.bookingPayment.refundedAt
+      ) {
+        return {
+          replay: true,
+          bookingPayment: appt.bookingPayment,
+        };
+      }
 
       // Guardrail: só reembolsa se foi pago com sucesso
       if (appt.bookingPayment.status !== BookingPaymentStatus.succeeded) {
@@ -1871,14 +1896,6 @@ export class AppointmentsService {
         });
       }
 
-      // Guardrail: não reembolsa duas vezes
-      if (appt.bookingPayment.refundedAt) {
-        throw new BadRequestException({
-          code: 'ALREADY_REFUNDED',
-          message: 'Este pagamento já foi marcado como reembolsado.',
-          refundedAt: appt.bookingPayment.refundedAt,
-        });
-      }
       const pi = appt.bookingPayment.stripePaymentIntentId;
       if (!pi) {
         throw new BadRequestException({
@@ -1905,7 +1922,10 @@ export class AppointmentsService {
         },
       });
 
-      return updated;
+      return {
+        replay: false,
+        bookingPayment: updated,
+      };
     });
   }
 

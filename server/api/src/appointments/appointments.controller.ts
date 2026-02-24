@@ -8,7 +8,9 @@ import {
   Post,
   Query,
   UseGuards,
+  HttpCode,
 } from '@nestjs/common';
+
 import {
   ApiBearerAuth,
   ApiTags,
@@ -30,7 +32,6 @@ import { ListAppointmentsDayQueryDto } from './dto/list-day.query.dto';
 import { RescheduleAppointmentDto } from './dto/reschedule-appointment.dto';
 import { UpdateAppointmentStatusDto } from './dto/update-status.dto';
 import { CreateAppointmentPaymentDto } from './dto/create-appointment-payment.dto';
-import { RefundBookingPaymentDto } from './dto/refund-booking-payment.dto';
 import { CurrentUser } from '../auth/current-user.decorator';
 import type { AuthUser } from '../auth/auth-user.interface';
 
@@ -146,6 +147,50 @@ export class AppointmentsController {
       user.role,
       body?.reason,
     );
+  }
+  // Refund direto do pagamento online (somente marca+refund Stripe)
+  // Regras:
+  // - somente owner/admin
+  // - exige appointment CANCELLED
+  // - exige bookingPayment SUCCEEDED
+  @Roles(Role.owner, Role.admin)
+  @Post(':id/booking-payment/refund')
+  @ApiOperation({
+    summary: 'Marcar pagamento online como reembolsado (Stripe refund)',
+  })
+  @ApiParam({
+    name: 'id',
+    type: String,
+    example: 'cmlii1g5v0003uyz4dkdn7or8',
+    description: 'ID do appointment',
+  })
+  @ApiBody({
+    schema: {
+      type: 'object',
+      properties: {
+        reason: {
+          type: 'string',
+          example: 'Cliente cancelou e devolvemos o sinal',
+        },
+      },
+    },
+  })
+  @HttpCode(200)
+  async refundBookingPayment(
+    @CurrentUser() user: AuthUser,
+    @Param('id') id: string,
+    @Body() body: { reason?: string },
+  ) {
+    const result = await this.appointmentsService.refundBookingPayment(
+      user.tenantId,
+      id,
+      user.id,
+      user.role,
+      body?.reason,
+    );
+
+    // compat: sempre devolve o BookingPayment puro
+    return (result as any)?.bookingPayment ?? result;
   }
 
   // Listar appointments de um dia (com providerId opcional)

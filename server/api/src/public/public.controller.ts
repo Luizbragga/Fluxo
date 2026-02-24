@@ -3,6 +3,7 @@ import { ApiTags, ApiQuery } from '@nestjs/swagger';
 import { PublicService } from './public.service';
 import { CreatePublicAppointmentDto } from './dto/create-public-appointment.dto';
 import { CreatePublicCheckoutDto } from './dto/create-public-checkout.dto';
+import { PaymentStatusQueryDto } from './dto/payment-status.query.dto';
 
 @ApiTags('Public')
 @Controller('public')
@@ -89,5 +90,13 @@ export class PublicController {
       providerId,
       date,
     });
+  }
+  // --------------------------------------------------------
+  // STATUS DO PAGAMENTO (Stripe) por session_id
+  // GET /public/booking/payment-status?session_id=...
+  // --------------------------------------------------------
+  @Get('payment-status')
+  async getPaymentStatus(@Query() query: PaymentStatusQueryDto) {
+    return this.publicService.getPaymentStatusBySessionId(query.session_id);
   }
 }

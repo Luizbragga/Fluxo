@@ -149,9 +149,30 @@ export class ReportsService {
     locationId?: string;
     providerId?: string;
     type?: 'cancelled' | 'no_show';
+    dateBasis?: 'appointment_date' | 'event_date';
+    day?: string; // YYYY-MM-DD
   }) {
-    const { tenantId, from, to, locationId, providerId, type } = params;
-    const { fromDate, toDate } = this.resolveDateRange(from, to);
+    const { tenantId, from, to, locationId, providerId, type, dateBasis, day } =
+      params;
+
+    // Se veio "day", ele sobrescreve from/to e vira 1 dia fechado (UTC)
+    let fromDate: Date;
+    let toDate: Date;
+
+    if (day) {
+      const d = new Date(day + 'T00:00:00.000Z');
+      if (Number.isNaN(d.getTime())) {
+        throw new BadRequestException(
+          'Parâmetro "day" inválido. Use YYYY-MM-DD.',
+        );
+      }
+      fromDate = d;
+      toDate = new Date(d.getTime() + 24 * 60 * 60 * 1000);
+    } else {
+      const range = this.resolveDateRange(from, to);
+      fromDate = range.fromDate;
+      toDate = range.toDate;
+    }
 
     // Filtro de status usando o enum CORRETO do Prisma: AppointmentState
     const statusFilter:
@@ -169,10 +190,23 @@ export class ReportsService {
       where: {
         tenantId,
         status: statusFilter,
-        startAt: {
-          gte: fromDate,
-          lt: toDate,
-        },
+        ...(dateBasis === 'event_date'
+          ? {
+              OR: [
+                {
+                  status: AppointmentState.cancelled,
+                  cancelledAt: { gte: fromDate, lt: toDate },
+                },
+                {
+                  status: AppointmentState.no_show,
+                  noShowAt: { gte: fromDate, lt: toDate },
+                },
+              ],
+            }
+          : {
+              startAt: { gte: fromDate, lt: toDate },
+            }),
+
         ...(locationId ? { locationId } : {}),
         ...(providerId ? { providerId } : {}),
       },
@@ -531,9 +565,7 @@ export class ReportsService {
     const { fromDate, toDate } = this.resolveDateRange(from, to);
 
     const payoutStatusFilter =
-      status && status !== 'all'
-        ? { payoutStatus: status as PayoutStatus }
-        : {};
+      status && status !== 'all' ? { payoutStatus: status } : {};
 
     const earnings = await this.prisma.appointmentEarning.findMany({
       where: {
@@ -664,7 +696,7 @@ export class ReportsService {
     from?: string;
     to?: string;
     locationId?: string;
-    status?: CustomerPlanPaymentStatus | string;
+    status?: CustomerPlanPaymentStatus;
   }) {
     const { tenantId, from, to, locationId, status } = params;
     const { fromDate, toDate } = this.resolveDateRange(from, to);
@@ -672,7 +704,7 @@ export class ReportsService {
     const payments = await this.prisma.customerPlanPayment.findMany({
       where: {
         tenantId,
-        ...(status ? { status: status as CustomerPlanPaymentStatus } : {}),
+        ...(status ? { status: status } : {}),
         dueDate: {
           gte: fromDate,
           lt: toDate,

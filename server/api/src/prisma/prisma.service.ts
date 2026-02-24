@@ -8,9 +8,9 @@ export class PrismaService extends PrismaClient implements OnModuleInit {
   }
 
   // usa o hook do Node, não o $on do Prisma (evita TS2345)
-  async enableShutdownHooks(app: INestApplication) {
-    process.on('beforeExit', async () => {
-      await app.close();
+  enableShutdownHooks(app: INestApplication) {
+    process.on('beforeExit', () => {
+      void app.close();
     });
   }
 }

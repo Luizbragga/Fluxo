@@ -225,7 +225,7 @@ export class InvitesService {
             userId: user.id,
             locationId: resolvedLocationId!,
             name: dto.name,
-            specialty: (invite.specialty ?? Specialty.other) as Specialty,
+            specialty: invite.specialty ?? Specialty.other,
             weekdayTemplate: (loc?.businessHoursTemplate as any) ?? undefined,
             active: true,
           },

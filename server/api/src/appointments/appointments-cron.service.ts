@@ -158,7 +158,7 @@ export class AppointmentsCronService {
           totalSent++;
         } catch (e) {
           this.logger.warn(
-            `[REMINDER SMS] Falha ao enviar appt=${appt.id}: ${(e as any)?.message ?? e}`,
+            `[REMINDER SMS] Falha ao enviar appt=${appt.id}: ${e?.message ?? e}`,
           );
 
           // falhou -> libera pra tentar de novo no próximo ciclo

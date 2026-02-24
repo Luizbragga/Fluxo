@@ -1,33 +1,44 @@
 import {
   CanActivate,
   ExecutionContext,
-  Injectable,
   ForbiddenException,
+  Injectable,
 } from '@nestjs/common';
 import { Reflector } from '@nestjs/core';
-import { ROLES_KEY } from '../decorators/roles.decorator';
 import { Role } from '@prisma/client';
+
+import { ROLES_KEY } from '../decorators/roles.decorator';
+
+function isRole(value: unknown): value is Role {
+  return (
+    typeof value === 'string' &&
+    (Object.values(Role) as string[]).includes(value)
+  );
+}
 
 @Injectable()
 export class RolesGuard implements CanActivate {
-  constructor(private reflector: Reflector) {}
+  constructor(private readonly reflector: Reflector) {}
 
   canActivate(ctx: ExecutionContext): boolean {
-    const required = this.reflector.getAllAndOverride<Role[]>(ROLES_KEY, [
+    const requiredRoles = this.reflector.getAllAndOverride<Role[]>(ROLES_KEY, [
       ctx.getHandler(),
       ctx.getClass(),
     ]);
-    if (!required || required.length === 0) return true;
 
-    const req = ctx.switchToHttp().getRequest();
-    const user = req.user as { role?: Role } | undefined;
+    if (!requiredRoles?.length) return true;
 
-    if (!user?.role) {
+    const req = ctx.switchToHttp().getRequest<{ user?: unknown }>();
+    const role = (req.user as { role?: unknown } | undefined)?.role;
+
+    if (!isRole(role)) {
       throw new ForbiddenException('No role in token');
     }
-    if (!required.includes(user.role)) {
+
+    if (!requiredRoles.includes(role)) {
       throw new ForbiddenException('Forbidden (insufficient role)');
     }
+
     return true;
   }
 }
