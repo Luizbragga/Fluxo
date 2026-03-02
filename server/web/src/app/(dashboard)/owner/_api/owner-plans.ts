@@ -41,6 +41,8 @@ export type CustomerPlanDto = {
   lastPaymentStatus?: string | null;
   lastPaymentAt?: string | null;
   canRegisterPayment?: boolean;
+  canPayNextCycle?: boolean;
+  paidThrough?: string | null;
   createdAt?: string;
   updatedAt?: string;
 
@@ -77,9 +79,18 @@ export type PlanCustomer = {
   phone: string;
   startedAt: string; // = currentCycleStart
   status: "active" | "late" | "cancelled" | string;
-  nextChargeDate?: string; // = currentCycleEnd
-  nextChargeAmount?: number; // valor do ciclo
-  lastPaymentAt?: string | null; // última data de pagamento
+  nextChargeDate?: string; // = currentCycleEnd (fim do ciclo atual)
+  nextChargeAmount?: number; // valor do ciclo (preço mensal)
+
+  // backend flags novos
+  canPayNextCycle?: boolean;
+  paidThrough?: string | null;
+
+  // compat (backend ainda manda)
+  canRegisterPayment?: boolean;
+
+  // mantém porque você já usa no UI antigo
+  lastPaymentAt?: string | null;
 };
 
 export type OwnerPlansData = {
@@ -132,13 +143,16 @@ export type UpdatePlanTemplateInput = {
 export type PayCustomerPlanInput = {
   customerPlanId: string;
   amountEuro: number;
+  months?: number; // 1..6 (backend valida)
   paidAt?: string; // opcional, se quiser enviar data específica
 };
+
 export async function payOwnerCustomerPlan(
-  input: PayCustomerPlanInput
+  input: PayCustomerPlanInput,
 ): Promise<void> {
-  const body: { amountCents: number; paidAt?: string } = {
+  const body: { amountCents: number; months?: number; paidAt?: string } = {
     amountCents: Math.round(input.amountEuro * 100),
+    ...(input.months ? { months: input.months } : {}),
     ...(input.paidAt ? { paidAt: input.paidAt } : {}),
   };
 
@@ -151,13 +165,13 @@ export async function payOwnerCustomerPlan(
 
 // Devolver 1 visita de um agendamento (quando o owner decidir)
 export async function restoreOwnerPlanVisitFromAppointment(
-  appointmentId: string
+  appointmentId: string,
 ): Promise<void> {
   await apiClient(
     `/plans/customer-plans/restore-visit-from-appointment/${appointmentId}`,
     {
       method: "POST",
-    }
+    },
   );
 }
 
@@ -184,7 +198,7 @@ export type OwnerCustomerPlan = {
 // -------------------- Helpers de chamada à API (usando apiClient) -----------
 
 async function fetchPlanTemplates(
-  locationId?: string
+  locationId?: string,
 ): Promise<PlanTemplateDto[]> {
   const params = new URLSearchParams();
   if (locationId) params.set("locationId", locationId);
@@ -198,7 +212,7 @@ async function fetchPlanTemplates(
 }
 
 async function fetchCustomerPlans(
-  locationId?: string
+  locationId?: string,
 ): Promise<CustomerPlanDto[]> {
   const params = new URLSearchParams();
   if (locationId) params.set("locationId", locationId);
@@ -220,7 +234,7 @@ export type CreateCustomerPlanInput = {
 };
 
 export async function createOwnerCustomerPlan(
-  input: CreateCustomerPlanInput
+  input: CreateCustomerPlanInput,
 ): Promise<CustomerPlanDto> {
   const body = {
     planTemplateId: input.planTemplateId,
@@ -266,27 +280,32 @@ function normalizePlanTemplate(dto: PlanTemplateDto): PlanTemplateUI {
 
 function buildStatsAndCustomers(
   templates: PlanTemplateDto[],
-  customerPlans: CustomerPlanDto[]
+  customerPlans: CustomerPlanDto[],
 ): Omit<OwnerPlansData, "planTemplates"> {
   const planStats: PlanStats[] = [];
   const planCustomersByPlan: Record<string, PlanCustomer[]> = {};
 
   for (const template of templates) {
     const customersOfPlan = customerPlans.filter(
-      (cp) => cp.planTemplateId === template.id
+      (cp) => cp.planTemplateId === template.id,
     );
 
     const customersUI: PlanCustomer[] = customersOfPlan.map((cp) => ({
       id: cp.id,
       name: cp.customerName,
       phone: cp.customerPhone ?? "",
-      // início do ciclo atual (já pago)
       startedAt: cp.currentCycleStart,
       status: cp.status,
-      // próxima cobrança = fim do ciclo atual
       nextChargeDate: cp.currentCycleEnd,
       nextChargeAmount: cp.planTemplate.priceCents / 100,
-      // vem direto do DTO
+
+      // novos campos vindos do backend
+      canPayNextCycle: cp.canPayNextCycle ?? undefined,
+      paidThrough: cp.paidThrough ?? null,
+
+      // compat
+      canRegisterPayment: cp.canRegisterPayment ?? undefined,
+
       lastPaymentAt: cp.lastPaymentAt ?? null,
     }));
 
@@ -294,10 +313,10 @@ function buildStatsAndCustomers(
 
     const totalCustomers = customersOfPlan.length;
     const activeCustomers = customersOfPlan.filter(
-      (c) => c.status === "active"
+      (c) => c.status === "active",
     ).length;
     const cancelledCustomers = customersOfPlan.filter(
-      (c) => c.status === "cancelled"
+      (c) => c.status === "cancelled",
     ).length;
 
     const price = template.priceCents / 100;
@@ -351,7 +370,7 @@ export async function fetchOwnerPlans(params: {
   const normalizedTemplates = planTemplatesDto.map(normalizePlanTemplate);
   const { planStats, planCustomersByPlan } = buildStatsAndCustomers(
     planTemplatesDto,
-    customerPlansDto
+    customerPlansDto,
   );
 
   return {
@@ -363,7 +382,7 @@ export async function fetchOwnerPlans(params: {
 
 // usado pelo formulário de criação
 export async function createOwnerPlanTemplate(
-  input: CreatePlanTemplateInput
+  input: CreatePlanTemplateInput,
 ): Promise<PlanTemplateUI> {
   const body = {
     locationId: input.locationId,
@@ -388,7 +407,7 @@ export async function createOwnerPlanTemplate(
   return normalizePlanTemplate(dto);
 }
 export async function updateOwnerPlanTemplate(
-  input: UpdatePlanTemplateInput
+  input: UpdatePlanTemplateInput,
 ): Promise<PlanTemplateUI> {
   const body: any = {};
 

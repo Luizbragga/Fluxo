@@ -1,5 +1,5 @@
 import { ApiProperty } from '@nestjs/swagger';
-import { IsInt, Min, IsOptional, IsDateString } from 'class-validator';
+import { IsInt, Min, Max, IsOptional, IsDateString } from 'class-validator';
 
 export class RegisterCustomerPlanPaymentDto {
   @ApiProperty({
@@ -9,6 +9,18 @@ export class RegisterCustomerPlanPaymentDto {
   @IsInt()
   @Min(1)
   amountCents: number;
+
+  @ApiProperty({
+    required: false,
+    example: 1,
+    description:
+      'Quantidade de meses/ciclos a pagar adiantado. Default = 1. Máximo = 6.',
+  })
+  @IsOptional()
+  @IsInt()
+  @Min(1)
+  @Max(6)
+  months?: number;
 
   @ApiProperty({
     required: false,

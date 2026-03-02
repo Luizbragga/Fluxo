@@ -10,6 +10,7 @@ import { UpdateCustomerPlanDto } from './dto/update-customer-plan.dto';
 import { RegisterCustomerPlanPaymentDto } from './dto/register-customer-plan-payment.dto';
 import { CustomerPlanStatus, CustomerPlanPaymentStatus } from '@prisma/client';
 
+const PAY_NEXT_CYCLE_WINDOW_DAYS = 30;
 @Injectable()
 export class CustomerPlansService {
   constructor(private prisma: PrismaService) {}
@@ -119,17 +120,36 @@ export class CustomerPlansService {
     });
 
     return plans.map((plan) => {
-      const newCycleStart = plan.currentCycleEnd;
+      const nextCycleStart = plan.currentCycleEnd;
 
-      const hasAdvancePayment = plan.payments.some(
-        (payment) =>
-          payment.status === CustomerPlanPaymentStatus.paid &&
-          payment.dueDate >= newCycleStart,
+      const paidPayments = plan.payments.filter(
+        (p) => p.status === CustomerPlanPaymentStatus.paid,
       );
+
+      const paidThrough = paidPayments.reduce<Date | null>((max, p) => {
+        if (!max) return p.dueDate;
+        return p.dueDate > max ? p.dueDate : max;
+      }, null);
+
+      // Se já existe um pagamento cobrindo o próximo ciclo, não faz sentido "pagar próximo mês" de novo
+      const hasPaymentCoveringNextCycle = paidPayments.some(
+        (p) => p.dueDate > nextCycleStart,
+      );
+
+      const inWindow = canPayNextCycleNow(
+        plan.currentCycleEnd,
+        PAY_NEXT_CYCLE_WINDOW_DAYS,
+      );
+      const canPayNextCycle = inWindow && !hasPaymentCoveringNextCycle;
 
       return {
         ...plan,
-        canRegisterPayment: !hasAdvancePayment, // se já tem pagamento adiantado, não pode registrar de novo
+        // compat temporária pro front não quebrar:
+        canRegisterPayment: canPayNextCycle,
+        // novo nome mais claro (você pode migrar o front depois):
+        canPayNextCycle,
+        // até quando está pago (maior dueDate pago)
+        paidThrough,
       };
     });
   }
@@ -154,17 +174,34 @@ export class CustomerPlansService {
       throw new NotFoundException('CustomerPlan não encontrado no tenant.');
     }
 
-    const newCycleStart = plan.currentCycleEnd;
+    const nextCycleStart = plan.currentCycleEnd;
 
-    const hasAdvancePayment = plan.payments.some(
-      (payment) =>
-        payment.status === CustomerPlanPaymentStatus.paid &&
-        payment.dueDate >= newCycleStart,
+    const paidPayments = plan.payments.filter(
+      (p) => p.status === CustomerPlanPaymentStatus.paid,
     );
+
+    const paidThrough = paidPayments.reduce<Date | null>((max, p) => {
+      if (!max) return p.dueDate;
+      return p.dueDate > max ? p.dueDate : max;
+    }, null);
+
+    const hasPaymentCoveringNextCycle = paidPayments.some(
+      (p) => p.dueDate > nextCycleStart,
+    );
+
+    const inWindow = canPayNextCycleNow(
+      plan.currentCycleEnd,
+      PAY_NEXT_CYCLE_WINDOW_DAYS,
+    );
+    const canPayNextCycle = inWindow && !hasPaymentCoveringNextCycle;
 
     return {
       ...plan,
-      canRegisterPayment: !hasAdvancePayment,
+      // compat temporária:
+      canRegisterPayment: canPayNextCycle,
+      // novo:
+      canPayNextCycle,
+      paidThrough,
     };
   }
 
@@ -219,15 +256,6 @@ export class CustomerPlansService {
       if (!plan) {
         throw new NotFoundException('CustomerPlan não encontrado no tenant.');
       }
-      const now = new Date();
-      const maxAllowedEnd = addMonthsCalendar(now, 1);
-
-      if (plan.currentCycleEnd > maxAllowedEnd) {
-        throw new BadRequestException(
-          'Já existe um pagamento adiantado para o próximo ciclo. ' +
-            'Só é possível adiantar um mês de cada vez.',
-        );
-      }
 
       const paidAt = dto.paidAt ? new Date(dto.paidAt) : new Date();
 
@@ -239,20 +267,37 @@ export class CustomerPlansService {
         throw new BadRequestException('amountCents deve ser maior que zero.');
       }
 
+      const months = dto.months ?? 1;
+      if (months === 1) {
+        const allowed = canPayNextCycleNow(
+          plan.currentCycleEnd,
+          PAY_NEXT_CYCLE_WINDOW_DAYS,
+        );
+        if (!allowed) {
+          throw new BadRequestException(
+            `Ainda não é possível pagar o próximo mês. Só fica disponível nos últimos ${PAY_NEXT_CYCLE_WINDOW_DAYS} dias antes do vencimento.`,
+          );
+        }
+      }
       const previousCycleEnd = plan.currentCycleEnd;
-      const newCycleStart = previousCycleEnd;
-      const newCycleEnd = addMonthsCalendar(previousCycleEnd, 1);
+      let newCycleStart = previousCycleEnd;
+      let newCycleEnd = previousCycleEnd;
 
-      await tx.customerPlanPayment.create({
-        data: {
-          tenantId,
-          customerPlanId: plan.id,
-          dueDate: newCycleEnd,
-          amountCents: dto.amountCents,
-          status: CustomerPlanPaymentStatus.paid,
-          paidAt,
-        },
-      });
+      // cria N pagamentos e avança o ciclo N vezes
+      for (let i = 0; i < months; i++) {
+        newCycleEnd = addMonthsCalendar(newCycleEnd, 1);
+
+        await tx.customerPlanPayment.create({
+          data: {
+            tenantId,
+            customerPlanId: plan.id,
+            dueDate: newCycleEnd,
+            amountCents: dto.amountCents,
+            status: CustomerPlanPaymentStatus.paid,
+            paidAt,
+          },
+        });
+      }
 
       const updated = await tx.customerPlan.update({
         where: { id: plan.id },
@@ -342,7 +387,17 @@ export class CustomerPlansService {
     });
   }
 }
+function canPayNextCycleNow(
+  currentCycleEnd: Date,
+  windowDays: number,
+): boolean {
+  const now = new Date();
 
+  const windowStart = new Date(currentCycleEnd);
+  windowStart.setDate(windowStart.getDate() - windowDays);
+
+  return now >= windowStart;
+}
 // Soma `months` meses a uma data, tentando manter o mesmo dia.
 // Se o mês de destino não tiver esse dia (ex.: 31/01 + 1 mês), usa o último dia do mês.
 function addMonthsCalendar(base: Date, months: number): Date {

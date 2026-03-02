@@ -145,6 +145,10 @@ export default function OwnerPlanosPage() {
   const [priceAuto, setPriceAuto] = useState(true);
   const [isServicePickerOpen, setIsServicePickerOpen] = useState(false);
 
+  const [advanceModalCustomer, setAdvanceModalCustomer] =
+    useState<PlanCustomer | null>(null);
+  const [advanceMonths, setAdvanceMonths] = useState<1 | 2 | 3 | 4 | 5 | 6>(3);
+
   const WEEKDAYS = [
     { value: 1, label: "Seg" },
     { value: 2, label: "Ter" },
@@ -545,13 +549,22 @@ export default function OwnerPlanosPage() {
     setIsEditingPlan(true);
   }
 
-  async function handleRegisterPayment(customer: PlanCustomer) {
+  async function handleRegisterPayment(customer: PlanCustomer, months: number) {
     if (!selectedPlan || !selectedLocationId) return;
 
-    const actionState = getPaymentActionState(customer, ADVANCE_PAYMENT_DAYS);
-    if (actionState !== "canPay") return;
+    // regra do botão "pagar próximo": só libera se o backend disser que pode
+    if (months === 1) {
+      const canPayNext =
+        customer.canPayNextCycle ?? customer.canRegisterPayment ?? true;
+      if (!canPayNext) return;
+    }
 
-    const confirmMsg = `Registrar pagamento de € ${selectedPlan.price.toFixed(2)} para ${customer.name}?`;
+    const label =
+      months === 1 ? "próximo mês" : `${months} mês(es) adiantado(s)`;
+
+    const confirmMsg = `Registrar pagamento (${label}) de € ${selectedPlan.price.toFixed(
+      2,
+    )} para ${customer.name}?`;
     if (!window.confirm(confirmMsg)) return;
 
     try {
@@ -561,6 +574,7 @@ export default function OwnerPlanosPage() {
       await payOwnerCustomerPlan({
         customerPlanId: customer.id,
         amountEuro: selectedPlan.price,
+        months,
       });
 
       const result = await fetchOwnerPlans({ locationId: selectedLocationId });
@@ -799,6 +813,9 @@ export default function OwnerPlanosPage() {
   // ---------------------------------------------------------------------------
   // Render
   // ---------------------------------------------------------------------------
+  // ---------------------------------------------------------------------------
+  // Render
+  // ---------------------------------------------------------------------------
   return (
     <>
       {/* Cabeçalho */}
@@ -812,6 +829,7 @@ export default function OwnerPlanosPage() {
 
         <div className="flex flex-wrap gap-2 text-xs">
           <button
+            type="button"
             onClick={() => setFilterStatus("all")}
             className={[
               "px-3 py-1 rounded-lg border",
@@ -824,6 +842,7 @@ export default function OwnerPlanosPage() {
           </button>
 
           <button
+            type="button"
             onClick={() => setFilterStatus("active")}
             className={[
               "px-3 py-1 rounded-lg border",
@@ -836,6 +855,7 @@ export default function OwnerPlanosPage() {
           </button>
 
           <button
+            type="button"
             onClick={() => setFilterStatus("inactive")}
             className={[
               "px-3 py-1 rounded-lg border",
@@ -857,20 +877,758 @@ export default function OwnerPlanosPage() {
         </div>
       </header>
 
-      {/* Form de criação */}
-      {isCreating && (
-        <section className="mb-4 rounded-2xl border border-emerald-700/60 bg-slate-900/70 p-4 text-xs">
-          {/* ... (mantém exatamente como estava no teu arquivo) ... */}
-          {/* OBS: Eu cortei aqui porque a parte restante é só JSX de render;
-              como você já colou o arquivo completo, é literalmente "não mexer". */}
-        </section>
-      )}
+      {/* Barra topo: unidade */}
+      <div className="mb-4 flex flex-col gap-2 md:flex-row md:items-center md:justify-between">
+        <div className="flex items-center gap-2 text-xs">
+          <span className="text-slate-400">Unidade</span>
 
-      {/* ... RESTANTE DO JSX IGUAL AO TEU ARQUIVO ... */}
-      {/* IMPORTANTE: como você pediu "completo", eu manteria 100% aqui.
-          Se você quiser, eu te devolvo o resto colado também,
-          mas o essencial é: mover o arquivo inteiro sem mexer.
-      */}
+          <select
+            value={selectedLocationId ?? ""}
+            onChange={(e) => setSelectedLocationId(e.target.value || undefined)}
+            disabled={locationsLoading}
+            className="rounded-lg border border-slate-800 bg-slate-950/60 px-3 py-2 text-sm text-slate-100 outline-none focus:border-emerald-400"
+          >
+            {locationsLoading ? <option value="">Carregando...</option> : null}
+            {!locationsLoading ? (
+              <>
+                <option value="">Selecione uma unidade</option>
+                {locations.map((loc) => (
+                  <option key={loc.id} value={loc.id}>
+                    {loc.name}
+                  </option>
+                ))}
+              </>
+            ) : null}
+          </select>
+
+          {locationsError ? (
+            <span className="text-[11px] text-rose-300">{locationsError}</span>
+          ) : null}
+        </div>
+
+        <div className="text-[11px] text-slate-500">
+          {selectedLocationId
+            ? `Filtrando por unidade`
+            : `Sem filtro de unidade`}
+        </div>
+      </div>
+
+      {/* MODAL: criar plano */}
+      {isCreating ? (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4">
+          <div className="w-full max-w-2xl rounded-2xl border border-slate-800 bg-slate-950 p-4 text-xs shadow-xl">
+            <div className="mb-3 flex items-start justify-between gap-3">
+              <div>
+                <p className="text-[11px] uppercase tracking-wide text-slate-400">
+                  Criar plano
+                </p>
+                <p className="text-sm font-semibold text-slate-100">
+                  Novo plano de assinatura
+                </p>
+              </div>
+
+              <button
+                type="button"
+                onClick={() => {
+                  setIsCreating(false);
+                  setCreatingError(null);
+                }}
+                className="rounded-lg border border-slate-700 bg-slate-950/40 px-3 py-1 text-[11px] text-slate-200 hover:border-emerald-500/60 hover:text-emerald-200"
+              >
+                Fechar
+              </button>
+            </div>
+
+            {creatingError ? (
+              <div className="mb-3 rounded-xl border border-rose-500/30 bg-rose-500/5 p-3 text-[11px] text-rose-200">
+                {creatingError}
+              </div>
+            ) : null}
+
+            <form onSubmit={handleCreatePlan} className="space-y-3">
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                <div>
+                  <label className="text-[11px] text-slate-400">Nome</label>
+                  <input
+                    value={formName}
+                    onChange={(e) => setFormName(e.target.value)}
+                    className="mt-1 w-full rounded-lg border border-slate-800 bg-slate-900/60 px-3 py-2 text-sm text-slate-100 outline-none focus:border-emerald-400"
+                    placeholder="Ex.: Plano Barba + Cabelo"
+                  />
+                </div>
+
+                <div>
+                  <label className="text-[11px] text-slate-400">
+                    Preço (€)
+                  </label>
+                  <input
+                    value={formPrice}
+                    onChange={(e) => {
+                      setPriceAuto(false);
+                      setFormPrice(e.target.value);
+                    }}
+                    className="mt-1 w-full rounded-lg border border-slate-800 bg-slate-900/60 px-3 py-2 text-sm text-slate-100 outline-none focus:border-emerald-400"
+                    placeholder="Ex.: 35"
+                  />
+                  <div className="mt-1 flex items-center gap-2 text-[11px] text-slate-500">
+                    <label className="inline-flex items-center gap-2">
+                      <input
+                        type="checkbox"
+                        checked={priceAuto}
+                        onChange={(e) => setPriceAuto(e.target.checked)}
+                      />
+                      Preço automático
+                    </label>
+
+                    {suggestedPriceDisplay ? (
+                      <span>· Sugestão: € {suggestedPriceDisplay}</span>
+                    ) : null}
+                  </div>
+                </div>
+
+                <div>
+                  <label className="text-[11px] text-slate-400">
+                    Visitas / mês
+                  </label>
+                  <input
+                    value={formVisits}
+                    onChange={(e) => setFormVisits(e.target.value)}
+                    className="mt-1 w-full rounded-lg border border-slate-800 bg-slate-900/60 px-3 py-2 text-sm text-slate-100 outline-none focus:border-emerald-400"
+                    placeholder="Ex.: 2"
+                  />
+                </div>
+
+                <div>
+                  <label className="text-[11px] text-slate-400">
+                    Intervalo mín. entre visitas (dias)
+                  </label>
+                  <input
+                    value={formMinDaysBetween}
+                    onChange={(e) => setFormMinDaysBetween(e.target.value)}
+                    className="mt-1 w-full rounded-lg border border-slate-800 bg-slate-900/60 px-3 py-2 text-sm text-slate-100 outline-none focus:border-emerald-400"
+                    placeholder="Opcional"
+                  />
+                </div>
+
+                <div>
+                  <label className="text-[11px] text-slate-400">Início</label>
+                  <input
+                    value={formStartTime}
+                    onChange={(e) => setFormStartTime(e.target.value)}
+                    className="mt-1 w-full rounded-lg border border-slate-800 bg-slate-900/60 px-3 py-2 text-sm text-slate-100 outline-none focus:border-emerald-400"
+                    placeholder="HH:MM (opcional)"
+                  />
+                </div>
+
+                <div>
+                  <label className="text-[11px] text-slate-400">Fim</label>
+                  <input
+                    value={formEndTime}
+                    onChange={(e) => setFormEndTime(e.target.value)}
+                    className="mt-1 w-full rounded-lg border border-slate-800 bg-slate-900/60 px-3 py-2 text-sm text-slate-100 outline-none focus:border-emerald-400"
+                    placeholder="HH:MM (opcional)"
+                  />
+                </div>
+              </div>
+
+              <div>
+                <label className="text-[11px] text-slate-400">
+                  Dias permitidos
+                </label>
+                <div className="mt-2 flex flex-wrap gap-2">
+                  {WEEKDAYS.map((d) => {
+                    const active = formAllowedWeekdays.includes(d.value);
+                    return (
+                      <button
+                        key={d.value}
+                        type="button"
+                        onClick={() => {
+                          setFormAllowedWeekdays((prev) =>
+                            active
+                              ? prev.filter((x) => x !== d.value)
+                              : [...prev, d.value],
+                          );
+                        }}
+                        className={[
+                          "px-3 py-1 rounded-lg border text-[11px]",
+                          active
+                            ? "border-emerald-500 bg-emerald-500/10 text-emerald-100"
+                            : "border-slate-800 bg-slate-900/60 text-slate-200 hover:border-slate-700",
+                        ].join(" ")}
+                      >
+                        {d.label}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+
+              <div className="rounded-xl border border-slate-800 bg-slate-900/40 p-3">
+                <div className="flex items-center justify-between mb-2">
+                  <p className="text-[11px] text-slate-300 font-medium">
+                    Serviços do plano
+                  </p>
+                  <button
+                    type="button"
+                    onClick={() => setIsServicePickerOpen((v) => !v)}
+                    className="text-[11px] text-emerald-300 hover:underline"
+                  >
+                    {isServicePickerOpen ? "Fechar" : "Selecionar"}
+                  </button>
+                </div>
+
+                {servicesLoading ? (
+                  <p className="text-[11px] text-slate-400">
+                    Carregando serviços...
+                  </p>
+                ) : servicesError ? (
+                  <p className="text-[11px] text-rose-300">{servicesError}</p>
+                ) : null}
+
+                {isServicePickerOpen ? (
+                  <div className="mt-2 max-h-44 overflow-auto pr-1 space-y-2">
+                    {services.map((s) => {
+                      const checked = selectedServiceIds.includes(s.id);
+                      return (
+                        <label
+                          key={s.id}
+                          className="flex items-center justify-between gap-3 rounded-lg border border-slate-800 bg-slate-950/40 px-3 py-2"
+                        >
+                          <div className="min-w-0">
+                            <p className="text-[11px] text-slate-200 truncate">
+                              {s.name}
+                            </p>
+                            <p className="text-[10px] text-slate-500">
+                              € {Number(s.priceEuro ?? 0).toFixed(2)}
+                            </p>
+                          </div>
+
+                          <input
+                            type="checkbox"
+                            checked={checked}
+                            onChange={(e) => {
+                              const isOn = e.target.checked;
+                              setSelectedServiceIds((prev) =>
+                                isOn
+                                  ? [...prev, s.id]
+                                  : prev.filter((id) => id !== s.id),
+                              );
+                            }}
+                          />
+                        </label>
+                      );
+                    })}
+                  </div>
+                ) : (
+                  <div className="text-[11px] text-slate-400">
+                    Selecionados:{" "}
+                    {selectedServicesForDisplay.length > 0
+                      ? selectedServicesForDisplay.map((x) => x.name).join(", ")
+                      : "nenhum"}
+                  </div>
+                )}
+
+                <div className="mt-2 flex items-center gap-3 text-[11px] text-slate-500">
+                  <label className="inline-flex items-center gap-2">
+                    <input
+                      type="checkbox"
+                      checked={applyDiscount}
+                      onChange={(e) => setApplyDiscount(e.target.checked)}
+                    />
+                    Aplicar desconto
+                  </label>
+
+                  {applyDiscount ? (
+                    <select
+                      value={discountPercent}
+                      onChange={(e) =>
+                        setDiscountPercent(Number(e.target.value) as any)
+                      }
+                      className="rounded-lg border border-slate-800 bg-slate-900/60 px-3 py-1 text-slate-100"
+                    >
+                      <option value={5}>5%</option>
+                      <option value={10}>10%</option>
+                      <option value={15}>15%</option>
+                    </select>
+                  ) : null}
+                </div>
+              </div>
+
+              <div className="flex items-center justify-end gap-2">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setIsCreating(false);
+                    setCreatingError(null);
+                  }}
+                  className="px-3 py-2 rounded-lg border border-slate-700 bg-slate-950/40 text-[11px] text-slate-200 hover:border-slate-500"
+                >
+                  Cancelar
+                </button>
+
+                <button
+                  type="submit"
+                  disabled={creatingLoading}
+                  className={[
+                    "px-3 py-2 rounded-lg border text-[11px]",
+                    creatingLoading
+                      ? "border-slate-800 bg-slate-900/40 text-slate-400"
+                      : "border-emerald-600 bg-emerald-600/20 text-emerald-200 hover:border-emerald-500",
+                  ].join(" ")}
+                >
+                  {creatingLoading ? "Criando..." : "Criar plano"}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      ) : null}
+
+      {/* Layout principal */}
+      <section className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+        {/* Lista de planos */}
+        <div className="rounded-2xl border border-slate-800 bg-slate-900/60 p-4">
+          <div className="flex items-center justify-between mb-3">
+            <p className="text-sm font-medium text-slate-100">Planos</p>
+            <span className="text-[11px] text-slate-500">
+              {filteredPlanTemplates.length} item(ns)
+            </span>
+          </div>
+
+          {filteredPlanTemplates.length === 0 ? (
+            <p className="text-[12px] text-slate-400">
+              Nenhum plano encontrado nesse filtro/unidade.
+            </p>
+          ) : (
+            <div className="space-y-2">
+              {filteredPlanTemplates.map((p) => {
+                const isSelected = p.id === selectedId;
+                return (
+                  <button
+                    key={p.id}
+                    type="button"
+                    onClick={() => setSelectedId(p.id)}
+                    className={[
+                      "w-full text-left rounded-xl border px-3 py-2 transition-colors",
+                      isSelected
+                        ? "border-emerald-500/60 bg-emerald-500/10"
+                        : "border-slate-800 bg-slate-950/40 hover:border-slate-700",
+                    ].join(" ")}
+                  >
+                    <div className="flex items-center justify-between gap-2">
+                      <p className="text-[12px] font-medium text-slate-100 truncate">
+                        {p.name}
+                      </p>
+                      <span className="text-[11px] text-slate-300">
+                        € {p.price.toFixed(2)}
+                      </span>
+                    </div>
+
+                    <p className="mt-1 text-[11px] text-slate-400 truncate">
+                      {p.description ?? "Sem descrição"}
+                    </p>
+
+                    <div className="mt-2 flex items-center justify-between">
+                      <PlanCustomerStatusBadge
+                        status={p.isActive ? "active" : "cancelled"}
+                      />
+                      <span className="text-[10px] text-slate-500">
+                        {p.visitsIncluded} visita(s)/mês
+                      </span>
+                    </div>
+                  </button>
+                );
+              })}
+            </div>
+          )}
+        </div>
+
+        {/* Detalhes */}
+        <div className="lg:col-span-2 rounded-2xl border border-slate-800 bg-slate-900/60 p-4">
+          {!selectedPlan ? (
+            <p className="text-[12px] text-slate-400">
+              Selecione um plano para ver detalhes.
+            </p>
+          ) : (
+            <>
+              <div className="flex flex-col gap-2 md:flex-row md:items-start md:justify-between">
+                <div className="min-w-0">
+                  <p className="text-sm font-semibold text-slate-100 truncate">
+                    {selectedPlan.name}
+                  </p>
+                  <p className="text-[11px] text-slate-400">
+                    € {selectedPlan.price.toFixed(2)} ·{" "}
+                    {selectedPlan.visitsIncluded} visita(s) ·{" "}
+                    {selectedPlan.minDaysBetweenVisits != null
+                      ? `mín. ${selectedPlan.minDaysBetweenVisits} dias`
+                      : "sem intervalo mínimo"}
+                  </p>
+
+                  <p className="mt-2 text-[11px] text-slate-500">
+                    Dias: {selectedPlanWeekdaysLabel || "—"} · Horário:{" "}
+                    {selectedPlanTimeWindowLabel || "—"}
+                  </p>
+
+                  {selectedPlan.description ? (
+                    <p className="mt-2 text-[12px] text-slate-200">
+                      {selectedPlan.description}
+                    </p>
+                  ) : null}
+                </div>
+
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={handleStartEditPlan}
+                    className="rounded-lg border border-slate-700 bg-slate-950/40 px-3 py-2 text-[11px] text-slate-200 hover:border-emerald-500/60 hover:text-emerald-200"
+                  >
+                    Editar
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setIsCreatingCustomer(true);
+                      setCreateCustomerError(null);
+                    }}
+                    className="rounded-lg border border-emerald-600 bg-emerald-600/20 px-3 py-2 text-[11px] text-emerald-200 hover:border-emerald-500"
+                  >
+                    + Adicionar cliente
+                  </button>
+                </div>
+              </div>
+
+              {/* Stats */}
+              <div className="mt-4 grid grid-cols-2 md:grid-cols-3 gap-3">
+                <div className="rounded-xl border border-slate-800 bg-slate-950/60 p-3">
+                  <p className="text-[10px] text-slate-400">Clientes ativos</p>
+                  <p className="mt-1 text-sm font-semibold text-slate-100">
+                    {selectedStats?.activeCustomers ?? 0}
+                  </p>
+                </div>
+
+                <div className="rounded-xl border border-slate-800 bg-slate-950/60 p-3">
+                  <p className="text-[10px] text-slate-400">Receita (mês)</p>
+                  <p className="mt-1 text-sm font-semibold text-slate-100">
+                    € {(selectedStats?.totalRevenueMonth ?? 0).toFixed(2)}
+                  </p>
+                </div>
+
+                <div className="rounded-xl border border-slate-800 bg-slate-950/60 p-3">
+                  <p className="text-[10px] text-slate-400">Churn</p>
+                  <p className="mt-1 text-sm font-semibold text-slate-100">
+                    {(selectedStats?.churnRatePercent ?? 0).toFixed(0)}%
+                  </p>
+                </div>
+              </div>
+
+              {/* Clientes */}
+              <div className="mt-4 rounded-xl border border-slate-800 bg-slate-950/40 p-3">
+                <div className="flex items-center justify-between mb-2">
+                  <p className="text-[11px] text-slate-300 font-medium">
+                    Clientes do plano
+                  </p>
+                  <span className="text-[11px] text-slate-500">
+                    {customers.length} cliente(s)
+                  </span>
+                </div>
+
+                {error ? (
+                  <p className="mb-2 text-[11px] text-rose-300">{error}</p>
+                ) : null}
+
+                {customers.length === 0 ? (
+                  <p className="text-[11px] text-slate-500">
+                    Nenhum cliente neste plano ainda.
+                  </p>
+                ) : (
+                  <div className="overflow-auto">
+                    <table className="w-full min-w-[760px] border-collapse text-[11px]">
+                      <thead>
+                        <tr className="text-slate-400">
+                          <th className="text-left py-2 pr-3 border-b border-slate-800">
+                            Cliente
+                          </th>
+                          <th className="text-left py-2 pr-3 border-b border-slate-800">
+                            Status
+                          </th>
+                          <th className="text-left py-2 pr-3 border-b border-slate-800">
+                            Próx. cobrança
+                          </th>
+                          <th className="text-left py-2 pr-3 border-b border-slate-800">
+                            Pago até
+                          </th>
+                          <th className="text-right py-2 pl-3 border-b border-slate-800">
+                            Ações
+                          </th>
+                        </tr>
+                      </thead>
+
+                      <tbody>
+                        {customers.map((c) => {
+                          const loadingPay = registeringPaymentId === c.id;
+                          const canPayNext =
+                            c.canPayNextCycle ?? c.canRegisterPayment ?? false;
+
+                          return (
+                            <tr key={c.id} className="hover:bg-slate-950/50">
+                              <td className="py-2 pr-3 text-slate-200">
+                                <p className="font-medium">{c.name}</p>
+                                <p className="text-[10px] text-slate-500">
+                                  {c.phone ?? "—"}
+                                </p>
+                              </td>
+
+                              <td className="py-2 pr-3">
+                                <PlanCustomerStatusBadge status={c.status} />
+                              </td>
+
+                              <td className="py-2 pr-3 text-slate-200">
+                                {c.nextChargeDate
+                                  ? new Date(
+                                      c.nextChargeDate,
+                                    ).toLocaleDateString("pt-PT", {
+                                      day: "2-digit",
+                                      month: "2-digit",
+                                      year: "numeric",
+                                    })
+                                  : "—"}
+                              </td>
+
+                              <td className="py-2 pr-3 text-slate-200">
+                                {c.paidThrough
+                                  ? new Date(c.paidThrough).toLocaleDateString(
+                                      "pt-PT",
+                                      {
+                                        day: "2-digit",
+                                        month: "2-digit",
+                                        year: "numeric",
+                                      },
+                                    )
+                                  : c.nextChargeDate
+                                    ? new Date(
+                                        c.nextChargeDate,
+                                      ).toLocaleDateString("pt-PT", {
+                                        day: "2-digit",
+                                        month: "2-digit",
+                                        year: "numeric",
+                                      })
+                                    : "—"}
+                              </td>
+
+                              <td className="py-2 pl-3 text-right">
+                                <div className="inline-flex items-center gap-2">
+                                  <button
+                                    type="button"
+                                    disabled={loadingPay || !canPayNext}
+                                    onClick={() => handleRegisterPayment(c, 1)}
+                                    className={[
+                                      "rounded-lg border px-3 py-1 text-[11px]",
+                                      loadingPay || !canPayNext
+                                        ? "border-slate-800 bg-slate-900/40 text-slate-400"
+                                        : "border-emerald-500/40 bg-emerald-500/10 text-emerald-200 hover:border-emerald-400 hover:text-emerald-100",
+                                    ].join(" ")}
+                                    title={
+                                      canPayNext
+                                        ? "Pagar o próximo mês"
+                                        : c.nextChargeDate
+                                          ? `Só pode pagar nos últimos 30 dias antes do vencimento (${new Date(
+                                              c.nextChargeDate,
+                                            ).toLocaleDateString("pt-PT")}).`
+                                          : "Pagamento do próximo mês ainda não disponível."
+                                    }
+                                  >
+                                    {loadingPay ? "..." : "Pagar mês"}
+                                  </button>
+
+                                  <button
+                                    type="button"
+                                    disabled={loadingPay}
+                                    onClick={() => {
+                                      setAdvanceMonths(3);
+                                      setAdvanceModalCustomer(c);
+                                    }}
+                                    className={[
+                                      "rounded-lg border px-3 py-1 text-[11px]",
+                                      loadingPay
+                                        ? "border-slate-800 bg-slate-900/40 text-slate-400"
+                                        : "border-slate-700 bg-slate-950/40 text-slate-200 hover:border-slate-500",
+                                    ].join(" ")}
+                                  >
+                                    Adiantar
+                                  </button>
+                                </div>
+                              </td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+              </div>
+            </>
+          )}
+        </div>
+      </section>
+      {advanceModalCustomer ? (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4">
+          <div className="w-full max-w-md rounded-2xl border border-slate-800 bg-slate-950 p-4 text-xs shadow-xl">
+            <div className="mb-3 flex items-start justify-between gap-3">
+              <div>
+                <p className="text-[11px] uppercase tracking-wide text-slate-400">
+                  Adiantamento
+                </p>
+                <p className="text-sm font-semibold text-slate-100">
+                  {advanceModalCustomer.name}
+                </p>
+                <p className="mt-1 text-[11px] text-slate-500">
+                  Plano: {selectedPlan?.name ?? "—"} · €{" "}
+                  {selectedPlan?.price.toFixed(2) ?? "—"}
+                </p>
+              </div>
+
+              <button
+                type="button"
+                onClick={() => setAdvanceModalCustomer(null)}
+                className="rounded-lg border border-slate-700 bg-slate-950/40 px-3 py-1 text-[11px] text-slate-200 hover:border-slate-500"
+              >
+                Fechar
+              </button>
+            </div>
+
+            <div className="space-y-3">
+              <div>
+                <label className="text-[11px] text-slate-400">
+                  Quantos meses deseja adiantar? (1 a 6)
+                </label>
+                <select
+                  value={advanceMonths}
+                  onChange={(e) =>
+                    setAdvanceMonths(Number(e.target.value) as any)
+                  }
+                  className="mt-1 w-full rounded-lg border border-slate-800 bg-slate-900/60 px-3 py-2 text-sm text-slate-100 outline-none focus:border-emerald-400"
+                >
+                  <option value={1}>1 mês</option>
+                  <option value={2}>2 meses</option>
+                  <option value={3}>3 meses</option>
+                  <option value={4}>4 meses</option>
+                  <option value={5}>5 meses</option>
+                  <option value={6}>6 meses</option>
+                </select>
+              </div>
+
+              <div className="flex items-center justify-end gap-2">
+                <button
+                  type="button"
+                  onClick={() => setAdvanceModalCustomer(null)}
+                  className="px-3 py-2 rounded-lg border border-slate-700 bg-slate-950/40 text-[11px] text-slate-200 hover:border-slate-500"
+                >
+                  Cancelar
+                </button>
+
+                <button
+                  type="button"
+                  disabled={registeringPaymentId === advanceModalCustomer.id}
+                  onClick={async () => {
+                    const c = advanceModalCustomer;
+                    setAdvanceModalCustomer(null);
+                    await handleRegisterPayment(c, advanceMonths);
+                  }}
+                  className={[
+                    "px-3 py-2 rounded-lg border text-[11px]",
+                    registeringPaymentId === advanceModalCustomer.id
+                      ? "border-slate-800 bg-slate-900/40 text-slate-400"
+                      : "border-emerald-600 bg-emerald-600/20 text-emerald-200 hover:border-emerald-500",
+                  ].join(" ")}
+                >
+                  Confirmar
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      ) : null}
+      {/* MODAL: adicionar cliente */}
+      {isCreatingCustomer ? (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4">
+          <div className="w-full max-w-lg rounded-2xl border border-slate-800 bg-slate-950 p-4 text-xs shadow-xl">
+            <div className="mb-3 flex items-start justify-between gap-3">
+              <div>
+                <p className="text-[11px] uppercase tracking-wide text-slate-400">
+                  Adicionar cliente
+                </p>
+                <p className="text-sm font-semibold text-slate-100">
+                  {selectedPlan ? selectedPlan.name : "Selecione um plano"}
+                </p>
+              </div>
+
+              <button
+                type="button"
+                onClick={() => {
+                  setIsCreatingCustomer(false);
+                  setCreateCustomerError(null);
+                }}
+                className="rounded-lg border border-slate-700 bg-slate-950/40 px-3 py-1 text-[11px] text-slate-200 hover:border-emerald-500/60 hover:text-emerald-200"
+              >
+                Fechar
+              </button>
+            </div>
+
+            {createCustomerError ? (
+              <div className="mb-3 rounded-xl border border-rose-500/30 bg-rose-500/5 p-3 text-[11px] text-rose-200">
+                {createCustomerError}
+              </div>
+            ) : null}
+
+            <form onSubmit={handleCreateCustomer} className="space-y-3">
+              <div>
+                <label className="text-[11px] text-slate-400">Nome</label>
+                <input
+                  value={newCustomerName}
+                  onChange={(e) => setNewCustomerName(e.target.value)}
+                  className="mt-1 w-full rounded-lg border border-slate-800 bg-slate-900/60 px-3 py-2 text-sm text-slate-100 outline-none focus:border-emerald-400"
+                />
+              </div>
+
+              <div>
+                <label className="text-[11px] text-slate-400">Telefone</label>
+                <input
+                  value={newCustomerPhone}
+                  onChange={(e) => setNewCustomerPhone(e.target.value)}
+                  className="mt-1 w-full rounded-lg border border-slate-800 bg-slate-900/60 px-3 py-2 text-sm text-slate-100 outline-none focus:border-emerald-400"
+                />
+              </div>
+
+              <div className="flex items-center justify-end gap-2">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setIsCreatingCustomer(false);
+                    setCreateCustomerError(null);
+                  }}
+                  className="px-3 py-2 rounded-lg border border-slate-700 bg-slate-950/40 text-[11px] text-slate-200 hover:border-slate-500"
+                >
+                  Cancelar
+                </button>
+
+                <button
+                  type="submit"
+                  disabled={createCustomerLoading}
+                  className={[
+                    "px-3 py-2 rounded-lg border text-[11px]",
+                    createCustomerLoading
+                      ? "border-slate-800 bg-slate-900/40 text-slate-400"
+                      : "border-emerald-600 bg-emerald-600/20 text-emerald-200 hover:border-emerald-500",
+                  ].join(" ")}
+                >
+                  {createCustomerLoading ? "Adicionando..." : "Adicionar"}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      ) : null}
     </>
   );
 }

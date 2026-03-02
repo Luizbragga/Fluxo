@@ -313,7 +313,9 @@ export class AppointmentsService {
           where: {
             tenantId,
             customerPlanId: customerPlan.id,
-            status: { not: 'cancelled' as any },
+            status: {
+              in: ['scheduled', 'in_service', 'done', 'no_show'] as any,
+            },
             startAt: { lt: startAt },
           },
           orderBy: { startAt: 'desc' },
@@ -353,38 +355,9 @@ export class AppointmentsService {
         }
       }
 
-      // 5) Ciclo do plano + controle de visitas (comparando por DIA)
-      const apptDateOnly = new Date(
-        startAt.getFullYear(),
-        startAt.getMonth(),
-        startAt.getDate(),
-        0,
-        0,
-        0,
-        0,
-      );
-
-      const cycleStartDateOnly = new Date(
-        customerPlan.currentCycleStart.getFullYear(),
-        customerPlan.currentCycleStart.getMonth(),
-        customerPlan.currentCycleStart.getDate(),
-        0,
-        0,
-        0,
-        0,
-      );
-
-      const cycleEndDateOnly = new Date(
-        customerPlan.currentCycleEnd.getFullYear(),
-        customerPlan.currentCycleEnd.getMonth(),
-        customerPlan.currentCycleEnd.getDate(),
-        0,
-        0,
-        0,
-        0,
-      );
-
-      if (apptDateOnly > cycleEndDateOnly) {
+      // 5) Ciclo do plano + controle de visitas (timestamp, fim EXCLUSIVO)
+      // Regra: válido se startAt >= currentCycleStart && startAt < currentCycleEnd
+      if (startAt >= customerPlan.currentCycleEnd) {
         await this.prisma.customerPlan.update({
           where: { id: customerPlan.id },
           data: {
@@ -398,7 +371,7 @@ export class AppointmentsService {
         );
       }
 
-      if (apptDateOnly < cycleStartDateOnly) {
+      if (startAt < customerPlan.currentCycleStart) {
         throw new BadRequestException(
           'Data do agendamento está fora do ciclo atual do plano do cliente.',
         );
@@ -415,10 +388,8 @@ export class AppointmentsService {
         );
       }
 
-      await this.prisma.customerPlan.update({
-        where: { id: customerPlan.id },
-        data: { visitsUsedInCycle: nextVisitsUsed },
-      });
+      // NÃO incrementa aqui.
+      // A visita será consumida APÓS o appointment ser criado com sucesso.
 
       // 6) Ajuste de duração / preço para combos
       if (template?.sameDayServiceIds) {
@@ -590,33 +561,106 @@ export class AppointmentsService {
     }
 
     // ----------------------------------------------------------------
-    // CRIA O APPOINTMENT
+    // CRIA O APPOINTMENT + CONSOME VISITA (TRANSACÇÃO)
     // ----------------------------------------------------------------
-    const appointment = await this.prisma.appointment.create({
-      data: {
-        tenantId,
-        providerId: dto.providerId,
-        locationId: provider.locationId,
-        serviceId: dto.serviceId,
-        startAt,
-        endAt,
-        clientName: dto.clientName,
-        clientPhone: clientPhoneE164,
-        createdById: userId,
+    const appointment = await this.prisma.$transaction(async (tx) => {
+      // Re-checagem da cota do plano dentro da transação (evita corrida)
+      if (customerPlanId) {
+        const plan = await tx.customerPlan.findFirst({
+          where: {
+            id: customerPlanId,
+            tenantId,
+            status: CustomerPlanStatus.active,
+          },
+          select: {
+            id: true,
+            currentCycleStart: true,
+            currentCycleEnd: true,
+            visitsUsedInCycle: true,
+            carryOverVisits: true,
+            planTemplate: {
+              select: {
+                visitsPerInterval: true,
+              },
+            },
+          },
+        });
 
-        serviceName: effectiveServiceName,
-        serviceDurationMin: effectiveDurationMin,
-        servicePriceCents: effectiveServicePriceCents,
+        if (!plan) {
+          throw new BadRequestException(
+            'Plano do cliente inválido ou inativo.',
+          );
+        }
 
-        customerId,
-        customerPlanId,
-      },
-      include: {
-        service: { select: { id: true, name: true, durationMin: true } },
-        provider: { select: { id: true, name: true } },
-      },
+        // Regra de ciclo (fim EXCLUSIVO) — mesma regra que você já ajustou
+        if (startAt >= plan.currentCycleEnd) {
+          await tx.customerPlan.update({
+            where: { id: plan.id },
+            data: {
+              status: CustomerPlanStatus.late,
+              lastPaymentStatus: CustomerPlanPaymentStatus.late,
+            },
+          });
+
+          throw new BadRequestException(
+            'Plano do cliente está com pagamento em atraso e foi bloqueado. Regista o pagamento para voltar a agendar.',
+          );
+        }
+
+        if (startAt < plan.currentCycleStart) {
+          throw new BadRequestException(
+            'Data do agendamento está fora do ciclo atual do plano do cliente.',
+          );
+        }
+
+        const limit =
+          (plan.planTemplate?.visitsPerInterval ?? 0) +
+          (plan.carryOverVisits ?? 0);
+        const nextUsed = (plan.visitsUsedInCycle ?? 0) + 1;
+
+        if (nextUsed > limit) {
+          throw new BadRequestException(
+            'Cliente já utilizou todas as visitas disponíveis neste ciclo do plano.',
+          );
+        }
+      }
+
+      // Cria o appointment dentro da transação
+      const created = await tx.appointment.create({
+        data: {
+          tenantId,
+          providerId: dto.providerId,
+          locationId: provider.locationId,
+          serviceId: dto.serviceId,
+          startAt,
+          endAt,
+          clientName: dto.clientName,
+          clientPhone: clientPhoneE164,
+          createdById: userId,
+
+          serviceName: effectiveServiceName,
+          serviceDurationMin: effectiveDurationMin,
+          servicePriceCents: effectiveServicePriceCents,
+
+          customerId,
+          customerPlanId,
+        },
+        include: {
+          service: { select: { id: true, name: true, durationMin: true } },
+          provider: { select: { id: true, name: true } },
+        },
+      });
+
+      // Consome visita após o appointment existir, dentro da transação
+      if (customerPlanId) {
+        await tx.customerPlan.update({
+          where: { id: customerPlanId },
+          data: { visitsUsedInCycle: { increment: 1 } },
+        });
+      }
+
+      return created;
     });
-
     // ✅ Notificação IN-APP para o provider (novo agendamento)
     try {
       const tz = await this.getTenantTimezone(tenantId);
