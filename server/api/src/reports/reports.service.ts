@@ -217,9 +217,15 @@ export class ReportsService {
         clientName: true,
         serviceName: true,
         provider: {
+          select: { id: true, name: true },
+        },
+        bookingPayment: {
           select: {
             id: true,
-            name: true,
+            status: true,
+            stripePaymentIntentId: true,
+            stripeCheckoutSessionId: true,
+            refundedAt: true,
           },
         },
       },
@@ -231,16 +237,30 @@ export class ReportsService {
     return {
       from: fromDate.toISOString(),
       to: toDate.toISOString(),
-      items: appointments.map((a) => ({
-        id: a.id,
-        date: a.startAt,
-        status: a.status,
-        customerName: a.clientName,
-        professionalName: a.provider?.name ?? null,
-        serviceName: a.serviceName,
-        // por enquanto sem motivo detalhado
-        reason: null,
-      })),
+      items: appointments.map((a) => {
+        const bp = a.bookingPayment;
+
+        const hasOnlinePayment = Boolean(
+          bp?.stripePaymentIntentId || bp?.stripeCheckoutSessionId,
+        );
+
+        return {
+          id: a.id,
+          date: a.startAt,
+          status: a.status,
+          customerName: a.clientName,
+          professionalName: a.provider?.name ?? null,
+          serviceName: a.serviceName,
+          reason: null,
+
+          // ✅ meta de pagamento para UI
+          hasOnlinePayment,
+          paymentStatus: bp?.status ?? null,
+          bookingPaymentId: bp?.id ?? null,
+          stripePaymentIntentId: bp?.stripePaymentIntentId ?? null,
+          refundedAt: bp?.refundedAt ?? null,
+        };
+      }),
     };
   }
 

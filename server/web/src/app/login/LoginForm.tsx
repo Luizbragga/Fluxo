@@ -41,7 +41,6 @@ export function LoginForm() {
       }
 
       const data = await res.json();
-      console.log("LOGIN OK =>", data);
 
       // 👉 Próximo passo (em outra etapa):
       // - guardar accessToken / refreshToken

@@ -39,6 +39,7 @@ type SlotAppt = {
   serviceName: string;
   customerName: string;
   professionalId: string;
+  status?: string;
 };
 
 type Slot = {
@@ -483,6 +484,7 @@ export default function OwnerPageClient() {
         serviceName: a.serviceName,
         customerName: a.customerName,
         professionalId: a.professionalId,
+        status: (a as any).status,
       });
       map.set(key, arr);
     }
@@ -673,8 +675,15 @@ export default function OwnerPageClient() {
             <div className="mt-2 max-h-[340px] overflow-y-auto pr-1">
               <div className="grid grid-cols-4 md:grid-cols-6 gap-2 text-xs">
                 {slotsBuild.slots.map((slot) => {
-                  const total = slot.appts.length;
-                  const first = slot.appts[0];
+                  const activeAppts = (slot.appts ?? []).filter((a: any) => {
+                    const s = String(a.status ?? "").toLowerCase();
+                    return (
+                      s !== "cancelled" && s !== "canceled" && s !== "no_show"
+                    );
+                  });
+
+                  const total = activeAppts.length;
+                  const first = activeAppts[0];
                   const clickable = total > 0;
 
                   return (
@@ -683,7 +692,7 @@ export default function OwnerPageClient() {
                       type="button"
                       disabled={!clickable}
                       onClick={() =>
-                        openSlotDetails(slot.timeLabel, slot.appts)
+                        openSlotDetails(slot.timeLabel, activeAppts)
                       }
                       className={[
                         "h-16 rounded-xl border bg-slate-950/40 flex flex-col justify-between p-2 text-left relative transition-colors",

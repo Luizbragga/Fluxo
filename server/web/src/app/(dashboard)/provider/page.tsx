@@ -195,7 +195,7 @@ function normalizeIntervals(raw: any): DayInterval[] {
 
 function buildSlotsFromIntervals(
   intervals: DayInterval[],
-  stepMin = 30
+  stepMin = 30,
 ): string[] {
   const out: string[] = [];
   for (const itv of intervals) {
@@ -215,7 +215,7 @@ function buildSlotsFromIntervals(
 
 function getProviderDayIntervals(
   provider: ProviderMeResponse,
-  date: Date
+  date: Date,
 ): DayInterval[] {
   const template =
     provider?.weekdayTemplate ??
@@ -280,7 +280,7 @@ function getDayRangeISO(d: Date) {
     0,
     0,
     0,
-    0
+    0,
   );
   const end = new Date(start.getTime() + 24 * 60 * 60 * 1000);
   return { from: start.toISOString(), to: end.toISOString() };
@@ -367,7 +367,7 @@ export default function ProviderHomePage() {
     useState<ProviderEarningsResponse | null>(null);
   const [unreadCount, setUnreadCount] = useState<number>(0);
   const [nextAppointment, setNextAppointment] = useState<Appointment | null>(
-    null
+    null,
   );
 
   const [loading, setLoading] = useState(true);
@@ -438,7 +438,7 @@ export default function ProviderHomePage() {
         // janela grande pra achar o próximo agendamento (ex.: próximos 60 dias)
         const nowISO = new Date().toISOString();
         const toISO = new Date(
-          Date.now() + 60 * 24 * 60 * 60 * 1000
+          Date.now() + 60 * 24 * 60 * 60 * 1000,
         ).toISOString();
 
         const qsNext = new URLSearchParams();
@@ -449,7 +449,7 @@ export default function ProviderHomePage() {
 
         // tenta usar from/to (se teu backend suportar). Se não suportar, cai no fallback abaixo.
         const nextApptsWindowPromise = apiClient<Appointment[]>(
-          `/appointments?${qsNext.toString()}`
+          `/appointments?${qsNext.toString()}`,
         ).catch(() => null);
 
         const [appts, month, day, notifs, nextApptsWindow] = await Promise.all([
@@ -479,7 +479,7 @@ export default function ProviderHomePage() {
             .filter((a) => new Date(a.startAt).getTime() >= now.getTime())
             .sort(
               (a, b) =>
-                new Date(a.startAt).getTime() - new Date(b.startAt).getTime()
+                new Date(a.startAt).getTime() - new Date(b.startAt).getTime(),
             );
 
           return candidates[0] ?? null;
@@ -506,7 +506,7 @@ export default function ProviderHomePage() {
 
             try {
               const dayAppts = await apiClient<Appointment[]>(
-                `/appointments?${qsDay.toString()}`
+                `/appointments?${qsDay.toString()}`,
               );
 
               const found = pickNextFromList(dayAppts ?? [], now);
@@ -648,7 +648,7 @@ export default function ProviderHomePage() {
       when: formatWhenLabelPT(nextAppointment.startAt),
       time: hhmmFromISO(nextAppointment.startAt),
       range: `${hhmmFromISO(nextAppointment.startAt)} - ${hhmmFromISO(
-        nextAppointment.endAt
+        nextAppointment.endAt,
       )}`,
       serviceName:
         nextAppointment.serviceName ??
@@ -864,7 +864,7 @@ export default function ProviderHomePage() {
       <section className="grid grid-cols-1 lg:grid-cols-3 gap-4 mb-4">
         <div
           className={subtleCardClass(
-            "lg:col-span-2 p-4 overflow-hidden relative"
+            "lg:col-span-2 p-4 overflow-hidden relative",
           )}
         >
           {/* glow */}
@@ -917,7 +917,7 @@ export default function ProviderHomePage() {
                   <div className="flex items-center gap-2">
                     <span
                       className={`h-2 w-2 rounded-full ${getStatusDotClass(
-                        nextAppointmentHero.status
+                        nextAppointmentHero.status,
                       )}`}
                     />
                     <span className="text-[11px] text-slate-400">
@@ -928,7 +928,7 @@ export default function ProviderHomePage() {
                         type="button"
                         onClick={() => setApptMenuOpen((v) => !v)}
                         className={`text-[10px] px-2 py-[2px] rounded-full border ${getStatusChipClass(
-                          nextAppointmentHero.status
+                          nextAppointmentHero.status,
                         )} hover:opacity-90 transition-opacity`}
                         title="Ações do atendimento"
                       >
@@ -949,7 +949,7 @@ export default function ProviderHomePage() {
                               onClick={() =>
                                 updateApptStatus(
                                   nextAppointmentHero.id,
-                                  "in_service"
+                                  "in_service",
                                 )
                               }
                               className="w-full text-left px-3 py-2 rounded-lg text-[12px] text-slate-100 hover:bg-slate-900/60 disabled:opacity-60"
@@ -1158,7 +1158,7 @@ export default function ProviderHomePage() {
                     {first ? (
                       <div
                         className={`mt-2 text-[11px] border rounded-lg px-1 py-[2px] truncate ${getStatusChipClass(
-                          first.status
+                          first.status,
                         )}`}
                         title={`${first.serviceName} • ${first.customerName}`}
                       >

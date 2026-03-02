@@ -62,8 +62,8 @@ function getRangeDates(preset: ReportsRangePreset): {
       now.getUTCDate() + 1,
       0,
       0,
-      0
-    )
+      0,
+    ),
   );
 
   let start = new Date(end);
@@ -93,7 +93,7 @@ function formatMonthLabel(date: Date): string {
  */
 export async function fetchOwnerMonthlyFinancial(
   preset: ReportsRangePreset,
-  opts?: { locationId?: string; providerId?: string }
+  opts?: { locationId?: string; providerId?: string },
 ): Promise<MonthlyFinancialRow[]> {
   const { from, to } = getRangeDates(preset);
 
@@ -128,7 +128,7 @@ export async function fetchOwnerMonthlyFinancial(
       bucket = {
         monthLabel: formatMonthLabel(d),
         monthStartDate: new Date(
-          Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), 1)
+          Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), 1),
         ),
         totalServicePriceCents: 0,
       };
@@ -152,7 +152,7 @@ export async function fetchOwnerMonthlyFinancial(
 
       const spaceShareCents = Math.round(totalHouseEarningsCents * proportion);
       const professionalsShareCents = Math.round(
-        totalProviderEarningsCents * proportion
+        totalProviderEarningsCents * proportion,
       );
 
       return {
@@ -194,7 +194,7 @@ export type ProviderEarningsDetailedResult = {
 
 export async function fetchOwnerProviderEarningsDetailed(
   preset: ReportsRangePreset,
-  opts?: { locationId?: string; providerId?: string }
+  opts?: { locationId?: string; providerId?: string },
 ): Promise<ProviderEarningsDetailedResult> {
   const { from, to } = getRangeDates(preset);
 
@@ -204,7 +204,7 @@ export async function fetchOwnerProviderEarningsDetailed(
 
   const data = await apiClient<ProviderEarningsResponse>(
     `/reports/provider-earnings?${params.toString()}`,
-    { method: "GET" }
+    { method: "GET" },
   );
 
   const totals = {
@@ -257,7 +257,7 @@ type CancellationsApiResponse = {
 };
 
 function buildReportsRangeParams(
-  preset: ReportsRangePreset
+  preset: ReportsRangePreset,
 ): Record<string, string> {
   const now = new Date();
   let fromDate: Date;
@@ -274,14 +274,24 @@ function buildReportsRangeParams(
       fromDate = new Date(now.getTime() - 365 * 24 * 60 * 60 * 1000);
       break;
   }
+  const end = new Date(
+    Date.UTC(
+      now.getUTCFullYear(),
+      now.getUTCMonth(),
+      now.getUTCDate() + 1,
+      0,
+      0,
+      0,
+    ),
+  );
 
-  return { from: fromDate.toISOString(), to: now.toISOString() };
+  return { from: fromDate.toISOString(), to: end.toISOString() };
 }
 
 export async function fetchOwnerCancellations(
   preset: ReportsRangePreset,
   filter: "all" | "cancelled" | "no_show" = "all",
-  opts?: { locationId?: string; providerId?: string }
+  opts?: { locationId?: string; providerId?: string },
 ): Promise<CancellationItem[]> {
   const params = buildReportsRangeParams(preset);
 
@@ -295,7 +305,7 @@ export async function fetchOwnerCancellations(
     `/reports/cancellations?${query}`,
     {
       method: "GET",
-    }
+    },
   );
 
   return data.items ?? [];
@@ -366,7 +376,7 @@ export async function fetchOwnerProviderPayoutsDetailed(params: {
     `/reports/provider-payouts?${qs.toString()}`,
     {
       method: "GET",
-    }
+    },
   );
 }
 export type AppointmentsOverviewStatus =
@@ -429,7 +439,7 @@ export async function fetchOwnerAppointmentsOverview(params: {
 
   return apiClient<AppointmentsOverviewResponse>(
     `/reports/appointments-overview?${qs.toString()}`,
-    { method: "GET" }
+    { method: "GET" },
   );
 }
 // ----------------- Services Report -----------------

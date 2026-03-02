@@ -42,6 +42,7 @@ import {
   type RevenueChartPoint,
 } from "../_components/revenue-line-chart";
 
+import { refundOwnerBookingPayment } from "../_api/owner-refunds";
 // ----------------- Helpers -----------------
 
 type TabKey = "overview" | "payouts" | "unidade" | "services";
@@ -268,7 +269,18 @@ export default function OwnerRelatoriosPage() {
   const [servicesReportError, setServicesReportError] = useState<string | null>(
     null,
   );
-
+  // refund UI
+  const [refundingId, setRefundingId] = useState<string | null>(null);
+  const [refundError, setRefundError] = useState<string | null>(null);
+  const [refundOkId, setRefundOkId] = useState<string | null>(null);
+  const [cancellationsDay, setCancellationsDay] = useState<string>(() => {
+    const now = new Date();
+    // YYYY-MM-DD local
+    const y = now.getFullYear();
+    const m = String(now.getMonth() + 1).padStart(2, "0");
+    const d = String(now.getDate()).padStart(2, "0");
+    return `${y}-${m}-${d}`;
+  });
   // ----------------- URL helpers -----------------
   function setUrlServiceId(nextServiceId: string) {
     const params = new URLSearchParams(searchParams.toString());
@@ -279,6 +291,13 @@ export default function OwnerRelatoriosPage() {
 
     router.replace(`/owner/relatorios?${params.toString()}`);
     router.refresh();
+  }
+  function toLocalYYYYMMDD(dateIsoOrString: string) {
+    const d = new Date(dateIsoOrString);
+    const y = d.getFullYear();
+    const m = String(d.getMonth() + 1).padStart(2, "0");
+    const day = String(d.getDate()).padStart(2, "0");
+    return `${y}-${m}-${day}`;
   }
 
   function setUrlTab(nextTab: TabKey) {
@@ -605,6 +624,7 @@ export default function OwnerRelatoriosPage() {
       cancelled = true;
     };
   }, [tab, locationIdFromUrl]);
+
   useEffect(() => {
     if (tab !== "services") return;
 
@@ -715,6 +735,12 @@ export default function OwnerRelatoriosPage() {
     };
   }, [cancellations.length, providersReport]);
 
+  const cancellationsByDay = useMemo(() => {
+    return (cancellations ?? []).filter((c) => {
+      return toLocalYYYYMMDD(c.date) === cancellationsDay;
+    });
+  }, [cancellations, cancellationsDay]);
+
   const locationManagerName = useMemo(() => {
     const l: any = locationDetail as any;
     return l?.managerProviderName ?? l?.manager?.name ?? l?.managerName ?? "—";
@@ -747,6 +773,110 @@ export default function OwnerRelatoriosPage() {
       value: (Number(d.revenueCents ?? 0) || 0) / 100,
     }));
   }, [servicesReport]);
+  function getRefundMeta(c: CancellationItem): {
+    canRefund: boolean;
+    isRefunded: boolean;
+    reason: string;
+  } {
+    const anyC: any = c as any;
+
+    // Regras base:
+    // - só cancelado (no_show não entra no MVP)
+    // - precisa ter pagamento online vinculado e elegível
+    // OBS: como teu type ainda não mostra esses campos, usamos fallback defensivo.
+    const status = anyC.status as "cancelled" | "no_show";
+    if (status !== "cancelled") {
+      return {
+        canRefund: false,
+        isRefunded: false,
+        reason: "Apenas cancelados",
+      };
+    }
+
+    // tenta achar sinais de pagamento online
+    const paymentStatus =
+      anyC.paymentStatus ??
+      anyC.bookingPaymentStatus ??
+      anyC.bookingPayment?.status ??
+      null;
+
+    const refundable =
+      anyC.canRefund ??
+      anyC.refundable ??
+      anyC.bookingPayment?.refundable ??
+      false;
+
+    const refunded =
+      paymentStatus === "refunded" ||
+      Boolean(anyC.refundedAt ?? anyC.bookingPayment?.refundedAt) ||
+      Boolean(anyC.isRefunded ?? anyC.bookingPayment?.isRefunded);
+
+    const hasOnlinePayment =
+      Boolean(anyC.paymentIntentId ?? anyC.bookingPayment?.paymentIntentId) ||
+      Boolean(
+        anyC.stripePaymentIntentId ??
+        anyC.bookingPayment?.stripePaymentIntentId,
+      ) ||
+      Boolean(anyC.hasOnlinePayment);
+
+    if (!hasOnlinePayment) {
+      return {
+        canRefund: false,
+        isRefunded: false,
+        reason: "Sem pagamento online",
+      };
+    }
+
+    if (refunded) {
+      return { canRefund: false, isRefunded: true, reason: "Já reembolsado" };
+    }
+
+    // se teu backend já manda uma flag (ideal), respeita ela.
+    if (
+      refundable === false &&
+      (anyC.canRefund !== undefined || anyC.refundable !== undefined)
+    ) {
+      return { canRefund: false, isRefunded: false, reason: "Não elegível" };
+    }
+
+    return { canRefund: true, isRefunded: false, reason: "" };
+  }
+
+  async function handleRefund(c: CancellationItem) {
+    setRefundError(null);
+    setRefundOkId(null);
+    setRefundingId(c.id);
+
+    try {
+      const reason = "cancelled_refund_owner_ui";
+
+      const res = await refundOwnerBookingPayment({
+        appointmentId: c.id,
+        reason,
+      });
+
+      if (res?.status !== "refunded") {
+        throw new Error("Refund não confirmado pelo servidor.");
+      }
+
+      setRefundOkId(c.id);
+
+      // ✅ refetch para atualizar a lista (e trocar botão por "Reembolsado")
+      const items = await fetchOwnerCancellations(
+        rangePreset,
+        cancellationsFilter,
+        {
+          locationId: locationIdFromUrl || undefined,
+          providerId: providerId || undefined,
+        },
+      );
+      setCancellations(items);
+    } catch (err: any) {
+      setRefundError(err?.message ?? "Falha ao reembolsar.");
+    } finally {
+      setRefundingId(null);
+    }
+  }
 
   // ----------------- render -----------------
 
@@ -1536,70 +1666,166 @@ export default function OwnerRelatoriosPage() {
                 </p>
               </div>
 
-              <select
-                className="px-3 py-1 rounded-lg border border-slate-800 bg-slate-900/80 text-slate-200"
-                value={cancellationsFilter}
-                onChange={(e) => setCancellationsFilter(e.target.value as any)}
-              >
-                <option value="all">Todos</option>
-                <option value="cancelled">Cancelados</option>
-                <option value="no_show">No-show</option>
-              </select>
+              <div className="flex flex-wrap items-center gap-2">
+                <button
+                  type="button"
+                  className="px-3 py-1 rounded-lg border border-slate-800 bg-slate-900/80 text-slate-200 hover:border-slate-600"
+                  onClick={() => {
+                    const d = new Date(cancellationsDay + "T00:00:00");
+                    d.setDate(d.getDate() - 1);
+                    setCancellationsDay(d.toISOString().slice(0, 10));
+                  }}
+                  title="Dia anterior"
+                >
+                  ◀
+                </button>
+
+                <input
+                  type="date"
+                  value={cancellationsDay}
+                  onChange={(e) => setCancellationsDay(e.target.value)}
+                  className="px-3 py-1 rounded-lg border border-slate-800 bg-slate-900/80 text-slate-200"
+                />
+
+                <button
+                  type="button"
+                  className="px-3 py-1 rounded-lg border border-slate-800 bg-slate-900/80 text-slate-200 hover:border-slate-600"
+                  onClick={() => {
+                    const d = new Date(cancellationsDay + "T00:00:00");
+                    d.setDate(d.getDate() + 1);
+                    setCancellationsDay(d.toISOString().slice(0, 10));
+                  }}
+                  title="Próximo dia"
+                >
+                  ▶
+                </button>
+
+                <select
+                  className="px-3 py-1 rounded-lg border border-slate-800 bg-slate-900/80 text-slate-200"
+                  value={cancellationsFilter}
+                  onChange={(e) =>
+                    setCancellationsFilter(e.target.value as any)
+                  }
+                >
+                  <option value="all">Todos</option>
+                  <option value="cancelled">Cancelados</option>
+                  <option value="no_show">No-show</option>
+                </select>
+              </div>
             </div>
 
             {loadingCancellations ? (
               <p className="text-[11px] text-slate-400">Carregando...</p>
             ) : errorCancellations ? (
               <p className="text-[11px] text-rose-400">{errorCancellations}</p>
-            ) : cancellations.length === 0 ? (
+            ) : cancellationsByDay.length === 0 ? (
               <p className="text-[11px] text-slate-500">
                 Nenhum cancelamento/no-show no período.
               </p>
             ) : (
-              <div className="overflow-auto">
-                <table className="w-full border-collapse text-[11px] min-w-[720px]">
-                  <thead>
-                    <tr className="text-slate-400">
-                      <th className="text-left py-2 pr-3 border-b border-slate-800">
-                        Data
-                      </th>
-                      <th className="text-left py-2 pr-3 border-b border-slate-800">
-                        Cliente
-                      </th>
-                      <th className="text-left py-2 pr-3 border-b border-slate-800">
-                        Serviço
-                      </th>
-                      <th className="text-left py-2 pr-3 border-b border-slate-800">
-                        Profissional
-                      </th>
-                      <th className="text-left py-2 pl-3 border-b border-slate-800">
-                        Tipo
-                      </th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {cancellations.map((c) => (
-                      <tr key={c.id} className="hover:bg-slate-950/50">
-                        <td className="py-2 pr-3 text-slate-200">
-                          {formatDateTimePT(c.date)}
-                        </td>
-                        <td className="py-2 pr-3 text-slate-200">
-                          {c.customerName ?? "—"}
-                        </td>
-                        <td className="py-2 pr-3 text-slate-200">
-                          {c.serviceName ?? "—"}
-                        </td>
-                        <td className="py-2 pr-3 text-slate-200">
-                          {c.professionalName ?? "—"}
-                        </td>
-                        <td className="py-2 pl-3">
-                          <CancellationTypeBadge status={c.status} />
-                        </td>
+              <>
+                {refundError ? (
+                  <p className="mb-2 text-[11px] text-rose-400">
+                    {refundError}
+                  </p>
+                ) : null}
+
+                {refundOkId ? (
+                  <p className="mb-2 text-[11px] text-emerald-300">
+                    Reembolso concluído: {refundOkId}
+                  </p>
+                ) : null}
+
+                <div className="overflow-auto">
+                  <table className="w-full border-collapse text-[11px] min-w-[720px]">
+                    <thead>
+                      <tr className="text-slate-400">
+                        <th className="text-left py-2 pr-3 border-b border-slate-800">
+                          Data
+                        </th>
+                        <th className="text-left py-2 pr-3 border-b border-slate-800">
+                          Cliente
+                        </th>
+                        <th className="text-left py-2 pr-3 border-b border-slate-800">
+                          Serviço
+                        </th>
+                        <th className="text-left py-2 pr-3 border-b border-slate-800">
+                          Profissional
+                        </th>
+                        <th className="text-left py-2 pl-3 border-b border-slate-800">
+                          Tipo
+                        </th>
+                        <th className="text-right py-2 pl-3 border-b border-slate-800">
+                          Ações
+                        </th>
                       </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
+                    </thead>
+
+                    <tbody>
+                      {cancellationsByDay.map((c) => (
+                        <tr key={c.id} className="hover:bg-slate-950/50">
+                          <td className="py-2 pr-3 text-slate-200">
+                            {formatDateTimePT(c.date)}
+                          </td>
+                          <td className="py-2 pr-3 text-slate-200">
+                            {c.customerName ?? "—"}
+                          </td>
+                          <td className="py-2 pr-3 text-slate-200">
+                            {c.serviceName ?? "—"}
+                          </td>
+                          <td className="py-2 pr-3 text-slate-200">
+                            {c.professionalName ?? "—"}
+                          </td>
+                          <td className="py-2 pl-3">
+                            <CancellationTypeBadge status={c.status} />
+                          </td>
+
+                          <td className="py-2 pl-3 text-right">
+                            {(() => {
+                              const meta = getRefundMeta(c);
+
+                              if (meta.isRefunded) {
+                                return (
+                                  <span className="inline-flex items-center rounded-full border border-slate-700 bg-slate-950/50 px-2 py-[2px] text-[10px] text-slate-300">
+                                    Reembolsado
+                                  </span>
+                                );
+                              }
+
+                              if (!meta.canRefund) {
+                                return (
+                                  <span className="text-[10px] text-slate-500">
+                                    {meta.reason || "—"}
+                                  </span>
+                                );
+                              }
+
+                              const loading = refundingId === c.id;
+
+                              return (
+                                <button
+                                  type="button"
+                                  disabled={loading}
+                                  onClick={() => handleRefund(c)}
+                                  className={[
+                                    "rounded-lg border px-3 py-1 text-[11px]",
+                                    loading
+                                      ? "border-slate-800 bg-slate-900/40 text-slate-400"
+                                      : "border-emerald-500/40 bg-emerald-500/10 text-emerald-200 hover:border-emerald-400 hover:text-emerald-100",
+                                  ].join(" ")}
+                                  title="Reembolsar pagamento online deste cancelamento"
+                                >
+                                  {loading ? "Reembolsando..." : "Reembolsar"}
+                                </button>
+                              );
+                            })()}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </>
             )}
           </section>
         </>

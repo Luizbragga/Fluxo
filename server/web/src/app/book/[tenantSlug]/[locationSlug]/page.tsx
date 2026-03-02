@@ -55,6 +55,9 @@ export default function BookBySlugPage() {
   const [submitError, setSubmitError] = useState<string | null>(null);
   const [submitOk, setSubmitOk] = useState<string | null>(null);
   const [payOnline, setPayOnline] = useState(false);
+  // ✅ pagamento: sessão + polling de status
+  const [paymentSessionId, setPaymentSessionId] = useState<string | null>(null);
+  const [paymentChecking, setPaymentChecking] = useState(false);
 
   const today = useMemo(() => new Date(), []);
   const [selectedDate, setSelectedDate] = useState<Date>(() => new Date());
@@ -149,28 +152,90 @@ export default function BookBySlugPage() {
       return true;
     });
   }, [daySlots, busyRanges, isToday, nowMinutes, selectedServiceDurationMin]);
+
   useEffect(() => {
     const success = searchParams.get("success");
     const canceled = searchParams.get("canceled");
     const sessionId = searchParams.get("session_id");
 
-    if (success === "1") {
-      setSubmitOk("Pagamento confirmado! Seu agendamento foi concluído.");
-      setSubmitError(null);
-      // opcional: guardar sessionId pra debug (não precisa mostrar)
-    } else if (canceled === "1") {
-      setSubmitError("Pagamento cancelado. Você pode tentar novamente.");
-      setSubmitOk(null);
-    } else {
-      return; // nada pra fazer
+    // ✅ sucesso -> manda pra tela de confirmação e REMOVE query da tela de booking
+    if (success === "1" && sessionId && tenantSlug && locationSlug) {
+      router.replace(
+        `/book/${tenantSlug}/${locationSlug}/confirmed?session_id=${encodeURIComponent(
+          sessionId,
+        )}`,
+      );
+      return;
     }
 
-    // limpa a URL (remove query params) sem recarregar a página
-    if (tenantSlug && locationSlug) {
-      router.replace(`/book/${tenantSlug}/${locationSlug}`);
+    // ✅ cancelado -> mostra mensagem e limpa query da URL (sem loop)
+    if (canceled === "1") {
+      setSubmitError("Pagamento cancelado. Você pode tentar novamente.");
+      setSubmitOk(null);
+
+      if (tenantSlug && locationSlug) {
+        router.replace(`/book/${tenantSlug}/${locationSlug}`);
+      }
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [searchParams, tenantSlug, locationSlug]);
+
+  // ✅ polling do status do pagamento (aguarda webhook atualizar o banco)
+  useEffect(() => {
+    let alive = true;
+    let t: any;
+
+    async function poll() {
+      if (!tenantSlug || !locationSlug) return;
+      if (!paymentSessionId) return;
+
+      try {
+        const { fetchPublicPaymentStatus } =
+          await import("../../../book/_api/payment-status");
+
+        const res = await fetchPublicPaymentStatus({
+          sessionId: paymentSessionId,
+        });
+
+        if (!alive) return;
+
+        const payStatus = res?.payment?.status;
+        if (payStatus === "paid") {
+          setSubmitOk("Pagamento confirmado! Seu agendamento foi concluído.");
+          setSubmitError(null);
+          setPaymentChecking(false);
+
+          if (tenantSlug && locationSlug) {
+            router.replace(`/book/${tenantSlug}/${locationSlug}`);
+          }
+
+          return;
+        }
+
+        if (payStatus === "failed" || payStatus === "canceled") {
+          setSubmitError(
+            "Pagamento não confirmado. Você pode tentar novamente.",
+          );
+          setSubmitOk(null);
+          setPaymentChecking(false);
+          return;
+        }
+
+        // pending/unknown -> continua tentando
+        t = setTimeout(poll, 1500);
+      } catch (e) {
+        // se falhar (ex.: endpoint não existe), tenta de novo
+        t = setTimeout(poll, 2000);
+      }
+    }
+
+    if (paymentChecking) poll();
+
+    return () => {
+      alive = false;
+      if (t) clearTimeout(t);
+    };
+  }, [tenantSlug, locationSlug, paymentSessionId, paymentChecking]);
 
   // load by slug
   useEffect(() => {
@@ -486,6 +551,14 @@ export default function BookBySlugPage() {
         <p className="text-xs text-slate-400 mt-1">
           Escolha serviço, profissional e dia. Depois escolhe o horário.
         </p>
+        {paymentChecking && (
+          <div className="mt-3 rounded-xl border border-emerald-500/30 bg-emerald-500/10 p-3 text-xs text-emerald-200">
+            Pagamento recebido — confirmando no sistema...
+            <div className="mt-1 text-[11px] text-emerald-200/80">
+              Sessão: {paymentSessionId}
+            </div>
+          </div>
+        )}
 
         <div className="mt-5 space-y-4">
           <div>
@@ -709,11 +782,11 @@ export default function BookBySlugPage() {
 
             <button
               type="button"
-              disabled={submitting || !selectedTime}
+              disabled={paymentChecking || submitting || !selectedTime}
               onClick={handleConfirm}
               className={[
                 "w-full rounded-lg px-3 py-2 text-sm font-semibold border transition-colors",
-                submitting || !selectedTime
+                paymentChecking || submitting || !selectedTime
                   ? "border-slate-800 bg-slate-900/40 text-slate-500 cursor-not-allowed"
                   : "border-emerald-500 bg-emerald-500/15 text-emerald-100 hover:bg-emerald-500/25",
               ].join(" ")}
