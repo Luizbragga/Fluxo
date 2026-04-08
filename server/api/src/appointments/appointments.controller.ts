@@ -57,7 +57,7 @@ export class AppointmentsController {
 
   // Registrar pagamento manual (presencial / parcial)
   // ✅ Provider liberado aqui — mas o SERVICE deve validar ownership (appointment do próprio provider)
-  @Roles(Role.owner, Role.admin, Role.attendant, Role.provider)
+  @Roles(Role.owner, Role.admin, Role.attendant)
   @Post(':id/payments')
   @ApiOperation({ summary: 'Registrar pagamento manual no agendamento' })
   @ApiParam({
@@ -227,6 +227,8 @@ export class AppointmentsController {
       query.date,
       query.providerId,
       query.locationId,
+      user.id,
+      user.role,
     );
   }
 
@@ -257,6 +259,7 @@ export class AppointmentsController {
         tenantId,
         id,
         { startAt, endAt },
+        user.id,
         user.role,
       );
     }
@@ -270,10 +273,16 @@ export class AppointmentsController {
           user.role,
         );
       }
-      return this.appointmentsService.updateStatus(tenantId, id, status);
+      return this.appointmentsService.updateStatus(
+        tenantId,
+        id,
+        status,
+        user.id,
+        user.role,
+      );
     }
 
-    return this.appointmentsService.findOne(id);
+    return this.appointmentsService.findOne(user.tenantId, id);
   }
 
   // Cancelamento lógico (status = cancelled)

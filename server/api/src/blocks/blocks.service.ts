@@ -194,7 +194,14 @@ export class BlocksService {
       );
     }
 
-    await this.prisma.block.delete({ where: { id } });
+    const result = await this.prisma.block.deleteMany({
+      where: { id, tenantId },
+    });
+
+    if (result.count === 0) {
+      throw new NotFoundException('Block não encontrado para este tenant.');
+    }
+
     return { deleted: true };
   }
 

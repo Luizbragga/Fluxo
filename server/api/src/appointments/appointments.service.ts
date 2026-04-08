@@ -792,6 +792,8 @@ export class AppointmentsService {
     dateYYYYMMDD: string,
     providerId?: string,
     locationId?: string,
+    actorUserId?: string,
+    actorRole?: string,
   ) {
     const [yStr, mStr, dStr] = dateYYYYMMDD.split('-');
     const y = parseInt(yStr, 10);
@@ -801,6 +803,19 @@ export class AppointmentsService {
     const start = new Date(Date.UTC(y, m - 1, d, 0, 0, 0));
     const end = new Date(Date.UTC(y, m - 1, d, 23, 59, 59));
 
+    // Guardrail MVP: provider só pode ver a própria agenda
+    if (actorRole === 'provider') {
+      const meProvider = await this.prisma.provider.findFirst({
+        where: { tenantId, userId: actorUserId },
+        select: { id: true },
+      });
+
+      if (!meProvider) {
+        throw new BadRequestException('Provider do utilizador não encontrado.');
+      }
+
+      providerId = meProvider.id; // força a query
+    }
     return this.prisma.appointment.findMany({
       where: {
         tenantId,
@@ -822,6 +837,7 @@ export class AppointmentsService {
     tenantId: string,
     appointmentId: string,
     dto: { startAt?: string; endAt?: string },
+    actorUserId: string,
     actorRole: Role,
   ) {
     const { updated, oldStartAt } = await this.prisma.$transaction(
@@ -830,14 +846,21 @@ export class AppointmentsService {
           where: { id: appointmentId, tenantId },
           include: {
             service: { select: { id: true, durationMin: true } },
-            provider: { select: { id: true } },
+            provider: { select: { id: true, userId: true } },
           },
         });
 
         if (!current) {
           throw new NotFoundException('Appointment não encontrado no tenant');
         }
-
+        if (
+          actorRole === Role.provider &&
+          current.provider?.userId !== actorUserId
+        ) {
+          throw new ForbiddenException(
+            'Sem permissão para reagendar este agendamento.',
+          );
+        }
         await this.assertMinCancelNotice(
           tenantId,
           current.startAt,
@@ -961,7 +984,7 @@ export class AppointmentsService {
         }
 
         const updated = await tx.appointment.update({
-          where: { id: current.id },
+          where: { id: current.id, tenantId },
           data: { startAt, endAt },
           include: {
             service: { select: { id: true, name: true, durationMin: true } },
@@ -1038,6 +1061,8 @@ export class AppointmentsService {
     tenantId: string,
     appointmentId: string,
     status: AllowedAppointmentStatusEnum,
+    actorUserId: string,
+    actorRole: Role,
   ) {
     return this.prisma.$transaction(async (tx: any) => {
       const found = await tx.appointment.findFirst({
@@ -1051,14 +1076,21 @@ export class AppointmentsService {
               priceCents: true,
             },
           },
-          provider: { select: { id: true, name: true } },
+          provider: { select: { id: true, name: true, userId: true } },
         },
       });
 
       if (!found) {
         throw new NotFoundException('Appointment não encontrado no tenant');
       }
-
+      if (
+        actorRole === Role.provider &&
+        found.provider?.userId !== actorUserId
+      ) {
+        throw new ForbiddenException(
+          'Sem permissão para alterar este agendamento.',
+        );
+      }
       if (status === AllowedAppointmentStatusEnum.cancelled) {
         throw new BadRequestException(
           'Para cancelar use o endpoint de cancelamento (remove). Isso ajusta plano/financeiro e dispara notificações.',
@@ -1076,7 +1108,7 @@ export class AppointmentsService {
       }
 
       const updated = await tx.appointment.update({
-        where: { id: found.id },
+        where: { id: found.id, tenantId },
         data: {
           status: status as unknown as AppointmentState,
           ...(status === AllowedAppointmentStatusEnum.no_show
@@ -1159,13 +1191,21 @@ export class AppointmentsService {
               amountCents: true,
             },
           },
+          provider: { select: { userId: true } },
         },
       });
 
       if (!appt) {
         throw new NotFoundException('Appointment não encontrado no tenant');
       }
-
+      if (
+        actorRole === Role.provider &&
+        appt.provider?.userId !== actorUserId
+      ) {
+        throw new ForbiddenException(
+          'Sem permissão para cancelar este agendamento.',
+        );
+      }
       await this.assertMinCancelNotice(
         tenantId,
         appt.startAt,
@@ -1282,25 +1322,20 @@ export class AppointmentsService {
     return updated;
   }
 
-  // DEBUG HELPERS --------------------------------------------------------------
-  findAll() {
-    return this.prisma.appointment.findMany({
-      orderBy: { startAt: 'asc' },
+  async findOne(tenantId: string, id: string) {
+    const appt = await this.prisma.appointment.findFirst({
+      where: { id, tenantId },
       include: {
         service: { select: { id: true, name: true, durationMin: true } },
         provider: { select: { id: true, name: true } },
       },
     });
-  }
 
-  findOne(id: string) {
-    return this.prisma.appointment.findUnique({
-      where: { id },
-      include: {
-        service: { select: { id: true, name: true, durationMin: true } },
-        provider: { select: { id: true, name: true } },
-      },
-    });
+    if (!appt) {
+      throw new NotFoundException('Appointment não encontrado no tenant');
+    }
+
+    return appt;
   }
 
   async findDay(tenantId: string, providerId: string, dateISO: string) {

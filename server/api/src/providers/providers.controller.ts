@@ -64,10 +64,20 @@ export class ProvidersController {
     example: 20,
     description: 'Registos por página (1–100)',
   })
+  @Get()
+  @ApiQuery({ name: 'page', required: false, type: Number, example: 1 })
+  @ApiQuery({ name: 'pageSize', required: false, type: Number, example: 20 })
+  @ApiQuery({
+    name: 'locationId',
+    required: false,
+    type: String,
+    description: 'Filtra providers por unidade (locationId)',
+  })
   findAll(
     @Req() req: any,
     @Query('page') page?: string,
     @Query('pageSize') pageSize?: string,
+    @Query('locationId') locationId?: string,
   ) {
     const { tenantId } = req.user as { tenantId: string };
 
@@ -77,6 +87,7 @@ export class ProvidersController {
     return this.providersService.findAll(tenantId, {
       page: pageNum,
       pageSize: pageSizeNum,
+      locationId: locationId || undefined,
     });
   }
   // owner/admin podem ver utilizadores disponíveis para virar provider

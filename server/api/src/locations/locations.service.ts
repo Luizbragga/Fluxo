@@ -82,7 +82,7 @@ export class LocationsService {
 
   async findAll(
     tenantId: string,
-    params?: { page?: number; pageSize?: number },
+    params?: { page?: number; pageSize?: number; locationId?: string },
   ) {
     const page = params?.page && params.page > 0 ? params.page : 1;
 
@@ -153,8 +153,8 @@ export class LocationsService {
     }
 
     // slug é imutável: NÃO recalcula e NÃO permite alteração via update
-    const updated = await this.prisma.location.update({
-      where: { id },
+    const result = await this.prisma.location.updateMany({
+      where: { id, tenantId },
       data: {
         name: dto.name ?? undefined,
         address: typeof dto.address !== 'undefined' ? dto.address : undefined,
@@ -168,7 +168,6 @@ export class LocationsService {
             ? dto.managerProviderId
             : undefined,
 
-        // ✅ override por unidade (number) ou remover override (null)
         bookingIntervalMin:
           typeof dto.bookingIntervalMin !== 'undefined'
             ? dto.bookingIntervalMin
@@ -177,13 +176,19 @@ export class LocationsService {
           typeof dto.bookingPaymentPolicy !== 'undefined'
             ? dto.bookingPaymentPolicy
             : undefined,
-
         bookingDepositPercent:
           typeof dto.bookingDepositPercent !== 'undefined'
             ? dto.bookingDepositPercent
             : undefined,
       },
+    });
 
+    if (result.count === 0) {
+      throw new NotFoundException('Location não encontrada neste tenant');
+    }
+
+    const updated = await this.prisma.location.findFirst({
+      where: { id, tenantId },
       include: {
         managerProvider: {
           select: { id: true, name: true },
@@ -215,7 +220,14 @@ export class LocationsService {
       );
     }
 
-    await this.prisma.location.delete({ where: { id } });
+    const result = await this.prisma.location.deleteMany({
+      where: { id, tenantId },
+    });
+
+    if (result.count === 0) {
+      throw new NotFoundException('Location não encontrada neste tenant');
+    }
+
     return { ok: true };
   }
 }

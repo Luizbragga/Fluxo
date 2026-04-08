@@ -19,7 +19,8 @@ import { TenantsModule } from './tenants/tenants.module';
 import { NotificationsModule } from './notifications/notifications.module';
 import { InvitesModule } from './invites/invites.module';
 import { PublicModule } from './public/public.module';
-
+import { ThrottlerModule, ThrottlerGuard } from '@nestjs/throttler';
+import { APP_GUARD } from '@nestjs/core';
 @Module({
   imports: [
     ConfigModule.forRoot({ isGlobal: true }),
@@ -41,6 +42,21 @@ import { PublicModule } from './public/public.module';
     ScheduleModule.forRoot(),
     InvitesModule,
     PublicModule,
+    ThrottlerModule.forRoot({
+      throttlers: [
+        {
+          ttl: 60,
+          limit: 3,
+        },
+      ],
+    }),
+  ],
+
+  providers: [
+    {
+      provide: APP_GUARD,
+      useClass: ThrottlerGuard,
+    },
   ],
 })
 export class AppModule {}

@@ -1,4 +1,5 @@
 import { Body, Controller, Get, Param, Post, Query } from '@nestjs/common';
+import { Throttle } from '@nestjs/throttler';
 import { ApiTags, ApiQuery } from '@nestjs/swagger';
 import { PublicService } from './public.service';
 import { CreatePublicAppointmentDto } from './dto/create-public-appointment.dto';
@@ -14,6 +15,7 @@ export class PublicController {
   // BOOKING DATA (slug)
   // GET /public/booking/{tenantSlug}/{locationSlug}
   // ---------------------------------------------
+  @Throttle({ default: { ttl: 60, limit: 60 } }) // 60 req/min por IP
   @Get('booking/:tenantSlug/:locationSlug')
   async getPublicBookingDataBySlug(
     @Param('tenantSlug') tenantSlug: string,
@@ -30,6 +32,7 @@ export class PublicController {
   // POST /public/booking/{tenantSlug}/{locationSlug}/appointments
   // Observação: se policy = online_required -> bloqueia e manda usar /checkout
   // --------------------------------------------------------
+  @Throttle({ default: { ttl: 60, limit: 30 } }) // POST mais restrito
   @Post('booking/:tenantSlug/:locationSlug/appointments')
   async createPublicAppointmentBySlug(
     @Param('tenantSlug') tenantSlug: string,
@@ -47,6 +50,7 @@ export class PublicController {
   // CHECKOUT (Stripe) + policy da Location (slug)
   // POST /public/booking/{tenantSlug}/{locationSlug}/checkout
   // -------------------------------------------------------------
+  @Throttle({ default: { ttl: 60, limit: 20 } }) // checkout é mais sensível
   @Post('booking/:tenantSlug/:locationSlug/checkout')
   async createCheckoutBySlug(
     @Param('tenantSlug') tenantSlug: string,
@@ -64,6 +68,7 @@ export class PublicController {
   // DISPONIBILIDADE PÚBLICA DO DIA (slug) (appointments + blocks)
   // GET /public/booking/{tenantSlug}/{locationSlug}/appointments?providerId=&date=
   // --------------------------------------------------------
+  @Throttle({ default: { ttl: 60, limit: 60 } })
   @Get('booking/:tenantSlug/:locationSlug/appointments')
   @ApiQuery({
     name: 'providerId',
@@ -95,7 +100,8 @@ export class PublicController {
   // STATUS DO PAGAMENTO (Stripe) por session_id
   // GET /public/booking/payment-status?session_id=...
   // --------------------------------------------------------
-  @Get('payment-status')
+  @Throttle({ default: { ttl: 60, limit: 60 } })
+  @Get('booking/payment-status')
   async getPaymentStatus(@Query() query: PaymentStatusQueryDto) {
     return this.publicService.getPaymentStatusBySessionId(query.session_id);
   }

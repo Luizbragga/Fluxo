@@ -318,8 +318,8 @@ export class ServicesService {
       }
     }
 
-    const updated = await this.prisma.service.update({
-      where: { id },
+    const result = await this.prisma.service.updateMany({
+      where: { id, tenantId },
       data: {
         name: dto.name ?? undefined,
         durationMin: dto.durationMin ?? undefined,
@@ -331,7 +331,15 @@ export class ServicesService {
       },
     });
 
-    return this.toViewModel(updated);
+    if (result.count === 0) {
+      throw new NotFoundException('Service não encontrado para este tenant');
+    }
+
+    const updated = await this.prisma.service.findFirst({
+      where: { id, tenantId },
+    });
+
+    return this.toViewModel(updated!);
   }
 
   async remove(tenantId: string, id: string) {
@@ -343,11 +351,19 @@ export class ServicesService {
       throw new NotFoundException('Service não encontrado para este tenant');
     }
 
-    const updated = await this.prisma.service.update({
-      where: { id },
+    const result = await this.prisma.service.updateMany({
+      where: { id, tenantId },
       data: { active: false },
     });
 
-    return this.toViewModel(updated);
+    if (result.count === 0) {
+      throw new NotFoundException('Service não encontrado para este tenant');
+    }
+
+    const updated = await this.prisma.service.findFirst({
+      where: { id, tenantId },
+    });
+
+    return this.toViewModel(updated!);
   }
 }

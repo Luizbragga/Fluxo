@@ -14,7 +14,7 @@ import { IsOptional, IsString, Matches, MaxLength } from 'class-validator';
 import { SmsService } from './sms.service';
 import { NotificationsService } from './notifications.service';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard'; // ajuste o path se necessário
-
+import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
 class SendTestSmsDto {
   @Matches(/^\+\d{8,15}$/, {
     message: 'Telefone deve estar em E.164. Ex: +3519XXXXXXXX',
@@ -26,7 +26,8 @@ class SendTestSmsDto {
   @MaxLength(500)
   body?: string;
 }
-
+@ApiTags('Notifications')
+@ApiBearerAuth()
 @UseGuards(JwtAuthGuard)
 @Controller('notifications')
 export class NotificationsController {

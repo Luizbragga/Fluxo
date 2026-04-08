@@ -79,14 +79,22 @@ export class UsersService {
       throw new NotFoundException('User não encontrado neste tenant');
     }
 
-    return this.prisma.user.update({
-      where: { id },
+    const result = await this.prisma.user.updateMany({
+      where: { id, tenantId },
       data: {
         ...(dto.name !== undefined && { name: dto.name }),
         ...(dto.email !== undefined && { email: dto.email }),
         ...(dto.role !== undefined && { role: dto.role }),
         ...(dto.active !== undefined && { active: dto.active }),
       },
+    });
+
+    if (result.count === 0) {
+      throw new NotFoundException('User não encontrado neste tenant');
+    }
+
+    return this.prisma.user.findFirst({
+      where: { id, tenantId },
       select: {
         id: true,
         name: true,

@@ -6,6 +6,7 @@ import {
   UseGuards,
   HttpCode,
 } from '@nestjs/common';
+import { Throttle } from '@nestjs/throttler';
 import { ApiBearerAuth, ApiBody, ApiTags } from '@nestjs/swagger';
 import type { Request } from 'express';
 import { AuthService } from './auth.service';
@@ -25,11 +26,13 @@ export class AuthController {
     return this.auth.registerTenant(dto);
   }
 
+  @Throttle({ default: { ttl: 60, limit: 10 } }) // 10 tentativas por minuto por IP
   @Post('login')
   login(@Body() dto: LoginDto) {
     return this.auth.login(dto);
   }
 
+  @Throttle({ default: { ttl: 60, limit: 30 } }) // 30/min por IP
   @Post('refresh')
   @HttpCode(200)
   @ApiBearerAuth()

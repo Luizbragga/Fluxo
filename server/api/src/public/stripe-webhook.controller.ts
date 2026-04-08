@@ -9,7 +9,7 @@ import { ApiExcludeEndpoint, ApiTags } from '@nestjs/swagger';
 import Stripe from 'stripe';
 import { PrismaService } from '../prisma/prisma.service';
 import { AppointmentState, BookingPaymentStatus } from '@prisma/client';
-
+import { SkipThrottle } from '@nestjs/throttler';
 @ApiTags('Public')
 @Controller('public')
 export class StripeWebhookController {
@@ -35,6 +35,7 @@ export class StripeWebhookController {
 
   // Stripe chama isso. Não é pra aparecer no Swagger.
   @ApiExcludeEndpoint()
+  @SkipThrottle()
   @Post('webhooks/stripe')
   async handleStripeWebhook(
     @Req() req: any,
@@ -103,16 +104,17 @@ export class StripeWebhookController {
     // Helper: cancela appointment somente se estiver pendente (pra liberar slot)
     const cancelAppointmentIfPending = async (
       tx: any,
+      tenantId: string,
       appointmentId: string,
     ) => {
-      const appt = await tx.appointment.findUnique({
-        where: { id: appointmentId },
+      const appt = await tx.appointment.findFirst({
+        where: { id: appointmentId, tenantId },
         select: { status: true },
       });
 
       if (appt?.status === AppointmentState.pending_payment) {
-        await tx.appointment.update({
-          where: { id: appointmentId },
+        await tx.appointment.updateMany({
+          where: { id: appointmentId, tenantId },
           data: { status: AppointmentState.cancelled },
         });
       }
@@ -125,22 +127,20 @@ export class StripeWebhookController {
 
         const bookingPaymentId = session.metadata?.bookingPaymentId;
         const appointmentId = session.metadata?.appointmentId;
-
-        if (!bookingPaymentId || !appointmentId) break;
+        const tenantId = session.metadata?.tenantId;
+        if (!bookingPaymentId || !appointmentId || !tenantId) break;
 
         await this.prisma.$transaction(async (tx) => {
-          const current = await tx.bookingPayment.findUnique({
-            where: { id: bookingPaymentId },
+          const current = await tx.bookingPayment.findFirst({
+            where: { id: bookingPaymentId, tenantId },
             select: { status: true },
           });
 
           if (!current) return;
-
-          // Guardrail: não sobrescreve estados finais
           if (isFinalPayment(current.status)) return;
 
-          await tx.bookingPayment.update({
-            where: { id: bookingPaymentId },
+          await tx.bookingPayment.updateMany({
+            where: { id: bookingPaymentId, tenantId },
             data: {
               status: BookingPaymentStatus.succeeded,
               stripeCheckoutSessionId: session.id,
@@ -151,15 +151,14 @@ export class StripeWebhookController {
             },
           });
 
-          // ✅ pagamento ok: agenda (apenas se estava pendente)
-          const appt = await tx.appointment.findUnique({
-            where: { id: appointmentId },
+          const appt = await tx.appointment.findFirst({
+            where: { id: appointmentId, tenantId },
             select: { status: true },
           });
 
           if (appt?.status === AppointmentState.pending_payment) {
-            await tx.appointment.update({
-              where: { id: appointmentId },
+            await tx.appointment.updateMany({
+              where: { id: appointmentId, tenantId },
               data: { status: AppointmentState.scheduled },
             });
           }
@@ -173,29 +172,27 @@ export class StripeWebhookController {
 
         const bookingPaymentId = session.metadata?.bookingPaymentId;
         const appointmentId = session.metadata?.appointmentId;
-
-        if (!bookingPaymentId || !appointmentId) break;
+        const tenantId = session.metadata?.tenantId;
+        if (!bookingPaymentId || !appointmentId || !tenantId) break;
 
         await this.prisma.$transaction(async (tx) => {
-          const current = await tx.bookingPayment.findUnique({
-            where: { id: bookingPaymentId },
+          const current = await tx.bookingPayment.findFirst({
+            where: { id: bookingPaymentId, tenantId },
             select: { status: true },
           });
 
           if (!current) return;
-
-          // Guardrail: não sobrescreve estados finais
           if (isFinalPayment(current.status)) return;
 
-          await tx.bookingPayment.update({
-            where: { id: bookingPaymentId },
+          await tx.bookingPayment.updateMany({
+            where: { id: bookingPaymentId, tenantId },
             data: {
               status: BookingPaymentStatus.canceled,
               stripeCheckoutSessionId: session.id,
             },
           });
 
-          await cancelAppointmentIfPending(tx, appointmentId);
+          await cancelAppointmentIfPending(tx, tenantId, appointmentId);
         });
 
         break;
@@ -210,19 +207,20 @@ export class StripeWebhookController {
 
         if (!bookingPaymentId || !appointmentId) break;
 
+        const tenantId = session.metadata?.tenantId;
+        if (!bookingPaymentId || !appointmentId || !tenantId) break;
+
         await this.prisma.$transaction(async (tx) => {
-          const current = await tx.bookingPayment.findUnique({
-            where: { id: bookingPaymentId },
+          const current = await tx.bookingPayment.findFirst({
+            where: { id: bookingPaymentId, tenantId },
             select: { status: true },
           });
 
           if (!current) return;
-
-          // Guardrails: não rebaixa succeeded/refunded
           if (isFinalPayment(current.status)) return;
 
-          await tx.bookingPayment.update({
-            where: { id: bookingPaymentId },
+          await tx.bookingPayment.updateMany({
+            where: { id: bookingPaymentId, tenantId },
             data: {
               status: BookingPaymentStatus.failed,
               stripeCheckoutSessionId: session.id,
@@ -235,7 +233,7 @@ export class StripeWebhookController {
             },
           });
 
-          await cancelAppointmentIfPending(tx, appointmentId);
+          await cancelAppointmentIfPending(tx, tenantId, appointmentId);
         });
 
         break;
@@ -247,34 +245,35 @@ export class StripeWebhookController {
 
         let bookingPaymentId = pi.metadata?.bookingPaymentId;
         let appointmentId = pi.metadata?.appointmentId;
+        let tenantId = pi.metadata?.tenantId;
 
         // Best-effort: se não tiver metadata, tenta achar pelo stripePaymentIntentId
-        if (!bookingPaymentId || !appointmentId) {
+        if (!bookingPaymentId || !appointmentId || !tenantId) {
           const bp = await this.prisma.bookingPayment.findFirst({
             where: { stripePaymentIntentId: pi.id },
-            select: { id: true, appointmentId: true },
+            select: { id: true, appointmentId: true, tenantId: true },
           });
 
-          if (!bp?.id || !bp?.appointmentId) break;
+          if (!bp?.id || !bp?.appointmentId || !bp?.tenantId) break;
 
           bookingPaymentId = bp.id;
           appointmentId = bp.appointmentId;
+          tenantId = bp.tenantId;
         }
 
-        if (!bookingPaymentId || !appointmentId) break;
+        if (!bookingPaymentId || !appointmentId || !tenantId) break;
 
         await this.prisma.$transaction(async (tx) => {
-          const current = await tx.bookingPayment.findUnique({
-            where: { id: bookingPaymentId },
+          const current = await tx.bookingPayment.findFirst({
+            where: { id: bookingPaymentId, tenantId },
             select: { status: true },
           });
 
           if (!current) return;
-
           if (isFinalPayment(current.status)) return;
 
-          await tx.bookingPayment.update({
-            where: { id: bookingPaymentId },
+          await tx.bookingPayment.updateMany({
+            where: { id: bookingPaymentId, tenantId },
             data: {
               status: BookingPaymentStatus.failed,
               stripePaymentIntentId: pi.id,
@@ -286,7 +285,7 @@ export class StripeWebhookController {
             },
           });
 
-          await cancelAppointmentIfPending(tx, appointmentId);
+          await cancelAppointmentIfPending(tx, tenantId, appointmentId);
         });
 
         break;
@@ -298,45 +297,43 @@ export class StripeWebhookController {
 
         let bookingPaymentId = pi.metadata?.bookingPaymentId;
         let appointmentId = pi.metadata?.appointmentId;
+        let tenantId = pi.metadata?.tenantId;
 
-        // Best-effort: se não tiver metadata, tenta achar pelo stripePaymentIntentId
-        if (!bookingPaymentId || !appointmentId) {
+        if (!bookingPaymentId || !appointmentId || !tenantId) {
           const bp = await this.prisma.bookingPayment.findFirst({
             where: { stripePaymentIntentId: pi.id },
-            select: { id: true, appointmentId: true },
+            select: { id: true, appointmentId: true, tenantId: true },
           });
 
-          if (!bp?.id || !bp?.appointmentId) break;
+          if (!bp?.id || !bp?.appointmentId || !bp?.tenantId) break;
 
           bookingPaymentId = bp.id;
           appointmentId = bp.appointmentId;
+          tenantId = bp.tenantId;
         }
 
-        if (!bookingPaymentId || !appointmentId) break;
+        if (!bookingPaymentId || !appointmentId || !tenantId) break;
 
         await this.prisma.$transaction(async (tx) => {
-          const current = await tx.bookingPayment.findUnique({
-            where: { id: bookingPaymentId },
+          const current = await tx.bookingPayment.findFirst({
+            where: { id: bookingPaymentId, tenantId },
             select: { status: true },
           });
 
           if (!current) return;
-
-          // Guardrails: não rebaixa estados finais
           if (isFinalPayment(current.status)) return;
 
-          await tx.bookingPayment.update({
-            where: { id: bookingPaymentId },
+          await tx.bookingPayment.updateMany({
+            where: { id: bookingPaymentId, tenantId },
             data: {
               status: BookingPaymentStatus.canceled,
               stripePaymentIntentId: pi.id,
-              // usando campos já existentes no teu padrão (evita quebrar schema)
               failedAt: new Date(),
               failureMessage: 'payment_intent.canceled',
             },
           });
 
-          await cancelAppointmentIfPending(tx, appointmentId);
+          await cancelAppointmentIfPending(tx, tenantId, appointmentId);
         });
 
         break;
@@ -346,16 +343,15 @@ export class StripeWebhookController {
       case 'charge.refunded': {
         const charge = event.data.object;
 
-        // metadata é "ideal", mas nem sempre vem
         let bookingPaymentId = (charge.metadata as any)?.bookingPaymentId as
           | string
           | undefined;
         let appointmentId = (charge.metadata as any)?.appointmentId as
           | string
           | undefined;
+        let tenantId = (charge.metadata as any)?.tenantId as string | undefined;
 
-        // Best-effort: tenta achar pelo payment_intent do charge
-        if (!bookingPaymentId || !appointmentId) {
+        if (!bookingPaymentId || !appointmentId || !tenantId) {
           const paymentIntentId =
             typeof charge.payment_intent === 'string'
               ? charge.payment_intent
@@ -365,47 +361,38 @@ export class StripeWebhookController {
 
           const bp = await this.prisma.bookingPayment.findFirst({
             where: { stripePaymentIntentId: paymentIntentId },
-            select: { id: true, appointmentId: true },
+            select: { id: true, appointmentId: true, tenantId: true },
           });
 
-          if (!bp?.id || !bp?.appointmentId) break;
+          if (!bp?.id || !bp?.appointmentId || !bp?.tenantId) break;
 
           bookingPaymentId = bp.id;
           appointmentId = bp.appointmentId;
+          tenantId = bp.tenantId;
         }
 
-        if (!bookingPaymentId || !appointmentId) break;
+        if (!bookingPaymentId || !appointmentId || !tenantId) break;
 
         await this.prisma.$transaction(async (tx) => {
-          const current = await tx.bookingPayment.findUnique({
-            where: { id: bookingPaymentId },
+          const current = await tx.bookingPayment.findFirst({
+            where: { id: bookingPaymentId, tenantId },
             select: { status: true },
           });
 
           if (!current) return;
+          if (current.status === BookingPaymentStatus.refunded) return;
+          if (current.status !== BookingPaymentStatus.succeeded) return;
 
-          // Guardrail: se já está refunded, não faz nada
-          if (current.status === BookingPaymentStatus.refunded) {
-            return;
-          }
-
-          // Regra MVP: só marca refunded se já tinha succeeded
-          if (current.status !== BookingPaymentStatus.succeeded) {
-            return;
-          }
-
-          await tx.bookingPayment.update({
-            where: { id: bookingPaymentId },
+          await tx.bookingPayment.updateMany({
+            where: { id: bookingPaymentId, tenantId },
             data: {
               status: BookingPaymentStatus.refunded,
-              // usando campos existentes (evita quebrar schema)
               failedAt: new Date(),
               failureMessage: 'charge.refunded',
             },
           });
 
-          // regra MVP: após refund, cancela o appointment (somente se pendente)
-          await cancelAppointmentIfPending(tx, appointmentId);
+          await cancelAppointmentIfPending(tx, tenantId, appointmentId);
         });
 
         break;

@@ -241,7 +241,7 @@ export class ProvidersService {
 
   async findAll(
     tenantId: string,
-    params?: { page?: number; pageSize?: number },
+    params?: { page?: number; pageSize?: number; locationId?: string },
   ) {
     // valores padrão seguros
     const page = params?.page && params.page > 0 ? params.page : 1;
@@ -254,9 +254,15 @@ export class ProvidersService {
     const skip = (page - 1) * pageSize;
     const take = pageSize;
 
+    const where: any = { tenantId, active: true };
+
+    if (params?.locationId) {
+      where.locationId = params.locationId;
+    }
+
     const [items, total] = await Promise.all([
       this.prisma.provider.findMany({
-        where: { tenantId, active: true },
+        where,
         include: {
           user: true,
           location: true,
@@ -265,9 +271,7 @@ export class ProvidersService {
         skip,
         take,
       }),
-      this.prisma.provider.count({
-        where: { tenantId, active: true },
-      }),
+      this.prisma.provider.count({ where }),
     ]);
 
     const totalPages = Math.max(1, Math.ceil(total / pageSize));
@@ -425,8 +429,8 @@ export class ProvidersService {
       }
 
       // 2) atualiza o Provider
-      return tx.provider.update({
-        where: { id },
+      const result = await tx.provider.updateMany({
+        where: { id, tenantId },
         data: {
           name: dto.name ?? undefined,
           userId: dto.userId ?? undefined,
@@ -435,6 +439,14 @@ export class ProvidersService {
           weekdayTemplate: dto.weekdayTemplate ?? undefined,
           active: dto.active ?? undefined,
         },
+      });
+
+      if (result.count === 0) {
+        throw new NotFoundException('Provider não encontrado para este tenant');
+      }
+
+      return tx.provider.findFirst({
+        where: { id, tenantId },
         include: {
           user: true,
           location: true,
@@ -454,7 +466,13 @@ export class ProvidersService {
       throw new NotFoundException('Provider não encontrado');
     }
 
-    await this.prisma.provider.delete({ where: { id } });
+    const result = await this.prisma.provider.deleteMany({
+      where: { id, tenantId },
+    });
+
+    if (result.count === 0) {
+      throw new NotFoundException('Provider não encontrado');
+    }
 
     return { ok: true };
   }

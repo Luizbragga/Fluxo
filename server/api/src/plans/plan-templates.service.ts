@@ -111,9 +111,17 @@ export class PlanTemplatesService {
       if (data[key] === undefined) delete data[key];
     });
 
-    return this.prisma.planTemplate.update({
-      where: { id },
+    const result = await this.prisma.planTemplate.updateMany({
+      where: { id, tenantId },
       data,
+    });
+
+    if (result.count === 0) {
+      throw new NotFoundException('Plano não encontrado para este tenant.');
+    }
+
+    return this.prisma.planTemplate.findFirst({
+      where: { id, tenantId },
     });
   }
   // LISTAR PLANOS QUE USAM UM DETERMINADO SERVIÇO ----------------------------
@@ -156,7 +164,13 @@ export class PlanTemplatesService {
       throw new NotFoundException('Plano não encontrado para este tenant.');
     }
 
-    await this.prisma.planTemplate.delete({ where: { id } });
+    const result = await this.prisma.planTemplate.deleteMany({
+      where: { id, tenantId },
+    });
+
+    if (result.count === 0) {
+      throw new NotFoundException('Plano não encontrado para este tenant.');
+    }
 
     return { id };
   }
