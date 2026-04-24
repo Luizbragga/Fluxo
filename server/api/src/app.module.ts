@@ -1,4 +1,4 @@
-import { Module } from '@nestjs/common';
+import { MiddlewareConsumer, Module, NestModule } from '@nestjs/common';
 import { ConfigModule } from '@nestjs/config';
 
 import { PrismaModule } from './prisma/prisma.module';
@@ -21,6 +21,7 @@ import { InvitesModule } from './invites/invites.module';
 import { PublicModule } from './public/public.module';
 import { ThrottlerModule, ThrottlerGuard } from '@nestjs/throttler';
 import { APP_GUARD } from '@nestjs/core';
+import { RequestIdMiddleware } from './common/middleware/request-id.middleware';
 @Module({
   imports: [
     ConfigModule.forRoot({ isGlobal: true }),
@@ -45,8 +46,8 @@ import { APP_GUARD } from '@nestjs/core';
     ThrottlerModule.forRoot({
       throttlers: [
         {
-          ttl: 60,
-          limit: 3,
+          ttl: 60000,
+          limit: 100,
         },
       ],
     }),
@@ -59,4 +60,8 @@ import { APP_GUARD } from '@nestjs/core';
     },
   ],
 })
-export class AppModule {}
+export class AppModule implements NestModule {
+  configure(consumer: MiddlewareConsumer) {
+    consumer.apply(RequestIdMiddleware).forRoutes('*');
+  }
+}

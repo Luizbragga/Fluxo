@@ -26,13 +26,13 @@ export class AuthController {
     return this.auth.registerTenant(dto);
   }
 
-  @Throttle({ default: { ttl: 60, limit: 10 } }) // 10 tentativas por minuto por IP
+  @Throttle({ default: { ttl: 60000, limit: 5 } })
   @Post('login')
   login(@Body() dto: LoginDto) {
     return this.auth.login(dto);
   }
 
-  @Throttle({ default: { ttl: 60, limit: 30 } }) // 30/min por IP
+  @Throttle({ default: { ttl: 60000, limit: 10 } })
   @Post('refresh')
   @HttpCode(200)
   @ApiBearerAuth()

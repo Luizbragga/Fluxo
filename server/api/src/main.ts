@@ -4,12 +4,19 @@ import { ValidationPipe } from '@nestjs/common';
 import { NestFactory } from '@nestjs/core';
 import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
 import { AppModule } from './app.module';
+import { RequestLoggingInterceptor } from './common/interceptors/request-logging.interceptor';
+import helmet from 'helmet';
 
 async function bootstrap() {
   const app = await NestFactory.create(AppModule, {
     rawBody: true,
   });
-
+  app.use(
+    helmet({
+      contentSecurityPolicy: false,
+      crossOriginEmbedderPolicy: false,
+    }),
+  );
   // 🔐 CORS – libera o front em http://localhost:3000
   app.enableCors({
     origin: ['http://localhost:3000'],
@@ -23,7 +30,7 @@ async function bootstrap() {
 
   // pipes globais (mantido)
   app.useGlobalPipes(new ValidationPipe({ whitelist: true, transform: true }));
-
+  app.useGlobalInterceptors(new RequestLoggingInterceptor());
   // Swagger (mantido)
   const config = new DocumentBuilder()
     .setTitle('FLUXO API')
