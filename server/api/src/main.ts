@@ -18,11 +18,16 @@ async function bootstrap() {
     }),
   );
   // 🔐 CORS – libera o front em http://localhost:3000
+  const allowedOrigins = [
+    'http://localhost:3000',
+    process.env.WEB_BASE_URL,
+  ].filter(Boolean) as string[];
+
   app.enableCors({
-    origin: ['http://localhost:3000'],
+    origin: allowedOrigins,
     methods: 'GET,HEAD,PUT,PATCH,POST,DELETE,OPTIONS',
     allowedHeaders: 'Content-Type, Authorization, X-Requested-With, Accept',
-    credentials: false, // se um dia usar cookies/sessions, aí vira true
+    credentials: false,
   });
 
   // prefixo global /v1 (mantido)
